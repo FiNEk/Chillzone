@@ -37,30 +37,121 @@ function ns.Log(fmt, ...)
 end
 
 ---------------------------------------------------------------------------
--- Защищённые вызовы: ошибка одного обработчика не ломает остальные.
+-- Защищённые вызовы: ошибка одного обработчика не ломает остальные. Ошибка попадает в
+-- db.errors записью { where, msg, stack, count, first, last, version }, новые первыми; повтор
+-- того же where|msg только считается. Стек снимает обработчик xpcall в месте ошибки (в игре
+-- debugstack, в тестах debug.traceback). Устроено как Olympus Diagnostics.lua.
 ---------------------------------------------------------------------------
+ns.MAX_ERRORS = 50
+ns.STACK_LINES = 12
 local warnedError = false
+local early = {} -- ошибки до загрузки сохранённых данных
+
+function ns.Stamp()
+	return date and date("%Y-%m-%d %H:%M:%S") or "?"
+end
+
+local function Lines(s, skip)
+	local out = {}
+	for line in tostring(s or ""):gmatch("[^\n]+") do
+		line = line:gsub("^%s+", ""):gsub("%s+$", "")
+		if line ~= "" and not (skip and #out == 0 and skip(line)) then out[#out + 1] = line end
+		if #out >= ns.STACK_LINES then break end
+	end
+	return table.concat(out, "\n")
+end
+
+-- Стек вызовов с уровня level: 1 — сама Stack, 2 — кто её позвал. skip(line) — какие
+-- верхние строки выбросить.
+local function Stack(level, skip)
+	local s
+	if type(debugstack) == "function" then
+		s = debugstack(level, ns.STACK_LINES + 6, 0)
+	else
+		local dbg = debug
+		if type(dbg) == "table" and type(dbg.traceback) == "function" then s = dbg.traceback("", level) end
+	end
+	s = tostring(s or ""):gsub("^%s*stack traceback:%s*", "")
+	return Lines(s, skip)
+end
+
+local function Record(where, msg, stack)
+	where, msg = tostring(where or "?"), tostring(msg or "?")
+	local db = ns.db
+	if not db then
+		if #early < 20 then early[#early + 1] = { where = where, msg = msg, stack = stack } end
+		return nil
+	end
+	if type(db.errors) ~= "table" then db.errors = {} end
+	local list, now = db.errors, ns.Stamp()
+	for i, e in ipairs(list) do
+		if type(e) == "table" and e.where == where and e.msg == msg then
+			e.count, e.last = (tonumber(e.count) or 1) + 1, now
+			if i > 1 then table.insert(list, 1, table.remove(list, i)) end
+			return e
+		end
+	end
+	local e = { where = where, msg = msg, stack = stack or "", count = 1, first = now, last = now, version = ns.VERSION }
+	table.insert(list, 1, e)
+	while #list > ns.MAX_ERRORS do table.remove(list) end
+	ns.Log("ошибка в %s: %s", where, msg)
+	if not warnedError then
+		warnedError = true
+		ns.Print(L.ERROR_ONCE)
+	end
+	return e
+end
+
+-- Обработчик xpcall: стек снимается здесь, пока он ещё на месте ошибки (1 — Stack,
+-- 2 — этот обработчик, 3 — где ошибка).
+local function Handler(err)
+	return { msg = tostring(err), stack = Stack(3) }
+end
+
+-- В Lua 5.1 xpcall не передаёт аргументы: они уходят через замыкание.
 function ns.SafeCall(where, fn, ...)
-	local ok, err = pcall(fn, ...)
+	local ok, res
+	local n = select("#", ...)
+	if n == 0 then
+		ok, res = xpcall(fn, Handler)
+	else
+		local args = { ... }
+		ok, res = xpcall(function() return fn(unpack(args, 1, n)) end, Handler)
+	end
 	if not ok then
-		local db = ns.db
-		if db then
-			db.errors = db.errors or {}
-			table.insert(db.errors, 1, ("%s: %s"):format(where, tostring(err)))
-			while #db.errors > 20 do table.remove(db.errors) end
-		end
-		if not warnedError then
-			warnedError = true
-			ns.Print(L.ERROR_ONCE)
-		end
+		if type(res) ~= "table" then res = { msg = tostring(res), stack = "" } end
+		Record(where, res.msg, res.stack)
 	end
 	return ok
 end
 
-local listeners = {}
+-- Ошибка, пойманная не SafeCall (например, задача подписи): стек — того, кто её передал.
 function ns.CaptureError(where, err)
-	ns.SafeCall(where, function() error(tostring(err)) end)
+	return Record(where, err, Stack(3))
 end
+
+-- Записи прежних версий — строки «где: что»; ошибки до загрузки данных.
+local function LoadErrors(db)
+	local out = {}
+	for _, e in ipairs(type(db.errors) == "table" and db.errors or {}) do
+		if type(e) == "string" then
+			local where, msg = e:match("^(.-): (.*)$")
+			out[#out + 1] = { where = where or "?", msg = msg or e, stack = "", count = 1, first = "?", last = "?", version = "?" }
+		elseif type(e) == "table" and e.msg ~= nil then
+			e.where, e.msg, e.count = tostring(e.where or "?"), tostring(e.msg), tonumber(e.count) or 1
+			if type(e.stack) ~= "string" then e.stack = "" end
+			out[#out + 1] = e
+		end
+		if #out >= ns.MAX_ERRORS then break end
+	end
+	db.errors = out
+	if type(db.blocked) ~= "table" then db.blocked = {} end
+	local pending = early
+	early = {}
+	for _, x in ipairs(pending) do Record(x.where, x.msg, x.stack) end
+end
+
+local listeners = {}
 
 function ns.On(name, fn)
 	listeners[name] = listeners[name] or {}
@@ -86,6 +177,48 @@ eventFrame:SetScript("OnEvent", function(_, event, ...)
 	if not h then return end
 	for i = 1, #h do ns.SafeCall("event " .. event, h[i], ...) end
 end)
+
+---------------------------------------------------------------------------
+-- Игра запретила этому аддону защищённый вызов (taint). Это не ошибка Lua: такие случаи
+-- хранятся в db.blocked, одна запись на вызов, со стеком места, где игра отказала (событие
+-- приходит внутри запрещённого вызова). Чужие аддоны — только строка журнала. Как в Olympus
+-- Diagnostics.lua, без seterrorhandler.
+---------------------------------------------------------------------------
+ns.MAX_BLOCKED = 10
+ns.blockedSession = 0
+
+-- Верхние строки стека — свой разбор события и xpcall, а не тот, кто сделал вызов.
+local function OwnFrame(line)
+	return line:find("Chillzone[\\/]Core%.lua") ~= nil or line:find("in function [`'<]?x?pcall") ~= nil
+		or line:find("^%[C%]: %?") ~= nil
+end
+
+local function OnBlocked(event, addon, func)
+	if addon ~= ADDON then
+		ns.Log("%s: %s, %s", event, tostring(addon), tostring(func))
+		return
+	end
+	func = tostring(func or "?")
+	ns.blockedSession = ns.blockedSession + 1
+	local db = ns.db
+	if not db then return end
+	if type(db.blocked) ~= "table" then db.blocked = {} end
+	local list, now = db.blocked, ns.Stamp()
+	if ns.blockedSession <= 3 then ns.Log("%s: %s", event, func) end
+	for i, b in ipairs(list) do
+		if type(b) == "table" and b.event == event and b.func == func then
+			b.count, b.last = (tonumber(b.count) or 1) + 1, now
+			if i > 1 then table.insert(list, 1, table.remove(list, i)) end
+			return
+		end
+	end
+	table.insert(list, 1, { event = event, func = func, count = 1, first = now, last = now, version = ns.VERSION, stack = Stack(3, OwnFrame) })
+	while #list > ns.MAX_BLOCKED do table.remove(list) end
+end
+
+for _, event in ipairs({ "ADDON_ACTION_BLOCKED", "ADDON_ACTION_FORBIDDEN" }) do
+	ns.RegisterEvent(event, function(addon, func) OnBlocked(event, addon, func) end)
+end
 
 function ns.After(seconds, where, fn)
 	C_Timer.After(seconds, function() ns.SafeCall(where, fn) end)
@@ -143,6 +276,7 @@ local DB_DEFAULTS = {
 	realms = {},
 	log = {},
 	errors = {},
+	blocked = {},
 }
 
 local CHAR_DEFAULTS = {
@@ -151,10 +285,15 @@ local CHAR_DEFAULTS = {
 }
 local STORE_DEFAULTS = { guilds = {}, relays = {}, manual = {}, ignore = {}, chat = { A = {}, C = {}, L = {} } }
 
-ns.RegisterEvent("ADDON_LOADED", function(name)
-	if name ~= ADDON then return end
+local function LoadDB()
 	ChillzoneDB = Defaults(type(ChillzoneDB) == "table" and ChillzoneDB or {}, DB_DEFAULTS)
 	ns.db = ChillzoneDB
+	LoadErrors(ns.db)
+end
+
+ns.RegisterEvent("ADDON_LOADED", function(name)
+	if name ~= ADDON then return end
+	LoadDB()
 	ns.Fire("INIT")
 end)
 
@@ -182,10 +321,7 @@ function ns.IsMe(name)
 end
 
 ns.RegisterEvent("PLAYER_LOGIN", function()
-	if not ns.db then
-		ChillzoneDB = Defaults(type(ChillzoneDB) == "table" and ChillzoneDB or {}, DB_DEFAULTS)
-		ns.db = ChillzoneDB
-	end
+	if not ns.db then LoadDB() end
 	ns.Identify()
 	local db = ns.db
 	db.chars[ns.myKey] = Defaults(db.chars[ns.myKey] or {}, CHAR_DEFAULTS)
@@ -233,9 +369,28 @@ function ns.Command(name, fn, help)
 end
 
 local statusLines = {}
--- Модули добавляют свои строки в /chillzone status.
+-- Модули добавляют свои строки в /chillzone status; fn() возвращает строку или nil.
 function ns.Status(fn)
 	statusLines[#statusLines + 1] = fn
+end
+
+-- Строки /chillzone status: их же пишет в отчёт /chillzone bug.
+function ns.StatusLines()
+	local out = {}
+	local guild, rank = ns.MyGuild()
+	out[#out + 1] = L.STATUS_ME:format(U.Display(ns.me), ns.myKey or "?", ns.realm or "?", ns.group or "?", tostring(ns.splitNames or false), ns.faction or "?")
+	if guild then
+		out[#out + 1] = L.STATUS_GUILD:format(guild, rank or -1, U.IsMemberGuild(guild) and L.YES or L.NO, U.IsMainGuild(guild) and L.YES or L.NO)
+	else
+		out[#out + 1] = L.STATUS_NO_GUILD
+	end
+	for _, fn in ipairs(statusLines) do
+		ns.SafeCall("status", function()
+			local line = fn()
+			if line then out[#out + 1] = tostring(line) end
+		end)
+	end
+	return out
 end
 
 ns.Command("help", function()
@@ -250,19 +405,7 @@ ns.Command("help", function()
 end, L.HELP_HELP)
 
 ns.Command("status", function()
-	local guild, rank = ns.MyGuild()
-	ns.Print(L.STATUS_ME, U.Display(ns.me), ns.myKey or "?", ns.realm or "?", ns.group or "?", tostring(ns.splitNames or false), ns.faction or "?")
-	if guild then
-		ns.Print(L.STATUS_GUILD, guild, rank or -1, U.IsMemberGuild(guild) and L.YES or L.NO, U.IsMainGuild(guild) and L.YES or L.NO)
-	else
-		ns.Print(L.STATUS_NO_GUILD)
-	end
-	for _, fn in ipairs(statusLines) do
-		ns.SafeCall("status", function()
-			local line = fn()
-			if line then ns.Print(line) end
-		end)
-	end
+	for _, line in ipairs(ns.StatusLines()) do ns.Print(line) end
 end, L.HELP_STATUS)
 
 ns.Command("debug", function()
@@ -270,11 +413,19 @@ ns.Command("debug", function()
 	ns.Print(ns.db.settings.debug and L.DEBUG_ON or L.DEBUG_OFF)
 end, L.HELP_DEBUG)
 
+-- Ошибка одной строкой: «[3x] где: что».
+function ns.ErrorLine(e)
+	if type(e) ~= "table" then return tostring(e) end
+	return ("[%sx] %s: %s"):format(tostring(e.count or 1), tostring(e.where or "?"), tostring(e.msg or "?"))
+end
+
 ns.Command("log", function(arg)
 	local n = tonumber(arg) or 20
 	local log = ns.db.log
 	for i = math.max(1, #log - n + 1), #log do DEFAULT_CHAT_FRAME:AddMessage("|cff999999" .. log[i] .. "|r") end
-	for i = 1, math.min(3, #(ns.db.errors or {})) do DEFAULT_CHAT_FRAME:AddMessage("|cffff6060" .. ns.db.errors[i] .. "|r") end
+	local errors = ns.db.errors or {}
+	for i = 1, math.min(3, #errors) do DEFAULT_CHAT_FRAME:AddMessage("|cffff6060" .. ns.ErrorLine(errors[i]):gsub("|", "||") .. "|r") end
+	if #errors > 0 or #(ns.db.blocked or {}) > 0 then ns.Print(L.LOG_MORE:format(#errors, #(ns.db.blocked or {}))) end
 end, L.HELP_LOG)
 
 SLASH_CHILLZONE1 = "/chillzone"
@@ -287,6 +438,7 @@ SlashCmdList.CHILLZONE = function(msg)
 		name = "help"
 	end
 	local c = commands[name]
-	if not c then c = commands.help end
+	-- Метка — имя команды, а не набранное слово: в журнале ошибок и профайлере нет ввода игрока.
+	if not c then name, c = "help", commands.help end
 	ns.SafeCall("/chillzone " .. name, c.fn, rest)
 end

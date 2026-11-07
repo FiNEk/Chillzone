@@ -36,3 +36,7 @@ CensusPane.lua
 Debug.lua
 UI.lua
 Map.lua
+Acts.lua
+Perf.lua
+Report.lua
+Copy.lua

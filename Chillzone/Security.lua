@@ -285,17 +285,24 @@ local function ShareRoot(guild, root)
             { key = "root:" .. U.GuildKey(guild), guard = S.CanAdmin })
     end
 end
--- Снять с ключа public отметку об отзыве (см. Forget).
+-- Журнал действий доверия (Acts.lua): только то, что этот клиент увидел сам. by — кто
+-- сделал (я или отправитель), via — откуда известно.
+local function Act(kind, guild, by, via, name)
+    if ns.Acts then ns.Acts.Add(kind, guild, by, via, name) end
+end
+-- Снять с ключа public отметку об отзыве (см. Forget). true — отметка была и снята.
 local function Unretire(gk, public)
     local list = Store().retired[gk]
-    if not list or not list[public] then return end
+    if not list or not list[public] then return false end
     list[public] = nil
     if next(list) == nil then Store().retired[gk] = nil end
+    return true
 end
 -- Задать корень гильдии guild. Отозванный ключ (/chillzone trust reset) из каталога, от офицеров
 -- (KT) и т. п. не принимается; confirmed — его явно подтвердил офицер здесь же
 -- (/chillzone accept или ответ на свой /chillzone link): тогда отметка об отзыве снимается.
-local function Pin(guild, name, public, confirmed)
+-- by и via — кто задал и откуда (в журнал действий, только если что-то изменилось).
+local function Pin(guild, name, public, confirmed, by, via)
     if not U.IsMemberGuild(guild) or not Name(name) then return false end
     local pk = Ed.FromB64(public)
     if not pk or #pk ~= 32 then return false end
@@ -304,10 +311,11 @@ local function Pin(guild, name, public, confirmed)
     if old and (old.public ~= public or U.Key(old.name) ~= U.Key(name)) then return false end
     if s.retired[gk] and s.retired[gk][public] then
         if not confirmed then return false end
-        Unretire(gk, public)
+        if Unretire(gk, public) then Act("unretire", guild, by, via) end
     end
     if old then return true end
     s.roots[gk] = { name = name, public = public, guild = guild }
+    Act("root", guild, by, via, name)
     hints[gk] = nil
     if gk == GuildKey() then ShareRoot(guild, s.roots[gk]) end
     ns.Fire("AUTH_ROOT", guild)
@@ -454,10 +462,11 @@ function S.ShareTrust()
     for _, root in pairs(S.Roots()) do ShareRoot(root.guild, root) end
     return true
 end
-local function Forget(guild, public)
+local function Forget(guild, public, by, via)
     local s, gk = Store(), U.GuildKey(guild)
     local old = s.roots[gk]
     if not old or old.public ~= public then return false end
+    Act("reset", guild, by, via, old.name)
     s.retired[gk] = s.retired[gk] or {}
     s.retired[gk][public] = true
     s.roots[gk], s.certs[gk], s.delegations[gk], s.policies[gk], s.verified[gk] = nil, nil, nil, nil, nil
@@ -472,7 +481,7 @@ function S.Reset(guild)
     local root = Root(guild)
     if not S.CanAdmin() or not root then return false end
     local public = root.public
-    if not Forget(guild, public) then return false end
+    if not Forget(guild, public, ns.me, "own") then return false end
     ns.Comm.Send("GUILD", "KF~" .. guild .. "~" .. public, { prio = true, guard = S.CanAdmin })
     if U.GuildKey(guild) == GuildKey() and identity and identity.public == public then StartIdentity(true) end
     S.Say()
@@ -508,7 +517,7 @@ function S.Init(force, report)
         if now then report(L.AUTH_INIT_DONE:format(U.Display(now.name))); return end
         if GuildKey() ~= gk or not S.CanAdmin() or not identity then report(L.AUTH_NEED_OFFICER); return end
         if hints[gk] and not force then report(L.AUTH_INIT_HINT:format(U.Display(hints[gk]))); return end
-        if Pin(guild, U.Display(ns.me), identity.public) then report(L.AUTH_INIT_OK) else report(L.AUTH_NEED_OFFICER) end
+        if Pin(guild, U.Display(ns.me), identity.public, nil, ns.me, "init") then report(L.AUTH_INIT_OK) else report(L.AUTH_NEED_OFFICER) end
     end)
     return true
 end
@@ -533,14 +542,16 @@ end)
 ns.Comm.On("KF", function(msg, sender, dist)
     if dist ~= "GUILD" or not ns.Roster.Fresh() or not ns.Roster.IsOfficerRank(ns.Roster.RankOf(sender)) then return end
     local guild, public = msg:match("^KF~([^~]+)~([%w_-]+)$")
-    if guild then Forget(guild, public) end
+    if guild then Forget(guild, public, sender, "KF") end
 end)
 -- KU~гильдия~ключ: офицер своей гильдии явно подтвердил отозванный корень чужой гильдии
 -- (/chillzone accept, /chillzone link). Принимается от тех же, от кого KF; сам корень приходит следом (KT).
 ns.Comm.On("KU", function(msg, sender, dist)
     if dist ~= "GUILD" or not ns.Roster.Fresh() or not ns.Roster.IsOfficerRank(ns.Roster.RankOf(sender)) then return end
     local guild, public = msg:match("^KU~([^~]+)~([%w_-]+)$")
-    if guild and U.IsMemberGuild(guild) and U.GuildKey(guild) ~= GuildKey() then Unretire(U.GuildKey(guild), public) end
+    if guild and U.IsMemberGuild(guild) and U.GuildKey(guild) ~= GuildKey() and Unretire(U.GuildKey(guild), public) then
+        Act("unretire", guild, sender, "KU")
+    end
 end)
 function S.SendPolicies(target)
     local key, now = U.Key(target), ns.Now()
@@ -596,7 +607,7 @@ ns.Comm.On("KA", function(msg, sender, dist)
         local s, gk = Store(), U.GuildKey(p[3])
         local old = s.policies[gk]
         if old and old.issued > issued then return end
-        if not Pin(p[3], p[4], p[5]) then return end
+        if not Pin(p[3], p[4], p[5], nil, issuer.name, "KA") then return end
         s.policies[gk] = { wire = msg, issued = issued, expires = expires, guild = p[3] }
     end)
 end)
@@ -609,6 +620,7 @@ function S.Link(name)
     outgoing[key] = { nonce = nonce, untilAt = ns.Now() + 180 }
     ns.Comm.Send("WHISPER", "KL~H~" .. nonce .. "~" .. ns.MyGuild() .. "~" .. root.name .. "~" .. root.public,
         { target = name, prio = true, guard = S.CanAdmin })
+    Act("link_out", ns.MyGuild(), ns.me, "link", name)
     ns.Print(ns.L.AUTH_SENT, U.Display(name))
     return true
 end
@@ -622,8 +634,9 @@ function S.Accept(name)
     local key = U.Key(name)
     local p, root = pending[key], ns.MyGuild() and Root(ns.MyGuild())
     if not S.CanAdmin() or not p or not root or ns.Now() > p.untilAt then return false end
-    if not Pin(p.guild, p.name, p.public, true) then return false end
+    if not Pin(p.guild, p.name, p.public, true, ns.me, "accept") then return false end
     pending[key] = nil
+    Act("link_ok", p.guild, ns.me, "accept", name)
     Confirmed(p.guild, p.public)
     ns.Comm.Send("WHISPER", "KL~R~" .. p.nonce .. "~" .. ns.MyGuild() .. "~" .. root.name .. "~" .. root.public,
         { target = name, prio = true, guard = S.CanAdmin })
@@ -640,13 +653,15 @@ ns.Comm.On("KL", function(msg, sender, dist)
     if mode == "H" then
         local total = 0; for _ in pairs(pending) do total = total + 1 end
         if total >= 16 and not pending[key] then return end
+        if not pending[key] then Act("link_in", guild, sender, "KL") end
         pending[key] = { nonce = nonce, guild = guild, name = name, public = public, untilAt = ns.Now() + 180 }
         ns.Print(ns.L.AUTH_REQUEST, U.Display(sender), guild)
     else
         local p = outgoing[key]
         if not p or p.nonce ~= nonce or ns.Now() > p.untilAt then return end
-        if Pin(guild, name, public, true) then
+        if Pin(guild, name, public, true, sender, "link") then
             outgoing[key] = nil
+            Act("link_ok", guild, sender, "link", sender)
             Confirmed(guild, public)
             S.Introduce(sender)
             ns.Print(ns.L.AUTH_PAIRED, U.Display(sender), guild)
@@ -656,7 +671,7 @@ end)
 ns.Comm.On("KT", function(msg, sender, dist)
     if dist ~= "GUILD" or not ns.Roster.Fresh() or not ns.Roster.IsOfficerRank(ns.Roster.RankOf(sender)) then return end
     local guild, name, public = msg:match("^KT~([^~]+)~([^~]+)~([%w_-]+)$")
-    if guild then Pin(guild, name, public) end
+    if guild then Pin(guild, name, public, nil, sender, "KT") end
 end)
 ns.Comm.On("K1", function(msg, sender, dist)
     if dist ~= "GUILD" or not NativeRole(sender) then return end
