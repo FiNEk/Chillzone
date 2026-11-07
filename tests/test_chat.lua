@@ -655,3 +655,185 @@ T.test("перепись: данные карточки", function()
 	T.ok(not card.people[1].online, "без свежего отчёта никто не «в игре»")
 	Errors(c)
 end)
+
+---------------------------------------------------------------------------
+-- Окно для копий общего чата: окна игры и вкладки Chattynator
+---------------------------------------------------------------------------
+
+-- Chattynator с вкладками windows ({ { "GENERAL", ... }, ... }): строки вкладок — в lines
+-- ({ wi, ti, text, caller }); caller — кто вызвал AddMessageToWindowAndTab, как его видит
+-- debugstack(2) в Chattynator. fail — вывод падает.
+local function Chatty(c, windows)
+	local fake = { windows = windows, lines = {} }
+	c.env.Chattynator = { API = {
+		GetWindowsAndTabs = function()
+			local out = {}
+			for wi, tabs in ipairs(fake.windows) do
+				out[wi] = {}
+				for ti, name in ipairs(tabs) do out[wi][ti] = name end
+			end
+			return out
+		end,
+		AddMessageToWindowAndTab = function(wi, ti, text)
+			if fake.fail then error("Chattynator ещё не готов") end
+			fake.lines[#fake.lines + 1] = { wi, ti, text, debug.getinfo(2, "S") }
+		end,
+	} }
+	return fake
+end
+
+local function Line(c, text)
+	c.ns.Chat.Show("A", "Чиллзон", "Карл Великий", "PALADIN", text)
+end
+
+local SEARCH_TAB = "|TInterface\\Icons\\INV_Misc_Spyglass_03:0|t"
+
+T.test("Chattynator: строка общего чата — во вкладку, выбранную по названию", function()
+	local _, c = SlashClient()
+	c.env.GENERAL = "Общая"
+	local fake = Chatty(c, { { "GENERAL", "COMBAT_LOG", SEARCH_TAB }, { "Торговля", "Чиллзон" } })
+	c:Slash("/chillzone", "window  чиллзон ")
+	T.eq(c.ns.char.chatWindow, "Чиллзон", "запомнено название вкладки")
+	T.eq(c:Saw("общий чат — во вкладке «Чиллзон»"), 1)
+	T.eq(c:Saw("Tab Settings, в разделе Addons отметьте Chillzone"), 1, "подсказка про фильтр вкладки")
+	Line(c, "строка во вкладку")
+	T.eq(#fake.lines, 1, "одна строка во вкладке")
+	T.eq(fake.lines[1][1], 2, "окно 2")
+	T.eq(fake.lines[1][2], 2, "вкладка 2")
+	T.ok(fake.lines[1][3]:find("строка во вкладку", 1, true), "текст строки")
+	T.ok(fake.lines[1][3]:find("|Haddon:Chillzone:chan:A|h", 1, true), "метка канала — ссылка")
+	T.eq(c:Saw("строка во вкладку"), 0, "в основное окно не дублируется")
+	local caller = fake.lines[1][4]
+	T.eq(caller.what, "Lua", "API вызвано из функции аддона, а не из pcall и не хвостом")
+	T.ok(caller.source:find("Chillzone/Chat.lua", 1, true), "вызывающий — Chillzone/Chat.lua: " .. caller.source)
+	-- Как показана (глобальная строка игры) и как хранится.
+	c:Slash("/chillzone", "window общая")
+	T.eq(c.ns.char.chatWindow, "Общая")
+	c:Slash("/chillzone", "window general")
+	T.eq(c.ns.char.chatWindow, "GENERAL")
+	Line(c, "в первую вкладку")
+	T.eq(fake.lines[2][1], 1)
+	T.eq(fake.lines[2][2], 1)
+	c:Slash("/chillzone", "window")
+	T.eq(c.ns.char.chatWindow, false, "пусто — основное окно")
+	Line(c, "снова в основном")
+	T.eq(c:Saw("снова в основном"), 1)
+	T.eq(#fake.lines, 2)
+	T.eq(#c.ns.db.errors, 0, table.concat(c.ns.db.errors, " | "))
+end)
+
+T.test("Chattynator: ошибка вывода — строка в основном окне", function()
+	local _, c = SlashClient()
+	local fake = Chatty(c, { { "GENERAL", "Чиллзон" } })
+	c:Slash("/chillzone", "window Чиллзон")
+	fake.fail = true
+	Line(c, "не принята вкладкой")
+	Line(c, "и эта тоже")
+	T.eq(#fake.lines, 0)
+	T.eq(c:Saw("не принята вкладкой"), 1, "строка в основном окне целиком")
+	T.eq(c:Saw("и эта тоже"), 1)
+	T.eq(c.ns.char.chatWindow, "Чиллзон", "выбор не сброшен")
+	fake.fail = false
+	Line(c, "снова во вкладке")
+	T.eq(#fake.lines, 1)
+	T.eq(c:Saw("снова во вкладке"), 0)
+	T.eq(#c.ns.db.errors, 0, table.concat(c.ns.db.errors, " | "))
+end)
+
+T.test("Chattynator: пропавшая вкладка — основное окно и одно уведомление", function()
+	local _, c = SlashClient()
+	local fake = Chatty(c, { { "GENERAL", "Чиллзон" } })
+	c:Slash("/chillzone", "window Чиллзон")
+	fake.windows = { { "GENERAL", "Переименована" } }
+	Line(c, "первая без вкладки")
+	Line(c, "вторая без вкладки")
+	T.eq(#fake.lines, 0, "в чужую вкладку на том же месте не пишем")
+	T.eq(c:Saw("первая без вкладки"), 1)
+	T.eq(c:Saw("вторая без вкладки"), 1)
+	T.eq(c:Saw("окна чата «Чиллзон» больше нет"), 1, "одно уведомление")
+	fake.windows = { { "GENERAL" }, { "чиллзон" } }
+	Line(c, "вкладка вернулась")
+	T.eq(#fake.lines, 1, "вкладка снова получает строки")
+	T.eq(fake.lines[1][1], 2)
+	fake.windows = { { "GENERAL" } }
+	Line(c, "снова пропала")
+	T.eq(c:Saw("окна чата «Чиллзон» больше нет"), 2, "новая пропажа — новое уведомление")
+	-- Chattynator выключили: та же вкладка ищется среди окон игры.
+	c.env.Chattynator = nil
+	local game = c:ChatWindow(3, "Чиллзон", { docked = true })
+	Line(c, "в окно игры")
+	T.eq(#game.lines, 1)
+	T.eq(#c.ns.db.errors, 0, table.concat(c.ns.db.errors, " | "))
+end)
+
+T.test("Chattynator: боевой журнал и вкладки с | не выбираются", function()
+	local _, c = SlashClient()
+	c.env.GENERAL = "Общая"
+	c.env.COMBAT_LOG = "Журнал боя"
+	local fake = Chatty(c, { { "GENERAL", "COMBAT_LOG", SEARCH_TAB, "Чиллзон" } })
+	for _, word in ipairs({ "COMBAT_LOG", "журнал боя" }) do
+		c:Slash("/chillzone", "window " .. word)
+		T.eq(c.ns.char.chatWindow, false, word)
+	end
+	T.eq(c:Saw("в боевой журнал общий чат не выводится"), 2)
+	c:Slash("/chillzone", "window " .. SEARCH_TAB)
+	T.eq(c.ns.char.chatWindow, false, "вкладка поиска не выбирается")
+	c:Slash("/chillzone", "window Нет такой")
+	T.eq(c.ns.char.chatWindow, false)
+	local miss
+	for _, l in ipairs(c.printed) do
+		if l:find("нет вкладки Chattynator «Нет такой»", 1, true) then miss = l end
+	end
+	T.ok(miss, "промах назван")
+	T.ok(miss:find("Его вкладки: «Общая», «Чиллзон».", 1, true), "список вкладок без журнала и поиска: " .. miss)
+	T.ok(miss:find("Tab Settings, раздел Addons", 1, true), "подсказка отметить Chillzone")
+	T.eq(c:Saw("|TInterface"), 0, "код текстуры в чат не попал")
+	-- Выбор, сохранённый раньше, указывает на журнал: строки в основном окне.
+	c.ns.char.chatWindow = "COMBAT_LOG"
+	Line(c, "не в журнал")
+	T.eq(#fake.lines, 0)
+	T.eq(c:Saw("не в журнал"), 1)
+	T.eq(#c.ns.db.errors, 0, table.concat(c.ns.db.errors, " | "))
+end)
+
+T.test("окно чата без Chattynator: только открытые окна игры, не боевой журнал", function()
+	local _, c = SlashClient()
+	local trade = c:ChatWindow(3, "Торговля", { shown = false })
+	local guild = c:ChatWindow(4, "Гильдия", { docked = true })
+	Line(c, "без выбора")
+	T.eq(c:Saw("без выбора"), 1, "по умолчанию — основное окно")
+	c:Slash("/chillzone", "window торговля")
+	T.eq(c.ns.char.chatWindow, false, "закрытое окно не выбирается")
+	T.eq(c:Saw("нет открытого окна чата «торговля»"), 1)
+	c:Slash("/chillzone", "window Боевой журнал")
+	T.eq(c.ns.char.chatWindow, false, "боевой журнал не выбирается")
+	T.eq(c:Saw("в боевой журнал общий чат не выводится"), 1)
+	c:Slash("/chillzone", "window гильдия")
+	T.eq(c.ns.char.chatWindow, "Гильдия", "пристыкованное окно выбирается")
+	T.eq(c:Saw("Tab Settings"), 0, "без Chattynator подсказки про его фильтр нет")
+	Line(c, "в гильдию")
+	T.eq(#guild.lines, 1)
+	T.eq(c:Saw("в гильдию"), 0)
+	c:Slash("/chillzone", "window общий")
+	T.eq(c.ns.char.chatWindow, false, "основное окно по названию — то же, что пусто")
+	-- Сохранённый выбор указывает на окно, которое закрыли, или на боевой журнал.
+	c.ns.char.chatWindow = "Торговля"
+	Line(c, "закрытое раз")
+	Line(c, "закрытое два")
+	T.eq(#trade.lines, 0, "в скрытое окно строки не идут")
+	T.eq(c:Saw("закрытое раз") + c:Saw("закрытое два"), 2)
+	T.eq(c:Saw("окна чата «Торговля» больше нет"), 1, "одно уведомление")
+	c.ns.char.chatWindow = "Боевой журнал"
+	Line(c, "мимо журнала")
+	T.eq(#c.env.ChatFrame2.lines, 0)
+	T.eq(c:Saw("мимо журнала"), 1)
+	-- Chattynator без нужных функций API или падающий — как будто его нет.
+	c.ns.char.chatWindow = "Гильдия"
+	c.env.Chattynator = { API = { GetWindowsAndTabs = function() return { { "Гильдия" } } end } }
+	Line(c, "снова в гильдию")
+	T.eq(#guild.lines, 2)
+	c.env.Chattynator = { API = { GetWindowsAndTabs = function() error("сломан") end, AddMessageToWindowAndTab = function() end } }
+	Line(c, "и ещё раз")
+	T.eq(#guild.lines, 3, "падающий Chattynator — тоже")
+	T.eq(#c.ns.db.errors, 0, table.concat(c.ns.db.errors, " | "))
+end)

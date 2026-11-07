@@ -408,6 +408,16 @@ local function Env(c)
 	env.UISpecialFrames = {}
 	env.RAID_CLASS_COLORS = {}
 	env.ERR_CHAT_PLAYER_NOT_FOUND_S = "No player named '%s' is currently playing."
+	-- Окна чата игры (Client:ChatWindow): c.windows[i] = { name, shown, combat, frame }.
+	c.windows = {}
+	env.GetChatWindowInfo = function(i)
+		local cw = c.windows[i]
+		if cw then return cw.name, 14, 1, 1, 1, 1, cw.shown, false, cw.frame.isDocked end
+	end
+	env.IsCombatLog = function(f)
+		for _, cw in pairs(c.windows) do if cw.frame == f then return cw.combat end end
+		return false
+	end
 	c.stubs = {}
 	for k in pairs(env) do c.stubs[k] = true end
 	return setmetatable(env, { __index = _G })
@@ -424,6 +434,8 @@ function World:Client(opts)
 		named = {}, hooks = {}, bindings = {},
 	}, Client)
 	c.env = Env(c)
+	c:ChatWindow(1, "Общий", { shown = true })
+	c:ChatWindow(2, "Боевой журнал", { docked = true, combat = true })
 	c.env.ChillzoneDB = opts.db
 	c.ns = {}
 	for _, f in ipairs(T.tocFiles()) do
@@ -453,6 +465,21 @@ end
 
 function Client:Guid()
 	return "Player-" .. self.first .. "-" .. self.surname
+end
+
+-- Окно чата игры ChatFrame<i> (1 — основное, DEFAULT_CHAT_FRAME) с названием name. opts:
+-- shown (показано), docked (пристыковано за другой вкладкой), combat (боевой журнал).
+-- Строки окна, кроме основного, — в frame.lines.
+function Client:ChatWindow(i, name, opts)
+	opts = opts or {}
+	local env = self.env
+	local f = i == 1 and env.DEFAULT_CHAT_FRAME or { lines = {}, AddMessage = function(w, text) w.lines[#w.lines + 1] = text end }
+	f.isDocked = opts.docked or nil
+	self.windows[i] = { name = name, shown = opts.shown or false, combat = opts.combat or false, frame = f }
+	env["ChatFrame" .. i] = f
+	self.stubs["ChatFrame" .. i] = true
+	env.NUM_CHAT_WINDOWS = math.max(env.NUM_CHAT_WINDOWS or 0, i)
+	return f
 end
 
 -- Вызвать пост-хуки, поставленные аддоном через hooksecurefunc(name, ...).
