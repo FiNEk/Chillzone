@@ -77,6 +77,7 @@ read_globals = {
 	"UnitFullName",
 	"UnitGUID",
 	"UnitLevel",
+	"IsCombatLog",
 
 	-- фреймы, шрифты и константы
 	"ChatFontNormal",
@@ -93,6 +94,9 @@ read_globals = {
 	-- библиотеки и их глобалы
 	"LibStub",
 	"HBD_PINS_WORLDMAP_SHOW_CONTINENT",
+
+	-- другие аддоны (только чтение, всё под pcall)
+	"Chattynator",
 }
 
 -- Тесты: LuaJIT (setfenv, bit, jit), игра в них симулируется (tests/wow.lua).

@@ -5,7 +5,7 @@
 -- любой гильдии. Из каналов прежних версий аддон выходит при входе.
 -- Строки хранятся в истории и уходят событием CHAT в окно Chillzone (ChatPane.lua); копия —
 -- в чат игры, с меткой канала-ссылкой: клик по ней открывает окно на этом канале.
--- Формат вывода и окно вывода — по образцу Olympus Channels.lua.
+-- Формат вывода и окно вывода, включая вкладки Chattynator, — по образцу Olympus Channels.lua.
 local ADDON, ns = ...
 
 local U = ns.Util
@@ -74,24 +74,179 @@ function Chat.VerifiedLevel(guild, sender)
 end
 
 ---------------------------------------------------------------------------
--- Вывод
+-- Вывод. Копии общего чата идут в окно, выбранное /chillzone window. Выбор — название
+-- окна; само окно ищется при каждой строке: закрытое или переименованное возвращает строки
+-- в основное окно с одним уведомлением. От окна нужен только AddMessage: его поле ввода,
+-- вкладки и стыковку не трогаем. По образцу Olympus Channels.lua (WindowAt, FindWindow,
+-- Frame).
 ---------------------------------------------------------------------------
-local function WindowByName(name)
-	if type(name) ~= "string" or name == "" then return nil end
+local function Key(name) return U.Fold(U.Trim(name)) end
+
+-- Окно чата игры i: фрейм, название, открыто ли (показано или пристыковано за другой
+-- вкладкой: такую игра считает не показанной) и боевой ли это журнал — он сам себя очищает,
+-- строка там пропала бы.
+local function WindowAt(i)
+	local f = rawget(_G, "ChatFrame" .. i)
+	if type(f) ~= "table" or type(f.AddMessage) ~= "function" then return nil end
 	local info = GetChatWindowInfo or FCF_GetChatWindowInfo
+	local name, shown
+	if type(info) == "function" then
+		local ok, n, _, _, _, _, _, s = pcall(info, i)
+		if ok then name, shown = n, s end
+	end
+	if type(name) ~= "string" or name == "" then name = type(f.name) == "string" and f.name ~= "" and f.name or nil end
+	local combat = false
+	if type(IsCombatLog) == "function" then
+		local ok, res = pcall(IsCombatLog, f)
+		combat = ok and res and true or false
+	end
+	return f, name, (shown or f.isDocked) and true or false, combat
+end
+
+-- Открытое окно игры с названием name (без учёта регистра и пробелов по краям): фрейм и
+-- название, как его пишет игра. Закрытые окна не в счёт, боевой журнал — nil и "combat".
+local function WindowByName(name)
+	if type(name) ~= "string" then return nil end
+	local want = Key(name)
+	if want == "" then return nil end
+	local combat = false
 	for i = 1, (tonumber(NUM_CHAT_WINDOWS) or 10) do
-		local f = _G["ChatFrame" .. i]
-		if type(f) == "table" and type(f.AddMessage) == "function" and type(info) == "function" then
-			local ok, n = pcall(info, i)
-			if ok and type(n) == "string" and U.Fold(n) == U.Fold(name) then return f end
+		local f, wname, open, isCombat = WindowAt(i)
+		if f and open and wname and Key(wname) == want then
+			if not isCombat then return f, wname end
+			combat = true
 		end
+	end
+	if combat then return nil, nil, "combat" end
+	return nil
+end
+
+---------------------------------------------------------------------------
+-- Вкладки Chattynator. Chattynator прячет окна чата игры в свой скрытый фрейм и рисует
+-- на их месте свои окна и вкладки: строка в окно игры там не видна, кроме основного — его
+-- AddMessage Chattynator перехватывает. Пока отвечает его публичный API (Chattynator.API:
+-- GetWindowsAndTabs — названия вкладок по окнам, AddMessageToWindowAndTab — строка во
+-- вкладку), окна для /chillzone window — его вкладки, по названию, а скрытые окна игры не в
+-- счёт. Вкладки не создаём, не переименовываем и не настраиваем. Вкладка показывает строки
+-- аддона, только если её фильтр его пропускает (Tab Settings, раздел Addons); прочитать
+-- фильтр нельзя, поэтому основное окно подсказывает, где отметить Chillzone.
+-- Портировано из Olympus Channels.lua (ChattyTabs, FindChatty, Deliver, ChattyTarget).
+---------------------------------------------------------------------------
+
+-- Так Chattynator называет свою вкладку боевого журнала: строкам там не место, как и в
+-- боевом журнале игры.
+local CHATTY_COMBAT = "COMBAT_LOG"
+
+-- Название вкладки, как её показывает Chattynator: если хранимое название — глобальная
+-- строка игры, показывается она (первая вкладка, «GENERAL», видна как «General»).
+local function ChattyLabel(raw)
+	local shown = rawget(_G, raw)
+	if type(shown) == "string" and U.Trim(shown) ~= "" then return shown end
+	return raw
+end
+
+-- Вкладки Chattynator по порядку: { window, tab, raw (как хранится), name (как показана),
+-- combat }; nil, если Chattynator не отвечает (не загружен, в API нет нужных функций или он
+-- падает) — тогда окна берутся из игры. Всё под pcall: сломанный Chattynator просто «нет».
+-- Названия с «|» не берём: так устроена временная вкладка поиска Chattynator (название —
+-- код текстуры), она показывает только найденное.
+local function ChattyTabs()
+	local ok, list = pcall(function()
+		local api = type(Chattynator) == "table" and Chattynator.API or nil
+		if type(api) ~= "table" or type(api.GetWindowsAndTabs) ~= "function" or type(api.AddMessageToWindowAndTab) ~= "function" then
+			return nil
+		end
+		local windows = api.GetWindowsAndTabs()
+		if type(windows) ~= "table" then return nil end
+		local out = {}
+		for wi, tabs in ipairs(windows) do
+			if type(tabs) == "table" then
+				for ti, raw in ipairs(tabs) do
+					if type(raw) == "string" and U.Trim(raw) ~= "" and not raw:find("|", 1, true) then
+						out[#out + 1] = { window = wi, tab = ti, raw = raw, name = ChattyLabel(raw), combat = raw == CHATTY_COMBAT }
+					end
+				end
+			end
+		end
+		return out
+	end)
+	if ok and type(list) == "table" then return list end
+	return nil
+end
+
+-- Вкладка с названием want (уже Key) — как показана или как хранится: вкладка и это название.
+local function FindChatty(want, tabs)
+	for _, t in ipairs(tabs) do
+		if Key(t.name) == want then return t, t.name end
+		if Key(t.raw) == want then return t, t.raw end
 	end
 	return nil
 end
 
+-- «General», «Чиллзон», ... — вкладки для строки в чате, без боевого журнала.
+local function ChattyNames(tabs)
+	local names = {}
+	for _, t in ipairs(tabs) do
+		if not t.combat then names[#names + 1] = "«" .. Codec.Plain(t.name) .. "»" end
+	end
+	return #names > 0 and table.concat(names, ", ") or "—"
+end
+
+-- Строка во вкладку ti окна wi. Chattynator определяет аддон строки по тому, кто вызвал
+-- AddMessageToWindowAndTab (debugstack), и фильтр вкладки пропускает строку по этому имени.
+-- Вызывающий должен быть этой функцией файла Chillzone/Chat.lua, причём не последним
+-- словом: при pcall(api.AddMessageToWindowAndTab, ...) вызывающим стал бы pcall, а хвостовой
+-- вызов (return api.AddMessageToWindowAndTab(...)) убрал бы этот кадр — в обоих случаях
+-- аддона у строки нет, и вкладка с отмеченным Chillzone её не покажет.
+local function Deliver(wi, ti, text, r, g, b)
+	local api = Chattynator.API
+	api.AddMessageToWindowAndTab(wi, ti, text, r, g, b)
+	return true
+end
+
+-- Вкладка Chattynator как окно вывода: свой AddMessage. Строку, которую Chattynator не принял
+-- (сломан или ещё не готов), получает основное окно целиком: ничего не теряется, ошибки нет.
+local chattyFailed = false
+local function ChattyTarget(t)
+	local wi, ti = t.window, t.tab
+	return { chatty = true, AddMessage = function(_, text, r, g, b)
+		local ok, err = pcall(Deliver, wi, ti, text, r or 1, g or 1, b or 1)
+		if ok then return end
+		if not chattyFailed then
+			chattyFailed = true
+			ns.Log("Chattynator не принял строку: %s", tostring(err))
+		end
+		if DEFAULT_CHAT_FRAME then DEFAULT_CHAT_FRAME:AddMessage(text, r, g, b) end
+	end }
+end
+
+-- Окно с названием name: фрейм (у вкладки Chattynator — ChattyTarget) и название, как его
+-- показывают; nil и "combat" — боевой журнал. Пока Chattynator отвечает — только его вкладки.
+local function FindWindow(name)
+	local tabs = ChattyTabs()
+	if not tabs then return WindowByName(name) end
+	if type(name) ~= "string" then return nil end
+	local t, as = FindChatty(Key(name), tabs)
+	if not t then return nil end
+	if t.combat then return nil, nil, "combat" end
+	return ChattyTarget(t), as
+end
+
+local gone = {} -- [Key(название)] = true: уже сказали, что выбранного окна нет
+
 function Chat.Frame()
 	local name = ns.char and ns.char.chatWindow
-	return (name and WindowByName(name)) or DEFAULT_CHAT_FRAME
+	if type(name) ~= "string" or U.Trim(name) == "" then return DEFAULT_CHAT_FRAME end
+	local f = FindWindow(name)
+	if f then
+		gone[Key(name)] = nil
+		return f
+	end
+	if not gone[Key(name)] then
+		gone[Key(name)] = true
+		ns.Print(L.CHAT_WINDOW_GONE, Codec.Plain(name))
+	end
+	return DEFAULT_CHAT_FRAME
 end
 
 -- Метка канала в чате игры: ссылка addon:Chillzone:chan:<tier>, цветом канала.
@@ -498,19 +653,34 @@ ns.Command("chat", function(arg)
 	ns.Print(ns.char.chatOn and L.CHAT_ON or L.CHAT_OFF)
 end, L.HELP_CHAT_TOGGLE)
 
+-- /chillzone window <название>: окно для копий общего чата; пусто — основное. С Chattynator —
+-- его вкладка по названию (как показана или как хранится); промах называет его вкладки.
 ns.Command("window", function(arg)
 	arg = U.Trim(arg)
-	if arg == "" then
+	local f, name, why
+	if arg ~= "" then
+		f, name, why = FindWindow(arg)
+		if not f then
+			local tabs = ChattyTabs()
+			if why == "combat" then
+				ns.Print(L.CHAT_WINDOW_COMBAT)
+			elseif tabs then
+				ns.Print(L.CHAT_WINDOW_CHATTY_MISSING, Codec.Plain(arg), ChattyNames(tabs))
+			else
+				ns.Print(L.CHAT_WINDOW_MISSING, Codec.Plain(arg))
+			end
+			return
+		end
+	end
+	wipe(gone)
+	if not f or f == DEFAULT_CHAT_FRAME then -- основное окно: запоминать нечего
 		ns.char.chatWindow = false
 		ns.Print(L.CHAT_WINDOW_MAIN)
 		return
 	end
-	if not WindowByName(arg) then
-		ns.Print(L.CHAT_WINDOW_MISSING, arg)
-		return
-	end
-	ns.char.chatWindow = arg
-	ns.Print(L.CHAT_WINDOW_SET, arg)
+	ns.char.chatWindow = name
+	ns.Print(L.CHAT_WINDOW_SET, Codec.Plain(name))
+	if f.chatty then ns.Print(L.CHAT_WINDOW_CHATTY_FILTER, Codec.Plain(name)) end
 end, L.HELP_WINDOW)
 
 ns.Command("ignore", function(arg)
