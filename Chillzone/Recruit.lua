@@ -56,12 +56,19 @@ function Recruit.Route()
 	return r and ns.Now() - r.t <= Recruit.ROUTE_KEEP and r or nil
 end
 
+local function HasSpace(guild)
+	local route = Recruit.Route()
+	local hint = route and route.byName[U.GuildKey(guild)]
+	return not hint or hint.free ~= 0
+end
+
 -- Глава и офицеры гильдии в игре: их назвала подсказка J2, а /who нашёл в этой гильдии.
 -- Кто отключил обращения, сюда не попадает.
 function Recruit.Officers(guild)
 	local out, seen = {}, {}
 	local route = Recruit.Route()
 	local hint = route and route.byName[U.GuildKey(guild)]
+	if hint and hint.free == 0 then return out end
 	for _, name in ipairs(hint and hint.contacts or {}) do
 		local p = Found(name, guild)
 		local key = p and U.Key(p.name)
@@ -73,14 +80,23 @@ end
 function Recruit.Guilds()
 	local out, by, route = {}, {}, Recruit.Route()
 	if not ns.Who.Fresh() then return out end
-	for _, p in ipairs(Recruit.found) do
-		local key = U.GuildKey(p.guild)
+	local function Add(name)
+		local key = U.GuildKey(name)
+		local hint = route and route.byName[key]
+		if hint and hint.free == 0 then return nil end
 		if not by[key] then
-			local hint = route and route.byName[key]
-			local g = { name = p.guild, members = {}, free = hint and hint.free }
+			local g = { name = name, members = {}, free = hint and hint.free }
 			by[key], out[#out + 1] = g, g
 		end
-		by[key].members[#by[key].members + 1] = p
+		return by[key]
+	end
+	for _, p in ipairs(Recruit.found) do
+		local g = Add(p.guild)
+		if g then g.members[#g.members + 1] = p end
+	end
+	-- Подсказка уже знает гильдию: искать её рядовых перед проверкой офицера не нужно.
+	for _, hint in pairs(route and route.byName or {}) do
+		if hint.name then Add(hint.name) end
 	end
 	for _, g in ipairs(out) do g.officers = Recruit.Officers(g.name) end
 	table.sort(out, function(a, b)
@@ -109,8 +125,8 @@ function Recruit.NextContact(guild)
 	return nil
 end
 
--- Офицер, которого назвала подсказка J2, но не нашёл поиск по гильдии: /who отдаёт 50 строк,
--- а в большой гильдии в игре сотни. Его проверяет отдельный запрос по имени, по одному
+-- Офицер из J2, которого ещё не нашёл /who, даже если в выдаче не было всей его гильдии.
+-- Заполненные гильдии исключены в Guilds. Отдельный запрос по имени — по одному
 -- на щелчок; одно имя проверяем не чаще раза за раунд поиска.
 function Recruit.Unverified()
 	local route = Recruit.Route()
@@ -154,7 +170,7 @@ function Recruit.OnRoute(msg, sender, dist, ctx)
 			for name in names:gmatch("[^/]+") do
 				if #contacts < 2 and #name <= 120 then contacts[#contacts + 1] = name end
 			end
-			r.byName[U.GuildKey(guild)], n = { free = free, contacts = contacts }, n + 1
+			r.byName[U.GuildKey(guild)], n = { name = guild, free = free, contacts = contacts }, n + 1
 		end
 	end
 	-- Ответы разных участников складываются: каждый точно знает офицеров только своей гильдии.
@@ -176,6 +192,10 @@ function Recruit.OnRoute(msg, sender, dist, ctx)
 	if dnc[key] and Recruit.pending and U.Key(Recruit.pending.name) == key then
 		Recruit.Cancel()
 		ns.Print(L.RECRUIT_DNC, U.Display(sender))
+	elseif Recruit.pending and not HasSpace(Recruit.pending.guild) then
+		local guild = Recruit.pending.guild
+		Recruit.Cancel()
+		ns.Print(L.RECRUIT_FULL, guild)
 	end
 	Changed()
 	return true
@@ -247,7 +267,8 @@ function Recruit.Message(contact)
 end
 
 function Recruit.Prompt(contact)
-	if ns.IsMember() or not contact or not Found(contact.name, contact.guild) or dnc[U.Key(contact.name)] then return false end
+	if ns.IsMember() or not contact or not HasSpace(contact.guild)
+		or not Found(contact.name, contact.guild) or dnc[U.Key(contact.name)] then return false end
 	Recruit.pending = contact
 	AskRoute(contact.name, true)
 	ns.RecruitPane.ShowDialog(contact, Recruit.Message(contact))
@@ -255,7 +276,7 @@ function Recruit.Prompt(contact)
 end
 
 function Recruit.Ask(contact, message)
-	if ns.IsMember() or not contact or not Found(contact.name, contact.guild) then return false end
+	if ns.IsMember() or not contact or not HasSpace(contact.guild) or not Found(contact.name, contact.guild) then return false end
 	local key, now = U.Key(contact.name), ns.Now()
 	if dnc[key] or Recruit.asked[key] then return false end
 	if now - lastAsk < Recruit.ASK_COOLDOWN then ns.Print(L.RECRUIT_WAIT); return false end
@@ -267,14 +288,14 @@ function Recruit.Ask(contact, message)
 	-- Очередь метаданных проверяем до обычного шёпота: полный буфер не создаёт дублей текста.
 	local ok = ns.Comm.Send("WHISPER", ("J3~%s~%d~%s"):format(Field(contact.guild), UnitLevel("player") or 0, Field(class)), {
 		target = contact.name, prio = true,
-		guard = function() return not ns.IsMember() and not dnc[key] and Found(contact.name, contact.guild) ~= nil end,
+		guard = function() return not ns.IsMember() and not dnc[key] and HasSpace(contact.guild) and Found(contact.name, contact.guild) ~= nil end,
 	})
 	if not ok then return false end
 	-- J3 остаётся прежним для совместимости. JT содержит именно текст просьбы:
 	-- его можно передать офицерам, не читая обычную личную переписку новичка.
 	ns.Comm.Send("WHISPER", ("JT~1~%s~%d~%s~%s"):format(Field(contact.guild), UnitLevel("player") or 0, Field(class), message), {
 		target = contact.name, prio = true, logged = true,
-		guard = function() return not ns.IsMember() and not dnc[key] and Found(contact.name, contact.guild) ~= nil end,
+		guard = function() return not ns.IsMember() and not dnc[key] and HasSpace(contact.guild) and Found(contact.name, contact.guild) ~= nil end,
 	})
 	SendChatMessage(message, "WHISPER", nil, U.TellName(contact.name))
 	lastAsk, Recruit.asked[key] = now, now

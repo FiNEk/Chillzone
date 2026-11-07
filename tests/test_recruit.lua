@@ -128,7 +128,7 @@ T.test("заявки: поиск показывает офицеров, рядо
 	Errors(c)
 end)
 
-T.test("заявки: заполненная гильдия тоже называет офицеров", function()
+T.test("заявки: заполненная гильдия исключается из выбора и проверки офицеров", function()
 	local w, c = Build()
 	c.R:Slash("/chillzone")
 	-- У участников «Чиллзон Север» гильдия заполнена: мест 0.
@@ -141,14 +141,70 @@ T.test("заявки: заполненная гильдия тоже назыв�
 	T.ok(caps[c.O] and caps[c.M], "у участников есть свой отчёт")
 	Search(w, c)
 	for m, cap in pairs(caps) do m.ns.Codec.GUILD_CAP = cap end
+	local R = c.R.ns.Recruit
+	T.eq(#R.Officers("Чиллзон Север"), 0)
+	for _, g in ipairs(R.Guilds()) do T.no(g.name == "Чиллзон Север", "заполненной гильдии нет в выборе") end
+	T.no(R.NextContact("Чиллзон Север"))
+	T.no(R.Unverified(), "офицеров заполненной гильдии не проверяем")
+	R.route = nil
+	T.eq(#R.Guilds(), 2, "неизвестное число мест не означает заполненную гильдию")
+	Errors(c)
+end)
+
+T.test("заявки: подсказка находит офицера гильдии за пределами 50 строк", function()
+	local w, c = Build()
+	c.R:Slash("/chillzone")
+	c.K.ns.Recruit.RouteAnswer = function()
+		return "J2~y~~0~Чиллзон=0=;Чиллзон Север=10=" .. c.O:Name()
+	end
+	c.R.whoRows = function(query, rows)
+		if not query:find("g-", 1, true) then return rows end
+		local out = { { fullName = c.K:Name(), fullGuildName = "Чиллзон", level = 30, filename = "MAGE" } }
+		for i = 2, 50 do
+			out[i] = { fullName = "Игрок Основной" .. i, fullGuildName = "Чиллзон", level = 30, filename = "MAGE" }
+		end
+		return out
+	end
+	Search(w, c)
 	local R, U = c.R.ns.Recruit, c.R.ns.Util
-	local officers = R.Officers("Чиллзон Север")
-	T.eq(#officers, 1)
-	T.eq(U.Key(officers[1].name), U.Key(c.O:Name()))
-	local north
-	for _, g in ipairs(R.Guilds()) do if g.name == "Чиллзон Север" then north = g end end
-	T.eq(north.free, 0, "мест нет, но офицеры видны")
-	T.ok(R.NextContact("Чиллзон Север"))
+	local guilds = R.Guilds()
+	T.eq(#guilds, 1)
+	T.eq(guilds[1].name, "Чиллзон Север", "гильдия из подсказки видна без участников в выдаче")
+	T.eq(#guilds[1].members, 0)
+	T.eq(guilds[1].free, 10)
+	T.no(R.NextContact(), "одной подсказки для отправки недостаточно")
+	T.eq(U.Key(R.Unverified()), U.Key(c.O:Name()))
+	T.eq(c.R.ns.RecruitPane.guildRows[1].title:GetText(), "Чиллзон Север")
+	w:Run(6)
+	T.ok(R.Search())
+	T.eq(c.R.whoQueries[2], '"' .. c.O:Name() .. '"', "сразу офицер, без поиска рядовых и диапазонов")
+	w:Run(1)
+	local contact = R.NextContact()
+	T.ok(contact)
+	T.eq(U.Key(contact.name), U.Key(c.O:Name()))
+	T.ok(R.Ask(contact, "Хочу вступить в Север."))
+	w:Run(5)
+	T.eq(#c.O.ns.Recruit.requests, 1)
+	Errors(c)
+end)
+
+T.test("заявки: заполнение гильдии закрывает письмо и блокирует старый контакт", function()
+	local w, c = Build()
+	Search(w, c)
+	local R = c.R.ns.Recruit
+	local contact = R.NextContact("Чиллзон Север")
+	-- Предыдущая подсказка уже получена; адресат снова отвечает после своей минутной паузы.
+	w:Run(61)
+	c.O.ns.Recruit.RouteAnswer = function() return "J2~y~~0~Чиллзон Север=0=" .. c.O:Name() end
+	T.ok(R.Prompt(contact))
+	w:Run(5)
+	T.no(R.pending)
+	T.no(c.R.ns.RecruitPane.frames.dialog:IsShown())
+	T.no(R.Prompt(contact))
+	T.no(R.Ask(contact, "Не отправлять в заполненную гильдию."))
+	T.eq(#c.O.ns.Recruit.requests, 0)
+	T.ok(R.OnRoute("J2~y~~0~Чиллзон Север=10=" .. c.O:Name(), c.O:Name(), "WHISPER"))
+	T.ok(R.NextContact("Чиллзон Север"), "появились места — гильдия снова доступна")
 	Errors(c)
 end)
 
