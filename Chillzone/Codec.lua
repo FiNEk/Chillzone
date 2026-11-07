@@ -10,8 +10,9 @@
 --   officers "имя:онлайн:дней:класс:уровень:ранг,..."
 --   st       серверное время отчёта, base36
 -- Кусок:  C<id>:<i>:<n>:<piece>                (аддон-сообщение не длиннее 255 байт)
--- Привет: H1~<версия>~<флаги>                  (z — делится зонами, r — ретранслятор)
+-- Привет: H1~<версия>~<флаги>[~<fp>|~0]        (z — зоны, r — реле, fp — сертификат; 0 — без него)
 -- Запрос: Q1~
+-- Ответ:  Q2~<id>~B|E                        (необязательное начало/окончание ответа, id 1-999999)
 -- Чат:    M1~tier~guild~id~class~text          (tier A|C|L, id 0-9999, class — 2 буквы)
 -- Реле:   RP~fp · RY~Имя1,Имя2 · RR~guild~fp · RU~guild~преемник · RL~mode~inner
 --         RM~mode~origin~inner · RG~mode~origin~inner     (fp — отпечаток сертификата)
@@ -277,15 +278,19 @@ end
 ---------------------------------------------------------------------------
 -- Привет и запрос
 ---------------------------------------------------------------------------
-function Codec.EncodeHello(version, sharesZones, isRelay)
-	return ("H1~%s~%s%s"):format(clean(version), sharesZones and "z" or "", isRelay and "r" or "")
+function Codec.EncodeHello(version, sharesZones, isRelay, fp)
+	local hello = ("H1~%s~%s%s"):format(clean(version), sharesZones and "z" or "", isRelay and "r" or "")
+	if type(fp) == "string" and #fp == 16 and fp:match("^[%w_-]+$") then return hello .. "~" .. fp end
+	return hello .. "~0"
 end
 
 function Codec.DecodeHello(s)
 	if type(s) ~= "string" then return nil end
-	local version, flags = s:match("^H1~([^~]*)~?([%a]*)")
-	if not version then return nil end
-	return { version = version:sub(1, 16), zones = flags:find("z", 1, true) ~= nil, relay = flags:find("r", 1, true) ~= nil }
+	local version, flags, fp = s:match("^H1~([^~]*)~([^~]*)~([^~]*)")
+	if not version then version, flags = s:match("^H1~([^~]*)~?([^~]*)") end
+	if not version or (fp and fp ~= "0" and (#fp ~= 16 or not fp:match("^[%w_-]+$"))) then return nil end
+	return { version = version:sub(1, 16), zones = flags:find("z", 1, true) ~= nil,
+		relay = flags:find("r", 1, true) ~= nil, fp = fp ~= "0" and fp or nil, legacy = fp == nil }
 end
 
 ---------------------------------------------------------------------------
@@ -605,3 +610,4 @@ function Codec.DedupeKey(originKey, inner)
 	-- Хеш до 2^32 - 1 не помещается в знаковый %d клиента игры.
 	return ("%s|%d|%.0f"):format(originKey or "?", #inner, ns.Util.Hash(inner))
 end
+

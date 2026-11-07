@@ -25,6 +25,7 @@ local policySigning = {}
 local policySent = {}
 local lastNativeHello = -1e9
 local MAX_CERT, MAX_WIRE, MAX_PENDING, FP_LEN = 1800, 7000, 32, 16
+local MAX_ROOT_PENDING, MAX_ROOT_PER_PEER, MAX_CANDIDATES = 8, 4, 2
 
 local function Store()
     return ns.store and ns.store.security
@@ -173,27 +174,97 @@ end
 -- Сертификата с этим отпечатком нет: подождать и, если он ещё не проверяется, попросить
 -- его у того, кто прислал пакет (KQ). Тот только что сам проверял пакет — сертификат у него есть.
 -- Пакет пришёл по GUILD — и просьба по GUILD: так всей гильдии хватает одного ответа.
-local function Await(fp, sender, fn, viaGuild)
+local function AskCertificate(fp, sender, viaGuild)
+    if not sender or inflight[fp] or ns.IsMe(sender) then return end
+    local key, now = (viaGuild and "GUILD" or Peer(sender)) .. "|" .. fp, ns.Now()
+    if asked[key] and now - asked[key] < 10 then return end
+    asked[key] = now
+    if viaGuild then
+        ns.Comm.Send("GUILD", "KQ~" .. fp, { prio = true, key = "kq:" .. key })
+    else
+        ns.Comm.Send("WHISPER", "KQ~" .. fp, { target = sender, prio = true, key = "kq:" .. key })
+    end
+end
+local function Await(fp, sender, fn, viaGuild, guild)
+    local now, peer = ns.Now(), Peer(sender)
+    local total, extended, fromPeer = 0, 0, 0
+    -- Освобождаем истёкшие места сразу: общий GC может быть ещё через минуту.
+    for key, entry in pairs(waiting) do
+        if now > entry.untilAt then waiting[key] = nil
+        else
+            total = total + 1
+            if entry.extendedBy then
+                extended = extended + 1
+                if entry.extendedBy == peer then fromPeer = fromPeer + 1 end
+            end
+        end
+    end
     local list = waiting[fp]
     if not list then
-        local total = 0; for _ in pairs(waiting) do total = total + 1 end
         if total >= MAX_PENDING then S.stats.limited = S.stats.limited + 1; return false end
-        list = { at = ns.Now() }
+        list = { at = now, untilAt = now + 30, guilds = {}, roots = {}, candidates = {} }
         waiting[fp] = list
     end
     if #list >= 8 then return false end
     list[#list + 1] = fn
-    local key, now = (viaGuild and "GUILD" or Peer(sender)) .. "|" .. fp, ns.Now()
-    if sender and not inflight[fp] and not ns.IsMe(sender) and (not asked[key] or now - asked[key] >= 10) then
-        asked[key] = now
-        if viaGuild then
-            ns.Comm.Send("GUILD", "KQ~" .. fp, { prio = true, key = "kq:" .. key })
-        else
-            ns.Comm.Send("WHISPER", "KQ~" .. fp, { target = sender, prio = true, key = "kq:" .. key })
+    if not list.sender or (viaGuild and not list.viaGuild) then
+        list.sender, list.viaGuild = sender, viaGuild
+    end
+    if guild then
+        list.guilds[U.GuildKey(guild)] = true -- не более восьми принятых ожиданий
+        if not Root(guild) and not list.extendedBy and extended < MAX_ROOT_PENDING and fromPeer < MAX_ROOT_PER_PEER then
+            -- Недоказанная гильдия не должна занимать все места управления реле на две минуты.
+            list.extendedBy, list.untilAt = peer, list.at + C.CHAT_DEDUPE
         end
     end
+    AskCertificate(fp, sender, viaGuild)
     return true
 end
+-- Кандидаты проверяются по очереди: неверный KP не вытесняет уже сохранённый и не
+-- заслоняет следующий до отложенного KQ. Никакого доверия до обычной проверки подписи.
+local function CheckWaiting(fp, list)
+    if waiting[fp] ~= list or ns.Now() > list.untilAt then return false end
+    if inflight[fp] then return true end
+    for _, candidate in ipairs(list.candidates) do
+        local root = Root(candidate.guild)
+        if root and candidate.tried ~= root.public then
+            candidate.tried = root.public
+            local from = candidate.from
+            if S.CheckCertificate(candidate.raw, nil, function(c)
+                if c.key == U.Key(from) then ns.Fire("AUTH_PEER", c, from) end
+            end, from) then return true end
+        end
+    end
+    return false
+end
+-- Если первый KP пришёл раньше корня KT, его проверка не начнётся. Повторяем KQ
+-- для уже ожидающих пакетов после получения корня, пока запрос ещё актуален.
+ns.On("AUTH_ROOT", function(guild)
+    local root = Root(guild)
+    if not root then return end
+    local now, gk = ns.Now(), U.GuildKey(guild)
+    for fp, list in pairs(waiting) do
+        local related = list.guilds[gk]
+        for _, candidate in ipairs(list.candidates) do
+            if U.GuildKey(candidate.guild) == gk then related = true end
+        end
+        if related and now <= list.untilAt and not byFp[fp] and list.roots[gk] ~= root.public then
+            list.roots[gk] = root.public
+            if not CheckWaiting(fp, list) then AskCertificate(fp, list.sender, list.viaGuild) end
+            -- Ответ на первый KQ могли подавить на 30 секунд; неподтверждённый KP
+            -- также может оказаться неверным. Повторяем только при живом ожидании.
+            if not list.retryScheduled then
+                list.retryScheduled = true
+                ns.After(31, "certificate after root", function()
+                    list.retryScheduled = false
+                    if waiting[fp] == list and ns.Now() <= list.untilAt and not byFp[fp] then
+                        AskCertificate(fp, list.sender, list.viaGuild)
+                    end
+                end)
+            end
+        end
+    end
+end)
 local function Keep(c)
     if not c.approvedRoot or not Current(c) then return end
     Wake(c)
@@ -229,7 +300,14 @@ function S.CheckCertificate(raw, owner, done, from)
     local accepted = Job(function() return VerifyCertificate(raw) end, function(valid)
         local callbacks = checking[raw] or {}
         checking[raw], inflight[c.fp] = nil, nil
-        if not valid or not Current(valid) then S.stats.rejected = S.stats.rejected + 1; return end
+        if not valid or not Current(valid) then
+            S.stats.rejected = S.stats.rejected + 1
+            local list = waiting[c.fp]
+            if list and ns.Now() <= list.untilAt and not CheckWaiting(c.fp, list) then
+                AskCertificate(c.fp, list.sender, list.viaGuild)
+            end
+            return
+        end
         Keep(valid)
         for _, fn in ipairs(callbacks) do fn(valid) end
     end)
@@ -666,6 +744,7 @@ ns.Comm.On("K1", function(msg, sender, dist)
     if not raw or #raw ~= 32 then return end
     local k = U.Key(sender)
     keys[k] = { name = sender, public = public }
+    ns.Fire("AUTH_ADVERTISEMENT", sender, public, flag == "~0")
     -- У участника нет сертификата, а у меня, активного издателя, он есть: первый KP до него
     -- не дошёл (лимит, ещё не было корня). Issue свежий сертификат заново не выдаёт.
     if flag == "~0" and Authority() and (not resent[k] or ns.Now() - resent[k] >= 60) then
@@ -691,6 +770,17 @@ ns.Comm.On("KP", function(msg, sender, dist)
     local raw = msg:match("^KP~([%w_-]+)$")
     raw = raw and Ed.FromB64(raw)
     if not raw then return end
+    -- KP мог прийти до KT. Храним ограниченное число различных кандидатов:
+    -- подделка с тем же публичным отпечатком не заменяет первый настоящий KP.
+    local candidate = Certificate(raw)
+    local list = candidate and waiting[candidate.fp]
+    if list and ns.Now() <= list.untilAt and not Root(candidate.guild) then
+        for _, saved in ipairs(list.candidates) do if saved.raw == raw then return end end
+        if #list.candidates < MAX_CANDIDATES then
+            list.candidates[#list.candidates + 1] = { raw = raw, from = sender, guild = candidate.guild }
+        end
+        return
+    end
     S.CheckCertificate(raw, nil, function(c)
         if c.key == U.Key(sender) then ns.Fire("AUTH_PEER", c, sender) end
     end, sender)
@@ -813,7 +903,7 @@ function S.Open(wire, sender, done, viaGuild)
     end
     local raw = byFp[fp]
     if raw then return Check(Certificate(raw)) end
-    return Await(fp, sender, Check, viaGuild)
+    return Await(fp, sender, Check, viaGuild, guild)
 end
 ns.Comm.On("S1", function(wire, sender, dist)
     if dist ~= "GUILD" or not NativeRole(sender) then return end
@@ -899,7 +989,7 @@ ns.On("LOGIN", function()
         for key, p in pairs(outgoing) do if clock > p.untilAt then outgoing[key] = nil end end
         for raw, c in pairs(certCache) do if c.expires <= now then certCache[raw] = nil end end
         for fp, raw in pairs(byFp) do if not certCache[raw] then byFp[fp] = nil end end
-        for fp, list in pairs(waiting) do if clock - list.at > 30 then waiting[fp] = nil end end
+        for fp, list in pairs(waiting) do if clock > list.untilAt then waiting[fp] = nil end end
         for key, b in pairs(limits) do if clock - b.t >= 60 then limits[key] = nil end end
         for key, t in pairs(asked) do if clock - t >= 60 then asked[key] = nil end end
         for key, t in pairs(served) do if clock - t >= 60 then served[key] = nil end end
@@ -908,6 +998,7 @@ ns.On("LOGIN", function()
     end)
 end)
 ns.On("GUILD_CHANGED", function()
+    wipe(waiting)
     keys, issuing, pending, outgoing, hints = {}, {}, {}, {}, {}
     lastHello, lastPolicy, lastSaid = -1e9, -1e9, nil
     S.Say()
@@ -936,3 +1027,4 @@ end, "доверие: /cz trust — корни; /cz trust init — задать 
 ns.Status(function()
     return ns.L.AUTH_STATUS:format(S.MyCertificate() and ns.L.YES or ns.L.NO, S.stats.verified, S.stats.rejected)
 end)
+

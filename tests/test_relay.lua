@@ -57,6 +57,7 @@ local function CensusReports(withVeteran)
 	-- Только расписание: подпись здесь завершается синхронно. Настоящие подписи
 	-- и проверка сертификатов покрываются сетевыми и adversarial-тестами.
 	c.ns.Security.Seal = function(raw, done) done(raw); return true end
+	c.ns.Security.MyCertificate = function() return { fp = "0123456789abcdef" } end
 	c.ns.Relay.Out = function(mode, raw)
 		T.eq(mode, "L", "режим переписи")
 		reports[#reports + 1] = raw
@@ -309,6 +310,188 @@ T.test("relay: уровень канала у отправителя — по с
 	T.eq(c.G:Saw("глава со свежей ролью"), 1, "со свежей ролью строка доходит")
 end)
 
+T.test("relay: офицер без сертификата не вытесняет работающего репортёра", function()
+	local w, c = Build()
+	local guild, boris = "Чиллзон Север", Key(c.B, "Борис Быстрый")
+	c.V:Logout()
+	w:Run(c.B.ns.Config.PEER_WINDOW + 40)
+	T.ok(c.B.ns.Security.MyCertificate(), "у Бориса действующий сертификат")
+	T.ok(c.B.ns.Census.IsReporter(), "после ухода Веры Борис — репортёр")
+
+	-- У Аллы сохранены корни доверия, но нет ни своего сертификата, ни сертификата Бориса.
+	-- Издатель вышел из игры: кэш сертификатов Аллы остаётся пустым.
+	local roots = {}
+	for key, root in pairs(c.A.ns.Security.Roots()) do roots[key] = root end
+	local saved = { realms = {} }
+	saved.realms[c.B.ns.group] = {}
+	saved.realms[c.B.ns.group][c.B.ns.faction] = {
+		security = { version = 1, roots = roots, certs = {}, policies = {} },
+	}
+	local Al = w:Client({ first = "Алла", surname = "Альфа", guild = guild, rank = 1, db = saved })
+	c.B.ns.Roster.Scan()
+	T.eq(Al.ns.Security.Member(guild, c.B:Name()), nil, "сертификата Бориса у Аллы сначала нет")
+	w:Run(15)
+	T.eq(Al.ns.Security.Member(guild, c.B:Name()), nil, "H1 не требует локального сертификата")
+	T.eq(Al.ns.Census.Reporter(), boris, "новый клиент сразу выбирает действующего репортёра")
+	T.ok(Al.ns.Census.MayForward(boris), "ранний RG от Бориса разрешён без его сертификата")
+	c.G:Slash("/cz1", "офицер без сертификата: первая строка")
+	w:Run(30)
+	T.eq(Al:Saw("офицер без сертификата: первая строка"), 1, "первая строка получена без сертификата Бориса")
+	w:Run(15)
+	local announced = c.B.ns.Census.Peers()[Key(c.B, Al:Name())]
+	T.ok(announced, "Борис получил H1 от Аллы")
+	T.no(announced.legacy, "H1 Аллы явно сообщает об отсутствии сертификата")
+	T.eq(Al.ns.Security.MyCertificate(), nil, "офицеру без издателя не выдали сертификат")
+	T.eq(c.B.ns.Census.Reporter(), boris, "Борис не уступил место офицеру без сертификата")
+	T.eq(Al.ns.Census.Reporter(), boris, "Алла также выбрала Бориса")
+
+	local function Line(value)
+		c.G:Slash("/cz1", value)
+		w:Run(30)
+		T.eq(c.B:Saw(value), 1, "Борис получил сообщение один раз")
+		T.eq(Al:Saw(value), 1, "Алла получила сообщение один раз")
+	end
+	w:Run(c.B.ns.Config.REPORTER_HANDOVER + 20)
+	T.ok(c.B.ns.Census.IsReporter(), "Борис остаётся репортёром после интервала передачи")
+	Line("офицер без сертификата: вторая строка")
+	T.eq(#c.B.ns.db.errors, 0, "Борис: без ошибок")
+	T.eq(#Al.ns.db.errors, 0, "Алла: без ошибок")
+end)
+
+T.test("relay: старый H1 выбирает действующего репортёра без локального сертификата", function()
+	local w, c = Build()
+	local guild, vera = "Чиллзон Север", Key(c.B, c.V:Name())
+	local roots = {}
+	for key, root in pairs(c.A.ns.Security.Roots()) do roots[key] = root end
+	local saved = { realms = {} }
+	saved.realms[c.B.ns.group] = {}
+	saved.realms[c.B.ns.group][c.B.ns.faction] = {
+		security = { version = 1, roots = roots, certs = {}, policies = {} },
+	}
+	local Al = w:Client({ first = "Алла", surname = "Альфа", guild = guild, rank = 3, db = saved })
+	c.V.ns.Roster.Scan()
+	w:Run(8)
+	T.eq(Al.ns.Security.Member(guild, c.V:Name()), nil, "сертификат Веры не хранится у Аллы")
+	w:Deliver(c.V, "GUILD", c.V.ns.PREFIX, "H1~0.4.1~")
+	w:Run(1)
+	local peer = Al.ns.Census.Peers()[vera]
+	T.ok(peer and peer.legacy and not peer.fp, "старый H1 не содержит отпечатка")
+	T.eq(Al.ns.Census.Reporter(), vera, "старая Вера выбрана без зависимости от кэша")
+	T.ok(Al.ns.Census.MayForward(vera), "RG от старого клиента разрешён")
+	c.G:Slash("/cz1", "совместимость со старым H1")
+	w:Run(30)
+	T.eq(Al:Saw("совместимость со старым H1"), 1, "первое сообщение дошло один раз")
+	T.eq(#Al.ns.db.errors, 0, "Алла: без ошибок")
+end)
+
+T.test("relay: старый офицер с K1 без сертификата не вытесняет репортёра", function()
+	local w, c = Build()
+	c.V:Logout()
+	w:Run(c.B.ns.Config.PEER_WINDOW + 40)
+	T.ok(c.B.ns.Census.IsReporter(), "Борис принял работу после ухода издателя")
+	-- Это обновление участника с сохранёнными корнями, но без своего сертификата.
+	-- У новой установки без корней нет доступного офицера, который подтвердит доверие.
+	local roots = {}
+	for key, root in pairs(c.A.ns.Security.Roots()) do roots[key] = root end
+	local saved = { realms = {} }
+	saved.realms[c.B.ns.group] = {}
+	saved.realms[c.B.ns.group][c.B.ns.faction] = {
+		security = { version = 1, roots = roots, certs = {}, policies = {} },
+	}
+	local Al = w:Client({ first = "Алла", surname = "Альфа", guild = "Чиллзон Север", rank = 1, db = saved })
+	Al.ns.Codec.EncodeHello = function(version) return "H1~" .. version .. "~" end
+	c.B.ns.Roster.Scan()
+	w:Run(c.B.ns.Config.REPORTER_HANDOVER + 30)
+	local alla, boris = Key(c.B, Al:Name()), c.B.ns.myKey
+	T.ok(c.B.ns.Census.Peers()[alla].legacy, "Алла посылает старый H1")
+	T.eq(Al.ns.Security.MyCertificate(), nil, "выдать сертификат некому")
+	T.eq(c.B.ns.Census.Reporter(), boris, "K1~0 не даёт старому офицеру вытеснить Бориса")
+	c.G:Slash("/cz1", "старый офицер не прерывает доставку")
+	w:Run(15)
+	T.eq(c.B:Saw("старый офицер не прерывает доставку"), 1)
+	T.eq(Al:Saw("старый офицер не прерывает доставку"), 1)
+	T.eq(#Al.ns.db.errors, 0)
+end)
+
+T.test("census: legacy K1 обновляется, истекает и очищается при смене гильдии", function()
+	local _, c = Build()
+	local b, v = c.B, c.V
+	local public = assert(v.ns.Security.MyCertificate()).public
+	local function Hello() b.ns.Comm.Dispatch("H1~0.4.1~", v:Name(), "GUILD") end
+	local function Advertise(key, missing, dist)
+		b.ns.Comm.Dispatch("K1~" .. key .. (missing and "~0" or ""), v:Name(), dist or "GUILD")
+	end
+	local function Chosen() return b.ns.Census.Reporter() end
+	Hello(); Advertise(public, true)
+	T.eq(Chosen(), b.ns.myKey, "свежий отрицательный K1 исключает старого офицера")
+	Advertise(public, false, "WHISPER")
+	T.eq(Chosen(), b.ns.myKey, "шёпот не меняет выборы")
+	Advertise(public, false)
+	T.eq(Chosen(), v.ns.myKey, "положительный K1 снимает отказ")
+	local replacement = b.ns.Ed25519.ToB64(string.rep("k", 32))
+	Advertise(replacement, true)
+	T.eq(Chosen(), b.ns.myKey, "новая identity не наследует готовность старой")
+	Advertise(replacement, false)
+	T.eq(Chosen(), v.ns.myKey, "новый ключ может объявить готовность без локального KP")
+	Advertise(replacement, true)
+	local now = b.ns.Now
+	b.ns.Now = function() return now() + b.ns.Config.PEER_WINDOW + 1 end
+	Hello()
+	T.eq(Chosen(), v.ns.myKey, "новый H1 не продлевает срок старого отрицательного K1")
+	b.ns.Now = now
+	Advertise(public, true)
+	b.ns.Fire("GUILD_CHANGED")
+	Hello()
+	T.eq(Chosen(), v.ns.myKey, "отказ не переживает сброс гильдии")
+	T.eq(#b.ns.db.errors, 0)
+end)
+
+T.test("relay: прежний действующий сертификат остаётся пригодным после продления", function()
+	local w, c = Build()
+	local guild, key = "Чиллзон Север", Key(c.B, "Борис Быстрый")
+	local roots = {}
+	for name, root in pairs(c.A.ns.Security.Roots()) do roots[name] = root end
+	local saved = { realms = {} }
+	saved.realms[c.B.ns.group] = {}
+	saved.realms[c.B.ns.group][c.B.ns.faction] = {
+		security = { version = 1, roots = roots, certs = {}, policies = {} },
+	}
+	local Ya = w:Client({ first = "Яна", surname = "Тихая", guild = guild, rank = 3, db = saved })
+	w:Run(90)
+	local old = assert(c.B.ns.Security.MyCertificate())
+	c.V:Logout() -- издатель не обновит сертификат Бориса во время проверки
+	-- H1 объявляет отпечаток, но больше не запрашивает сертификат ради выборов.
+	-- Получаем прежний сертификат от самого Бориса до проверки его продления.
+	c.B.ns.Security.Introduce(Ya:Name(), old.raw, true)
+	w:Run(10)
+	local first = Ya.ns.Security.Member(guild, c.B:Name())
+	T.ok(first and first.fp == old.fp, "Яна знает первоначальный сертификат Бориса")
+
+	-- Настоящий новый сертификат от Веры попал к Яне, но не к Борису.
+	local Ed = c.V.ns.Ed25519
+	local seed
+	for _, identity in pairs(c.V.ns.db.securityKeys) do seed = Ed.FromB64(identity.seed) end
+	T.ok(seed, "ключ Веры доступен в симуляторе")
+	local body, replaced = old.body:gsub(tostring(old.issued), tostring(old.issued + 1), 1)
+	T.eq(replaced, 1, "новый сертификат имеет другую дату выдачи")
+	local signature = Ed.ToB64(Ed.Sign(seed, body))
+	local raw = ("CERT:%d:%s%d:%s%d:%s"):format(#body, body, #signature, signature, #old.delegation, old.delegation)
+	local accepted = false
+	T.ok(Ya.ns.Security.CheckCertificate(raw, c.B:Name(), function() accepted = true end, c.V:Name()), "проверка началась")
+	w:Run(10)
+	local renewed = Ya.ns.Security.Member(guild, c.B:Name())
+	T.ok(accepted and renewed and renewed.fp ~= old.fp, "Яна проверила новый сертификат Бориса")
+	T.eq(c.B.ns.Security.MyCertificate().fp, old.fp, "Борис ещё работает со старым")
+	T.eq(Ya.ns.Census.Peers()[key].fp, old.fp, "Борис объявил старый отпечаток")
+	w:Run(c.B.ns.Config.PEER_WINDOW + 40)
+	T.ok(c.B.ns.Census.IsReporter(), "Борис стал репортёром со старым сертификатом")
+	T.eq(Ya.ns.Census.Reporter(), key, "Яна выбрала Бориса по действующему старому отпечатку")
+	c.G:Slash("/cz1", "старый сертификат остаётся действительным")
+	w:Run(30)
+	T.eq(Ya:Saw("старый сертификат остаётся действительным"), 1, "сообщение получено один раз")
+	T.eq(#Ya.ns.db.errors, 0, "Яна: без ошибок")
+end)
+
 T.test("relay: смена репортёра — чат гильдии не теряется, аренда переходит преемнику", function()
 	local w, c = Build()
 	local U = c.A.ns.Util
@@ -334,7 +517,6 @@ T.test("relay: смена репортёра — чат гильдии не те
 	end
 	w:Run(15); Line(1)
 	w:Run(15); Line(2)
-	T.eq(c.B.ns.Census.Reporter(), alla, "гильдия уже выбрала Аллу")
 	T.no(Al.ns.Census.IsReporter(), "Алла после входа ещё молчит")
 	-- Рядовой Севера пробует перехватить аренду, пока она передаётся: назвать себя
 	-- преемником (RU) и зарегистрироваться (RR).
@@ -346,6 +528,11 @@ T.test("relay: смена репортёра — чат гильдии не те
 	w:Run(5)
 	T.ok(Holders()[vera], "аренда всё ещё у Веры")
 	T.eq(Holders()[Key(c.A, "Борис Быстрый")], nil, "рядовой аренду не перехватил")
+	local deadline = w.now + 70
+	while not Al.ns.Security.MyCertificate() and w.now < deadline do w:Run(5) end
+	T.ok(Al.ns.Security.MyCertificate(), "Алле выдали сертификат")
+	w:Run(10)
+	T.eq(c.B.ns.Census.Reporter(), alla, "гильдия выбрала сертифицированную Аллу")
 	for i = 3, 10 do w:Run(15); Line(i) end
 	w:Run(30)
 	T.ok(Al.ns.Census.IsReporter(), "Алла — репортёр")
@@ -353,7 +540,9 @@ T.test("relay: смена репортёра — чат гильдии не те
 	T.ok(held[alla], "аренда перешла к Алле")
 	T.eq(held[vera], nil, "у Веры аренды больше нет")
 	for i, text in ipairs(lines) do
-		for _, cl in ipairs({ c.B, c.V, Al }) do T.eq(cl:Saw(text), 1, cl:Name() .. " видит строку " .. i .. " один раз") end
+		for _, cl in ipairs({ c.B, c.V, Al }) do
+			T.eq(cl:Saw(text), 1, cl:Name() .. " видит строку " .. i .. " один раз")
+		end
 	end
 	-- После передачи рядовой тоже не перехватывает аренду Аллы.
 	for _, r in ipairs(relays) do
@@ -660,6 +849,173 @@ T.test("relay: Q1 после /reload восполняет перепись", fun
 	T.ok(M2.ns.Data.Row("Чиллзон Север"), "Север пришёл по Q1")
 end)
 
+local function HandoverQ1(quiet, partial)
+	local w, c = Build()
+	-- Проверяем один явный Q1; стартовые запросы нового клиента не расходуют Q1_GAP.
+	local function QuietRequests(cl)
+		local send = cl.ns.Comm.Send
+		cl.ns.Comm.Send = function(dist, raw, opts)
+			if raw == "Q1~" then return end
+			return send(dist, raw, opts)
+		end
+	end
+	for _, cl in pairs(c) do QuietRequests(cl) end
+	local Al = w:Client({ first = "Алла", surname = "Альфа", guild = "Чиллзон Север", rank = 1 })
+	QuietRequests(Al)
+	c.B.ns.Roster.Scan(); c.V.ns.Roster.Scan()
+	w:Run(quiet and 40 or 80)
+	T.eq(c.V.ns.Census.Reporter(), Al.ns.myKey, "выбран новый репортёр")
+	T.ok(c.V.ns.Census.Handing(), "старый ещё передаёт работу")
+	T.eq(Al.ns.Census.IsReporter(), not quiet, "LOGIN_QUIET нового репортёра")
+	local cached = c.V.ns.Data.Cached()
+	T.ok(#cached >= 2, "старый хранит отчёты обеих других гильдий")
+	if partial then
+		-- У прежнего есть подписанный отчёт, который преемник ещё не видел.
+		-- Обычные RG регистрации уже стоят в очереди нового клиента и тоже помогают
+		-- вошедшему: их нельзя ошибочно считать отсутствующей частью кэша.
+		local raw
+		c.G.ns.Security.Seal(c.G.ns.Codec.EncodeReport(c.G.ns.Roster.report), function(wire) raw = wire end)
+		w:Run(3)
+		T.ok(raw, "отдельный подписанный отчёт готов")
+		local guildKey, other = c.V.ns.Util.GuildKey("Орден Чиллзона")
+		for _, row in ipairs(cached) do if row.key ~= guildKey then other = row; break end end
+		T.ok(other, "есть отчёт другой гильдии")
+		cached = { other, { key = guildKey, origin = c.G:Name(), raw = raw } }
+	end
+	-- Кэш фиксирован, а подписанные RG проходят настоящий транспорт и его дедупликацию.
+	c.V.ns.Data.Cached = function() return cached end
+	Al.ns.Data.Cached = function() return quiet and {} or partial and { cached[1] } or cached end
+	local sent = { old = {}, new = {} }
+	for name, cl in pairs({ old = c.V, new = Al }) do
+		local list, send = sent[name], cl.ns.Comm.Send
+		list.trust, list.kp = 0, 0
+		local trust, introduce = cl.ns.Security.ShareTrust, cl.ns.Security.IntroduceWire
+		cl.ns.Security.ShareTrust = function(...)
+			list.trust = list.trust + 1
+			return trust(...)
+		end
+		cl.ns.Security.IntroduceWire = function(...)
+			list.kp = list.kp + 1
+			return introduce(...)
+		end
+		cl.ns.Comm.Send = function(dist, raw, opts)
+			if dist == "GUILD" and opts and opts.key and opts.key:sub(1, 3) == "q1:" then
+				list.firstQueuedAt = list.firstQueuedAt or w.now
+				local done = opts.done
+				opts.done = function(ok, why)
+					if ok then list[#list + 1] = raw end
+					if done then done(ok, why) end
+				end
+			end
+			return send(dist, raw, opts)
+		end
+	end
+	local askedAt = w.now
+	w:Deliver(c.B, "GUILD", c.B.ns.PREFIX, "Q1~")
+	-- На обычной очереди с регистрациями и KP полный ответ занимает около 50с.
+	w:Run(70)
+	for _, cl in ipairs({ c.V, Al, c.B }) do T.eq(#cl.ns.db.errors, 0, cl:Name()) end
+	return cached, sent, askedAt
+end
+
+T.test("relay: Q1 при активном преемнике не дублирует кэш старым репортёром", function()
+	local cached, sent = HandoverQ1(false, false)
+	T.eq(#sent.new, #cached, "ответил выбранный репортёр")
+	T.eq(#sent.old, 0, "прежний увидел его RG и отменил весь запасной ответ")
+	T.eq(sent.old.trust, 0, "прежний не разослал повторные корни")
+	T.eq(sent.old.kp, 0, "прежний не разослал повторные сертификаты")
+end)
+
+T.test("relay: Q1 во время LOGIN_QUIET преемника обслуживает прежний", function()
+	local cached, sent = HandoverQ1(true, false)
+	T.eq(#sent.new, 0, "новый пока молчит")
+	T.eq(#sent.old, #cached, "прежний передал весь кэш без ожидания LOGIN_QUIET")
+end)
+
+T.test("relay: Q1 прежний дополняет только отсутствующую часть кэша преемника", function()
+	local cached, sent = HandoverQ1(false, true)
+	T.eq(#sent.new, 1, "новый знает один отчёт")
+	T.eq(#sent.old, #cached - 1, "прежний дослал только остальные")
+	for _, raw in ipairs(sent.old) do T.no(raw == sent.new[1], "первый отчёт не продублирован") end
+end)
+
+
+-- Только координация Q1/Q2: роли и кэш заданы явно, часы и очередь настоящие.
+-- Подписанные отчёты и полный транспорт проверены сценариями HandoverQ1 выше.
+local function Q1Coordination()
+	local w = Wow.World()
+	w:Guild("Чиллзон Север")
+	local cl = w:Client({ first = "Вера", surname = "Верная", guild = "Чиллзон Север", rank = 0 })
+	local ns = cl.ns
+	local state = { active = false, reporter = Key(cl, "Алла Альфа"), queued = 0, sent = 0 }
+	ns.Config.Q1_GAP = 1
+	ns.Census.IsReporter = function() return state.active end
+	ns.Census.Reporter = function() return state.reporter end
+	ns.Census.Handing = function() ns.Census.Track(); return not state.active end
+	ns.Data.Cached = function() return { { key = "дальний", origin = "Глеб Гордый", raw = "S1~fixture" } } end
+	ns.Security.ShareTrust = function() end
+	ns.Security.IntroduceWire = function() end
+	ns.Census.Track()
+	local send = ns.Comm.Send
+	ns.Comm.Send = function(dist, raw, opts)
+		if raw == "Q1~" then return end -- фоновые запросы не относятся к проверяемому ответу
+		if opts and opts.key and opts.key:sub(1, 3) == "q1:" then
+			state.queued = state.queued + 1
+			local done = opts.done
+			opts.done = function(ok, why)
+				if ok then state.sent = state.sent + 1 end
+				if done then done(ok, why) end
+			end
+		end
+		return send(dist, raw, opts)
+	end
+	local function Ask() ns.Comm.Dispatch("Q1~", "Борис Быстрый", "GUILD") end
+	local function Signal(msg, sender, dist) ns.Comm.Dispatch(msg, sender or "Алла Альфа", dist or "GUILD") end
+	return w, cl, state, Ask, Signal
+end
+
+T.test("relay: Q1 утрата окончания и повторные Q2 не продлевают ожидание дольше минуты", function()
+	local w, cl, state, ask, signal = Q1Coordination()
+	ask(); signal("Q2~1~B")
+	w:Run(30)
+	T.eq(state.queued, 0, "объявленный ответ ждём, пока преемник занят очередью")
+	signal("Q2~1~B"); signal("Q2~2~B"); signal("Q2~2~E")
+	w:Run(29)
+	T.eq(state.queued, 0, "окончание с другим id не завершает исходный ответ")
+	w:Run(2)
+	T.eq(state.queued, 1, "при утрате правильного E действует срок от первого B")
+	T.eq(#cl.ns.db.errors, 0)
+end)
+
+T.test("relay: Q1 чужой Q2 и шёпот не подавляют запасной ответ", function()
+	local w, cl, state, ask, signal = Q1Coordination()
+	ask()
+	signal("Q2~1~B", "Борис Быстрый")
+	signal("Q2~1~B", "Алла Альфа", "WHISPER")
+	signal("Q2~0~B"); signal("Q2~1234567~B"); signal("Q2~1~E")
+	w:Run(6)
+	T.eq(state.queued, 1, "без допустимого B прежний отвечает через пять секунд")
+	T.eq(#cl.ns.db.errors, 0)
+end)
+
+T.test("relay: Q1 замена очереди после повторных выборов не оставляет зависшее ожидание", function()
+	local w, cl, state, ask = Q1Coordination()
+	cl.lockdown = true
+	ask(); w:Run(6)
+	T.eq(state.queued, 1, "запасной ответ поставлен, но ещё не отправлен")
+	state.active, state.reporter = true, cl.ns.myKey
+	ask() -- заменит q1: задание, а вместе с ним и прежний done
+	T.eq(state.queued, 2, "теперь отвечает текущий репортёр")
+	state.active, state.reporter = false, Key(cl, "Борис Быстрый")
+	w:Run(2)
+	ask(); w:Run(6)
+	T.eq(state.queued, 3, "новая передача роли не заблокирована старым pending")
+	cl.lockdown = false
+	w:Run(15)
+	T.eq(state.sent, 1, "уходит только последнее актуальное задание")
+	T.eq(#cl.ns.db.errors, 0)
+end)
+
 T.test("relay: /чз — как /cz: команды, окно, текст в общий чат", function()
 	local w, c = Build()
 	local toggles, toggle = 0, c.B.ns.UI.Toggle
@@ -725,3 +1081,4 @@ T.test("relay: команды, окно и вкладки без ошибок", 
 		T.eq(#errors, 0, name .. ": ошибки " .. table.concat(errors, " | "))
 	end
 end)
+
