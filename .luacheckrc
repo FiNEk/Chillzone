@@ -40,6 +40,7 @@ read_globals = {
 	"C_Map",
 	"C_Timer",
 	"Enum",
+	"C_Texture",
 
 	-- функции
 	"ChatFrame_AddMessageEventFilter",
@@ -77,6 +78,10 @@ read_globals = {
 	"UnitFullName",
 	"UnitGUID",
 	"UnitLevel",
+	-- рамки ролей (Borders.lua)
+	"InCombatLockdown",
+	"UnitExists",
+	"UnitIsPlayer",
 
 	-- фреймы, шрифты и константы
 	"ChatFontNormal",
@@ -89,6 +94,8 @@ read_globals = {
 	"UIParent",
 	"UISpecialFrames",
 	"WorldMapFrame",
+	"TargetFrame",
+	"FocusFrame",
 
 	-- библиотеки и их глобалы
 	"LibStub",

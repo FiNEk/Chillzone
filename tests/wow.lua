@@ -186,7 +186,15 @@ local function NewFrame(c, name)
 	end
 	function methods.SetShown(self, on) if on then self:Show() else self:Hide() end end
 	function methods.CreateFontString() return NewFrame(c) end
-	function methods.CreateTexture() return NewFrame(c) end
+	function methods.CreateTexture(self, _, layer, _, sublevel)
+		local t = NewFrame(c)
+		t.layer, t.sublevel = layer, sublevel
+		local list = rawget(self, "textures") or {}
+		list[#list + 1] = t
+		self.textures = list
+		return t
+	end
+	function methods.SetAtlas(self, atlas) self.atlas = atlas end
 	function methods.SetText(self, t) self.text = t or "" end
 	function methods.GetText(self) return self.text end
 	function methods.Insert(self, t) self.text = self.text .. (t or "") end
@@ -229,10 +237,27 @@ local function Env(c)
 		end,
 	}
 	env.CreateFrame = function(_, name) return NewFrame(c, name) end
-	env.UnitFullName = function(unit) if unit == "player" then return c.first, c.surname end end
+	-- Кто на месте unit: сам клиент ("player") или то, что тест положил в c.units[unit]
+	-- (другой клиент или таблица с полями first, surname, faction, guild, rank, npc).
+	local function Unit(unit)
+		if unit == nil or unit == "player" then return c end
+		return c.units[unit]
+	end
+	env.UnitFullName = function(unit)
+		local o = Unit(unit)
+		if o then return o.first, o.surname end
+	end
+	env.UnitExists = function(unit) return Unit(unit) ~= nil end
+	env.UnitIsPlayer = function(unit)
+		local o = Unit(unit)
+		return o ~= nil and not o.npc
+	end
 	env.GetNormalizedRealmName = function() return c.realm end
 	env.GetRealmName = function() return c.realm end
-	env.UnitFactionGroup = function() return c.faction end
+	env.UnitFactionGroup = function(unit)
+		local o = Unit(unit)
+		return o and o.faction
+	end
 	env.UnitClass = function() return CLASS_LOCAL[c.class], c.class end
 	env.UnitLevel = function() return c.level end
 	env.issecretvalue = function() return false end
@@ -278,10 +303,11 @@ local function Env(c)
 		return row.fullName, row.fullGuildName, row.level, "Человек", CLASS_LOCAL[row.filename], c.zone, row.filename
 	end
 	env.IsInGuild = function() return c.guild ~= nil end
-	env.GetGuildInfo = function()
-		if not c.guild then return nil end
-		local g = w.guilds[c.guild]
-		return c.guild, g.ranks[c.rank + 1], c.rank
+	env.GetGuildInfo = function(unit)
+		local o = Unit(unit)
+		if not o or not o.guild then return nil end
+		local g = w.guilds[o.guild]
+		return o.guild, g and g.ranks[o.rank + 1], o.rank
 	end
 	local function Rows()
 		local g = c.guild and w.guilds[c.guild]
@@ -372,6 +398,7 @@ local function Env(c)
 				callback(...)
 				return result
 			end
+			c.methodHooks[#c.methodHooks + 1] = { object = name, method = fn }
 			return
 		end
 		if name == "SendWho" then
@@ -408,13 +435,26 @@ local function Env(c)
 	env.UISpecialFrames = {}
 	env.RAID_CLASS_COLORS = {}
 	env.ERR_CHAT_PLAYER_NOT_FOUND_S = "No player named '%s' is currently playing."
+	-- Атласы, которые знает клиент (opts.atlases: [имя] = true), режим геймпада (c.gamepad) и
+	-- кадры цели и фокуса с контейнером, как на Forever (opts.unitFrames).
+	env.C_Texture = { GetAtlasInfo = function(name) if c.atlases and c.atlases[name] then return { width = 64, height = 64 } end end }
+	env.Enum = { InputDeviceInterfaceType = { KeyboardAndMouse = 0, Gamepad = 1 } }
+	env.C_InputInterfaceStyle = { GetCurrentStyle = function() return c.gamepad and 1 or 0 end }
+	if c.unitFrames then
+		for _, key in ipairs({ "TargetFrame", "FocusFrame" }) do
+			local f = NewFrame(c, key)
+			f.TargetFrameContainer = NewFrame(c)
+			f.CheckClassification = function() end
+			env[key] = f
+		end
+	end
 	c.stubs = {}
 	for k in pairs(env) do c.stubs[k] = true end
 	return setmetatable(env, { __index = _G })
 end
 
 -- opts: first, surname, realm, faction, guild, rank, class, level, zone, config (поля Config
--- поверх Config.lua)
+-- поверх Config.lua); atlases, unitFrames, gamepad, combat — до входа в игру (рамки ролей)
 function World:Client(opts)
 	local c = setmetatable({
 		world = self, first = opts.first, surname = opts.surname, realm = opts.realm or "CAMWOWUS2Realm7PvE",
@@ -422,6 +462,7 @@ function World:Client(opts)
 		level = opts.level or 60, zone = opts.zone or "Штормград", online = true,
 		handlers = {}, filters = {}, printed = {}, joined = {}, joinedById = {},
 		named = {}, hooks = {}, bindings = {},
+		units = {}, methodHooks = {}, atlases = opts.atlases, unitFrames = opts.unitFrames, gamepad = opts.gamepad, combat = opts.combat,
 	}, Client)
 	c.env = Env(c)
 	c.env.ChillzoneDB = opts.db

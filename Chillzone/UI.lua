@@ -140,6 +140,7 @@ local function BuildSettings(parent)
 	end)
 	Check("recruits", L.CHECK_RECRUITS, L.CHECK_RECRUITS_TIP,
 		function() return not ns.Recruit.NoContactMe() end, function(on) ns.Recruit.SetNoContact(not on) end)
+	Check("borders", L.CHECK_BORDERS, L.CHECK_BORDERS_TIP, function() return ns.Borders.Enabled() end, function(on) ns.Borders.SetEnabled(on) end)
 	local hint = settings:CreateFontString(nil, "OVERLAY", "GameFontDisable")
 	hint:SetPoint("TOPLEFT", settings, "TOPLEFT", 20, -24 - #checks * 30)
 	hint:SetPoint("RIGHT", settings, "RIGHT", -20, 0)
