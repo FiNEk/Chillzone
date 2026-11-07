@@ -724,6 +724,6 @@ T.test("relay: команды, окно и вкладки без ошибок", 
 	end
 	for name, cl in pairs(c) do
 		local errors = cl.ns.db.errors
-		T.eq(#errors, 0, name .. ": ошибки " .. table.concat(errors, " | "))
+		T.eq(#errors, 0, name .. ": ошибки " .. T.errors(errors))
 	end
 end)

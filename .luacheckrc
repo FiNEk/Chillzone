@@ -77,6 +77,9 @@ read_globals = {
 	"UnitFullName",
 	"UnitGUID",
 	"UnitLevel",
+	"debugstack",
+	"GetBuildInfo",
+	"GetLocale",
 
 	-- фреймы, шрифты и константы
 	"ChatFontNormal",

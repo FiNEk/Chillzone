@@ -408,6 +408,8 @@ local function Env(c)
 	env.UISpecialFrames = {}
 	env.RAID_CLASS_COLORS = {}
 	env.ERR_CHAT_PLAYER_NOT_FOUND_S = "No player named '%s' is currently playing."
+	env.GetBuildInfo = function() return "1.15.7", "61000", "Jun 1 2025", 11507 end
+	env.GetLocale = function() return "ruRU" end
 	c.stubs = {}
 	for k in pairs(env) do c.stubs[k] = true end
 	return setmetatable(env, { __index = _G })

@@ -71,6 +71,9 @@ local function Row(i)
 	hl:SetAllPoints()
 	hl:SetColorTexture(1, 1, 1, 0.08)
 	SetTip(r, nil)
+	r:SetScript("OnClick", function(self)
+		if self.onClick then ns.SafeCall("row click", self.onClick) end
+	end)
 	rows[i] = r
 	return r
 end
@@ -87,8 +90,8 @@ local function RenderRows(lines)
 		r.left:SetFontObject(line.header and "GameFontNormal" or "GameFontHighlightSmall")
 		r.left:SetText(line.text or "")
 		r.right:SetText(line.right or "")
-		r.tip = line.tip
-		r:EnableMouse(line.tip ~= nil)
+		r.tip, r.onClick = line.tip, line.onClick
+		r:EnableMouse(line.tip ~= nil or line.onClick ~= nil)
 		r:Show()
 		y = y + ROW_H
 	end
@@ -145,6 +148,16 @@ local function BuildSettings(parent)
 	hint:SetPoint("RIGHT", settings, "RIGHT", -20, 0)
 	hint:SetJustifyH("LEFT")
 	hint:SetText(L.SETTINGS_HINT)
+	-- Отчёт об ошибке — всем, не только офицерам.
+	local bug = CreateFrame("Button", nil, settings, "UIPanelButtonTemplate")
+	bug:SetSize(170, 24)
+	bug:SetPoint("BOTTOMLEFT", settings, "BOTTOMLEFT", 16, 16)
+	bug:SetText(L.BUG_BUTTON)
+	bug:SetScript("OnClick", function() ns.SafeCall("bug button", ns.Report.Show) end)
+	SetTip(bug, function(tt)
+		tt:AddLine(L.BUG_BUTTON, 1, 0.82, 0)
+		tt:AddLine(L.BUG_BUTTON_TIP, 1, 1, 1, true)
+	end)
 	settings:Hide()
 end
 

@@ -1,6 +1,7 @@
 -- Chillzone: вкладка «Отладка» для глав и офицеров гильдий «Чиллзон». На ней: кем меня считает
 -- аддон, реле и их состояние, репортёры, которые зарегистрировались у меня, согильдийцы с аддоном,
--- отчёты гильдий, счётчики и последние ошибки. Строки устроены как у «Королевства» ({ text, right, header, indent, gap, tip }),
+-- отчёты гильдий, счётчики, последние ошибки и блокировки, журнал действий доверия.
+-- Строки устроены как у «Королевства» ({ text, right, header, indent, gap, tip, onClick }),
 -- рисует их UI.lua.
 local ADDON, ns = ...
 
@@ -67,6 +68,7 @@ local function OfficerSource(rank)
 	if ns.Roster.RankFlagOfficer(rank) ~= nil then return L.DBG_SRC_FLAG end
 	return L.DBG_SRC_UNKNOWN
 end
+Debug.OfficerSource = OfficerSource
 
 local function Me(lines)
 	Header(lines, L.DBG_ME, true)
@@ -278,16 +280,72 @@ local function Counters(lines)
 	Add(lines, { text = L.DBG_CHAT_LINE:format(c.sent, c.shown, c.dupes, c.refused, c.limited) })
 end
 
+-- Ошибка целиком: для окна копирования и подсказки.
+local function ErrorText(e)
+	if type(e) ~= "table" then return Codec.Plain(e) end
+	local out = {
+		Codec.Plain(ns.ErrorLine(e)),
+		L.DBG_ERR_WHEN:format(tostring(e.first or "?"), tostring(e.last or "?"), tostring(e.version or "?")),
+	}
+	for line in tostring(e.stack or ""):gmatch("[^\n]+") do out[#out + 1] = "  " .. Codec.Plain(line) end
+	return table.concat(out, "\n")
+end
+
+local function Copy(title, text)
+	return function() ns.UI.ShowCopy(title, text) end
+end
+
 local function Errors(lines)
 	Header(lines, L.DBG_ERRORS)
 	local errors = (ns.db and ns.db.errors) or {}
 	if #errors == 0 then Add(lines, { text = Paint(GREY, L.DBG_NO_ERRORS), indent = 1 }) end
 	for i = 1, math.min(MAX_ERRORS, #errors) do
-		local err = Codec.Plain(errors[i])
-		Add(lines, { text = Paint(RED, err), indent = 1, tip = function(tt) tt:AddLine(err, 1, 0.4, 0.4, true) end })
+		local e = errors[i]
+		local text = ErrorText(e)
+		Add(lines, {
+			text = Paint(RED, Codec.Plain(ns.ErrorLine(e))),
+			right = type(e) == "table" and Paint(GREY, tostring(e.last or "")) or nil,
+			indent = 1,
+			tip = function(tt)
+				for line in text:gmatch("[^\n]+") do tt:AddLine(line, 1, 0.6, 0.6, true) end
+				tt:AddLine(L.DBG_CLICK_COPY, 0.5, 0.8, 1)
+			end,
+			onClick = Copy(L.DBG_ERRORS, text),
+		})
 	end
 	if #errors > MAX_ERRORS then Add(lines, { text = Paint(GREY, L.DBG_MORE_ERRORS:format(#errors - MAX_ERRORS)), indent = 1 }) end
-	Add(lines, { text = Paint(GREY, L.DBG_HINT), gap = true })
+	local blocked = (ns.db and ns.db.blocked) or {}
+	if #blocked > 0 then
+		local b = blocked[1]
+		Add(lines, {
+			text = Paint(RED, L.DBG_BLOCKED:format(#blocked, Codec.Plain(b.func or "?"))),
+			right = Paint(GREY, tostring(b.last or "")),
+			indent = 1,
+			tip = function(tt)
+				for _, x in ipairs(blocked) do
+					tt:AddLine(("[%sx] %s %s"):format(tostring(x.count or 1), tostring(x.event), Codec.Plain(x.func or "?")), 1, 0.6, 0.6)
+				end
+			end,
+		})
+	end
+	Add(lines, { text = Paint(GOLD, L.DBG_BUG_REPORT), indent = 1, onClick = function() ns.Report.Show() end })
+end
+
+-- Журнал действий доверия (Acts.lua): последние записи, щелчок — весь журнал.
+local function TrustActs(lines)
+	local A = ns.Acts
+	if not A then return end
+	Header(lines, L.DBG_ACTS)
+	local recent = A.Recent(A.SHOW)
+	if #recent == 0 then Add(lines, { text = Paint(GREY, L.ACT_NONE), indent = 1 }) end
+	for _, e in ipairs(recent) do
+		Add(lines, {
+			text = Codec.Plain(A.Text(e)),
+			right = Paint(GREY, Ago(ns.ServerTime() - (e.t or 0))),
+			indent = 1,
+		})
+	end
+	Add(lines, { text = Paint(GOLD, L.DBG_ACTS_ALL:format(#A.List())), indent = 1, onClick = function() A.Copy() end })
 end
 
 -- Строки вкладки «Отладка».
@@ -300,5 +358,7 @@ function Debug.Lines()
 	Reports(lines)
 	Counters(lines)
 	Errors(lines)
+	TrustActs(lines)
+	Add(lines, { text = Paint(GREY, L.DBG_HINT), gap = true })
 	return lines
 end

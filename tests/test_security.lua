@@ -157,7 +157,7 @@ Build = function()
     end
     w:Run(400)
     for name, cl in pairs(c) do
-        T.eq(#cl.ns.db.errors, 0, name .. ": " .. table.concat(cl.ns.db.errors, " | "))
+        T.eq(#cl.ns.db.errors, 0, name .. ": " .. T.errors(cl.ns.db.errors))
     end
     return w, c
 end

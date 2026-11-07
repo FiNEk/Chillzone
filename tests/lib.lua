@@ -41,6 +41,15 @@ function T.same(a, b, msg, path)
 	end
 end
 
+-- Записи db.errors одной строкой (для сообщений об упавшей проверке).
+function T.errors(list)
+	local out = {}
+	for i, e in ipairs(list or {}) do
+		out[i] = type(e) == "table" and (tostring(e.where) .. ": " .. tostring(e.msg)) or tostring(e)
+	end
+	return table.concat(out, " | ")
+end
+
 function T.read(path)
 	local f = assert(io.open(path, "rb"))
 	local s = f:read("*a")

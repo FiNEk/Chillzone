@@ -25,7 +25,7 @@ L.OFFLINE_DAYS = "не в игре %s дн."
 L.OFFLINE_TODAY = "не в игре меньше дня"
 
 -- Ядро и команды
-L.ERROR_ONCE = "внутренняя ошибка, подробности — /chillzone log"
+L.ERROR_ONCE = "внутренняя ошибка, подробности — /chillzone log, отчёт для автора — /chillzone bug"
 L.HELP_HEADER = "команды:"
 L.HELP_HELP = "этот список"
 L.HELP_STATUS = "кто я, гильдия, репортёр, реле"
@@ -322,3 +322,86 @@ L.CLASS = {
 	WARRIOR = "Воин", PALADIN = "Паладин", HUNTER = "Охотник", ROGUE = "Разбойник", PRIEST = "Жрец",
 	SHAMAN = "Шаман", MAGE = "Маг", WARLOCK = "Чернокнижник", DRUID = "Друид", DEATHKNIGHT = "Рыцарь смерти",
 }
+
+-- Диагностика: окно копирования, отчёт об ошибке, профайлер, журнал действий доверия.
+L.COPY_SELECT_ALL = "Выделить всё"
+L.COPY_HINT = "затем Ctrl+C — скопировать"
+L.LOG_MORE = "ошибок: %s, блокировок игрой: %s. Целиком — /chillzone bug"
+L.HELP_BUG = "отчёт об ошибке для автора аддона (окно, откуда можно скопировать)"
+L.BUG_TITLE = "Отчёт об ошибке"
+L.BUG_BUTTON = "Отчёт об ошибке"
+L.BUG_BUTTON_TIP = "Собрать отчёт для автора аддона: версия, клиент, гильдия, счётчики, ошибки. Ключей, сертификатов и журнала действий доверия в нём нет."
+L.BUG_KEY = "[ключ скрыт]"
+L.BUG_HEAD = "Chillzone %s — отчёт об ошибке, %s"
+L.BUG_CLIENT = "клиент: %s (сборка %s, toc %s), язык %s"
+L.BUG_ME = "я: %s, реалм %s, группа %s, splitNames=%s, %s"
+L.BUG_GUILD = "гильдия: %s, звание %s «%s», своя: %s, главная: %s"
+L.BUG_OFFICER = "офицер: %s (%s)"
+L.BUG_LEVEL = "уровень чата: %s, роль в связи: %s"
+L.BUG_RELAY = "я реле: %s, моё реле: %s, репортёр: %s (я: %s)"
+L.BUG_COUNT_COMM = "сообщения: отправлено %s, принято %s, отказов %s, повторов %s, выброшено %s, в очереди %s"
+L.BUG_COUNT_CHAT = "чат: отправлено %s, показано %s, дублей %s, отклонено %s, лимит %s"
+L.BUG_COUNT_AUTH = "подписи: проверено %s, отклонено %s, лимит %s, свой сертификат: %s"
+L.BUG_COUNT_RELAY = "реле: переслано %s, доставлено %s, выброшено %s, без доверия %s"
+L.BUG_STATUS = "/chillzone status:"
+L.BUG_PROBES = "пробы API:"
+L.BUG_PROBE_FLAGS = "флаги звания (GuildControlGetRankFlags): %s"
+L.BUG_FLAGS = "индекс %s, флагов %s, [22]=%s, включены: %s"
+L.BUG_NO_RANK = "звания нет"
+L.BUG_NO_API = "нет API"
+L.BUG_API_ERROR = "ошибка: %s"
+L.BUG_PROBE_RANK = "звание: GetGuildInfo «%s» (%s), ростер «%s» (%s)"
+L.BUG_PROBE_NAME = "UnitFullName: «%s», «%s»; splitNames=%s; ns.me=%s"
+L.BUG_PROBE_TIME = "GetServerTime() - time() = %s с"
+L.BUG_PROBE_ZONES = "зоны ростера без uiMapID: %s"
+L.BUG_PROBE_GAMEPAD = "режим геймпада: %s"
+L.BUG_BLOCKED = "заблокировано игрой: %s (за эту сессию %s)"
+L.BUG_ERRORS = "ошибки: %s"
+L.BUG_LOG = "журнал, последние строки (%s):"
+
+L.HELP_PERF = "профайлер: /chillzone perf on|off|reset, без аргумента — отчёт"
+L.PERF_TITLE = "Профайлер Chillzone"
+L.PERF_HEAD = "Chillzone %s — профайлер (%s), %s"
+L.PERF_STATE_ON = "включён"
+L.PERF_STATE_OFF = "выключен"
+L.PERF_EMPTY = "Замеров ещё нет. Включить: /chillzone perf on"
+L.PERF_SPAN = "с %s замерено %s с, кадров %s, из них %s — с работой аддона от %s мс"
+L.PERF_TOP = "больше всего времени (меток %s, всего %s мс): всего, вызовов, самый долгий, в среднем"
+L.PERF_SLOW = "самые долгие вызовы:"
+L.PERF_WORST = "худшие кадры (вся работа аддона, самый долгий вызов в кадре):"
+L.PERF_NONE = "нет"
+L.PERF_ON = "профайлер включён и останется включённым после /reload; тяжёлый кадр — от %s мс. Отчёт — /chillzone perf, выключить — /chillzone perf off"
+L.PERF_OFF = "профайлер выключен, замеры сохранены: /chillzone perf — отчёт, /chillzone perf reset — забыть"
+L.PERF_RESET = "замеры профайлера стёрты"
+
+L.HELP_ACTS = "журнал действий доверия: /chillzone acts [N | copy]"
+L.ACT_TITLE = "Журнал действий доверия"
+L.ACT_HEAD = "Журнал действий доверия: записей %s (%s, %s). Его видит только этот клиент, в сеть и в отчёт об ошибке он не уходит."
+L.ACT_NONE = "записей нет"
+L.ACT_BY = "— %s, %s"
+L.ACT_KIND = {
+	root = "«%s»: корень доверия — %s",
+	reset = "«%s»: корень %s сброшен",
+	unretire = "«%s»: снят отзыв ключа",
+	link_out = "«%s»: запрос связи отправлен игроку %s",
+	link_in = "«%s»: запрос связи",
+	link_ok = "«%s»: связь подтверждена с %s",
+}
+L.ACT_VIA = {
+	init = "/chillzone trust init",
+	own = "/chillzone trust reset",
+	KT = "от офицера (KT)",
+	KA = "каталог главной гильдии (KA)",
+	KF = "от офицера (KF)",
+	KU = "от офицера (KU)",
+	KL = "шёпот (KL)",
+	link = "/chillzone link",
+	accept = "/chillzone accept",
+}
+
+L.DBG_ERR_WHEN = "впервые %s, последний раз %s, версия %s"
+L.DBG_CLICK_COPY = "щелчок — в окно копирования"
+L.DBG_BLOCKED = "заблокировано игрой: %s, последнее — %s"
+L.DBG_BUG_REPORT = "Отчёт об ошибке для автора (щелчок)"
+L.DBG_ACTS = "Действия доверия"
+L.DBG_ACTS_ALL = "весь журнал, записей %s (щелчок)"

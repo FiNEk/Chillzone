@@ -33,7 +33,7 @@ end
 
 local function Errors(c)
 	for name, cl in pairs(c) do
-		T.eq(#cl.ns.db.errors, 0, name .. ": " .. table.concat(cl.ns.db.errors, " | "))
+		T.eq(#cl.ns.db.errors, 0, name .. ": " .. T.errors(cl.ns.db.errors))
 		T.eq(#cl:Leaks(), 0, name .. ": глобалы")
 	end
 end
