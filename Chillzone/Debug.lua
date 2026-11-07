@@ -1,6 +1,7 @@
 -- Chillzone: вкладка «Отладка» для глав и офицеров гильдий «Чиллзон». На ней: кем меня считает
 -- аддон, реле и их состояние, репортёры, которые зарегистрировались у меня, согильдийцы с аддоном,
--- отчёты гильдий, счётчики, последние ошибки и блокировки, журнал действий доверия.
+-- отчёты гильдий, счётчики, последние ошибки и блокировки, журнал действий доверия. Автору
+-- аддона (Config.AUTHOR) вкладка видна всегда; у него же — принятые отчёты об ошибках.
 -- Строки устроены как у «Королевства» ({ text, right, header, indent, gap, tip, onClick }),
 -- рисует их UI.lua.
 local ADDON, ns = ...
@@ -19,8 +20,13 @@ local ICON_OFF = "|TInterface\\FriendsFrame\\StatusIcon-Offline:12|t"
 local MAX_ERRORS = 5
 local STATE_COLOR = { ok = GREEN, down = RED, asked = GOLD, unknown = GREY }
 
--- Вкладку видят главы и офицеры (офицер — по флагу звания).
+-- Вкладку видят главы и офицеры (офицер — по флагу звания) и автор аддона. У автора в
+-- «Просмотре как» — как у выбранного уровня.
 function Debug.Allowed()
+	local A = ns.Author
+	local view = A and A.ViewLevel()
+	if view ~= nil then return view >= 2 end
+	if A and A.IsMe() then return true end
 	return ns.Chat.MyLevel() >= 2
 end
 
@@ -348,11 +354,33 @@ local function TrustActs(lines)
 	Add(lines, { text = Paint(GOLD, L.DBG_ACTS_ALL:format(#A.List())), indent = 1, onClick = function() A.Copy() end })
 end
 
+-- Только у автора: «Просмотр как» и принятые отчёты.
+local function AuthorLines(lines)
+	local A = ns.Author
+	if not (A and A.IsMe()) then return end
+	Header(lines, L.DBG_AUTHOR)
+	Add(lines, { text = L.VIEW_BUTTON:format(A.ViewLabel()), right = Paint(GREY, L.DBG_VIEW_HINT), indent = 1, onClick = function() A.CycleView() end })
+	local inbox = A.Inbox()
+	if #inbox == 0 then Add(lines, { text = Paint(GREY, L.DBG_INBOX_EMPTY), indent = 1 }) end
+	for i = 1, math.min(#inbox, 10) do
+		local e = inbox[i]
+		local first = Codec.Plain((e.text or ""):match("^[^\n]*") or "")
+		Add(lines, {
+			text = Paint(WHITE, Codec.Plain(e.from or "?")) .. "  " .. Paint(GREY, first),
+			right = Paint(GREY, Ago(ns.ServerTime() - (e.t or 0))),
+			indent = 1,
+			onClick = function() A.Open(i) end,
+		})
+	end
+	if #inbox > 10 then Add(lines, { text = Paint(GREY, L.DBG_INBOX_MORE:format(#inbox - 10)), indent = 1 }) end
+end
+
 -- Строки вкладки «Отладка».
 function Debug.Lines()
 	local lines = {}
 	local now = ns.Now()
 	Me(lines)
+	AuthorLines(lines)
 	Relays(lines, now)
 	Census(lines, now)
 	Reports(lines)

@@ -222,3 +222,9 @@ function U.SameName(a, b)
 	local ka = U.Key(a)
 	return ka ~= nil and ka == U.Key(b)
 end
+
+-- Это персонаж автора аддона (Config.AUTHOR): то же имя в той же группе реалмов.
+function U.IsAuthor(name, group)
+	local a = ns.Config and ns.Config.AUTHOR
+	return type(a) == "table" and group ~= nil and group == a.group and U.SameName(name, a.name)
+end

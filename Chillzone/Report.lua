@@ -1,5 +1,6 @@
 -- Chillzone: отчёт об ошибке — /chillzone bug и кнопка в «Настройках» (всем, не только офицерам).
--- Открывается в окне копирования, откуда игрок копирует его автору. Что в отчёте: версия и клиент, кто я и моя гильдия, откуда известно
+-- Открывается в окне копирования: игрок вставляет его автору или, если автор в игре, отправляет
+-- ему кнопкой (Author.lua). Что в отчёте: версия и клиент, кто я и моя гильдия, откуда известно
 -- офицерство, уровень чата, роль в связи, реле и репортёр, счётчики, строки /chillzone status,
 -- пробы API игры, ошибки со стеком, блокировки игрой и последние строки журнала.
 -- Чего в нём нет: ничего из ns.store.security и ChillzoneDB.securityKeys (секрет, ключи,
@@ -30,7 +31,7 @@ local function YesNo(v)
 end
 
 -- Текст без кодов игры: цвета и значки убраны, остальная «|» — «!». В окне копирования
--- это обычный текст.
+-- и в шёпоте автору это обычный текст.
 function Report.Plain(s)
 	s = tostring(s or "")
 	s = s:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", ""):gsub("|T.-|t", ""):gsub("|H.-|h(.-)|h", "%1")
@@ -196,8 +197,13 @@ function Report.Build()
 	return Report.Scrub(Report.Plain(table.concat(out, "\n")))
 end
 
+-- Окно с отчётом; кнопка «Отправить автору» — если автор в игре (Author.lua).
 function Report.Show()
-	return ns.UI.ShowCopy(L.BUG_TITLE, Report.Build())
+	local text = Report.Build()
+	local actions = {}
+	local send = ns.Author and ns.Author.SendAction(text)
+	if send then actions[#actions + 1] = send end
+	return ns.UI.ShowCopy(L.BUG_TITLE, text, { actions = actions })
 end
 
 ns.Command("bug", function() Report.Show() end, L.HELP_BUG)
