@@ -25,6 +25,14 @@ local known = {} -- [Key] = { key, name, verified, asked, down }: реле, о �
 local reporters = {}
 local regOf = {} -- (я реле) [Key репортёра] = guildKey
 local claims = {} -- (я реле) [guildKey] = { name, key, t }: кому отказано при живой аренде
+-- Решение главы доходит до действующего репортёра даже после исключения гильдии:
+-- обычный RP от неё уже не пройдёт проверку членства.
+ns.On("UNION_POLICY", function(guild, wire)
+	if not U.IsMainGuild(ns.MyGuild()) then return end
+	local held = reporters[U.GuildKey(guild)]
+	if held then ns.Comm.Send("WHISPER", wire, { target = held.name, prio = true,
+		key = "union-reporter:" .. U.GuildKey(guild) }) end
+end)
 local seen = {} -- [ключ дедупа] = время
 local rate = {} -- [Key автора] = { n, t0 }
 local hold = {} -- сообщения, пока ни одно реле не ответило
@@ -635,9 +643,10 @@ function Relay.PruneLearned()
 end
 
 ---------------------------------------------------------------------------
--- «Нет такого игрока» после моего шёпота: реле или репортёр, у которого аренда, не в игре.
--- Строка скрывается; реле помечается недоступным, аренда репортёра снимается сразу, а не
--- через REG_TTL: шептать ему дальше бесполезно.
+-- «Нет такого игрока» после моего шёпота: реле, репортёр, у которого аренда, или контакт
+-- гильдии объединения не в игре. Строка скрывается; реле помечается недоступным, аренда
+-- репортёра снимается сразу, а не через REG_TTL: шептать ему дальше бесполезно. Контакту
+-- глава какое-то время не шепчет решения (Security.ContactAway).
 ---------------------------------------------------------------------------
 local notFound
 local function NotFound(text)
@@ -659,12 +668,14 @@ local function OursNotFound(text)
 	local t = k and ns.Comm.lastWhisper[k]
 	if not t or Now() - t > WHISPER_FRESH then return nil end
 	local gk = regOf[k]
-	return known[k], gk and reporters[gk] and reporters[gk].key == k and k or nil
+	return known[k], gk and reporters[gk] and reporters[gk].key == k and k or nil,
+		ns.Security.UnionContact(k) and k or nil
 end
 
 ns.RegisterEvent("CHAT_MSG_SYSTEM", function(text)
-	local e, reporter = OursNotFound(text)
+	local e, reporter, contact = OursNotFound(text)
 	if e then MarkDown(e, "не в игре") end
+	if contact then ns.Security.ContactAway(contact) end
 	if reporter then
 		local gk = regOf[reporter]
 		ns.Log("репортёр %s не в игре: аренда гильдии %s снята", U.Display(reporters[gk].name), gk)
@@ -674,8 +685,8 @@ end)
 
 if ChatFrame_AddMessageEventFilter then
 	ChatFrame_AddMessageEventFilter("CHAT_MSG_SYSTEM", function(_, _, text)
-		local e, reporter = OursNotFound(text)
-		return e ~= nil or reporter ~= nil
+		local e, reporter, contact = OursNotFound(text)
+		return e ~= nil or reporter ~= nil or contact ~= nil
 	end)
 end
 
