@@ -171,7 +171,9 @@ function Chat.Channels()
 		out[#out + 1] = "G"
 		if ns.GuildChat and ns.GuildChat.CanOfficer() then out[#out + 1] = "O" end
 	end
-	local level = Chat.MyLevel()
+	-- «Просмотр как» автора меняет только показ; отправка и приём — по Chat.MyLevel.
+	local level = ns.Author and ns.Author.ViewLevel()
+	if level == nil then level = Chat.MyLevel() end
 	for _, tier in ipairs({ "A", "C", "L" }) do
 		if level >= Chat.TIER_LEVEL[tier] then out[#out + 1] = tier end
 	end

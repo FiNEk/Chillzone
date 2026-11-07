@@ -16,8 +16,10 @@
 стеком и блокировки игрой — из `Diagnostics.lua`, отчёт об ошибке — из
 `ns.BuildBugReport` там же, окно копирования — из `UI.ShowCopy` (`UI.lua`),
 профайлер — из `Perf.lua` (без замера памяти), журнал действий доверия — по
-образцу `Chronicle.lua`. В Chillzone это файлы `Core.lua` (ошибки),
-`Report.lua`, `Copy.lua`, `Perf.lua` и `Acts.lua`; их шапки говорят, что откуда.
+образцу `Chronicle.lua`, «Просмотр как» — из `ViewAs.lua`, отправка отчёта
+автору кусками — по образцу V5/V6 в `Workshop.lua`. В Chillzone это файлы
+`Core.lua` (ошибки), `Report.lua`, `Copy.lua`, `Perf.lua`, `Acts.lua` и
+`Author.lua`; их шапки говорят, что откуда.
 
 ```
 MIT License

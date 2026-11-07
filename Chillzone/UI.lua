@@ -22,7 +22,7 @@ local TABS = {
 local DEBUG_EVERY = 5 -- «Отладка» обновляется чаще остальных: там счётчики и состояние реле
 local frame, body, scroll, child, settings = nil, nil, nil, nil, nil
 local status, heading -- шапка (крупно и мелко) и название вкладки слева вверху
-local tabs, rows, checks = {}, {}, {}
+local tabs, rows, checks, buttons = {}, {}, {}, {}
 local current = "chat"
 local minimapButton
 
@@ -148,7 +148,7 @@ local function BuildSettings(parent)
 	hint:SetPoint("RIGHT", settings, "RIGHT", -20, 0)
 	hint:SetJustifyH("LEFT")
 	hint:SetText(L.SETTINGS_HINT)
-	-- Отчёт об ошибке — всем, не только офицерам.
+	-- Отчёт об ошибке — всем; «Просмотр как» — только автору аддона.
 	local bug = CreateFrame("Button", nil, settings, "UIPanelButtonTemplate")
 	bug:SetSize(170, 24)
 	bug:SetPoint("BOTTOMLEFT", settings, "BOTTOMLEFT", 16, 16)
@@ -158,6 +158,17 @@ local function BuildSettings(parent)
 		tt:AddLine(L.BUG_BUTTON, 1, 0.82, 0)
 		tt:AddLine(L.BUG_BUTTON_TIP, 1, 1, 1, true)
 	end)
+	local view = CreateFrame("Button", nil, settings, "UIPanelButtonTemplate")
+	view:SetSize(230, 24)
+	view:SetPoint("LEFT", bug, "RIGHT", 8, 0)
+	view:SetScript("OnClick", function() ns.SafeCall("view button", ns.Author.CycleView) end)
+	SetTip(view, function(tt) tt:AddLine(L.VIEW_TIP, 1, 1, 1, true) end)
+	view.sync = function(self)
+		local me = ns.Author.IsMe()
+		self:SetShown(me)
+		if me then self:SetText(L.VIEW_BUTTON:format(ns.Author.ViewLabel())) end
+	end
+	buttons.bug, buttons.view = bug, view
 	settings:Hide()
 end
 
@@ -218,6 +229,7 @@ function UI.Render()
 		ns.CensusPane.Hide()
 		settings:Show()
 		for _, c in ipairs(checks) do c:SetChecked(c.get() and true or false) end
+		if buttons.view then buttons.view:sync() end
 		return
 	end
 	settings:Hide()

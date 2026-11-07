@@ -15,6 +15,9 @@
 -- Чат:    M1~tier~guild~id~class~text          (tier A|C|L, id 0-9999, class — 2 буквы)
 -- Реле:   RP~fp · RY~Имя1,Имя2 · RR~guild~fp · RU~guild~преемник · RL~mode~inner
 --         RM~mode~origin~inner · RG~mode~origin~inner     (fp — отпечаток сертификата)
+-- Автору: B1~id~i~n~кусок отчёта об ошибке · B2~id~1|2  (ответ автора: «шли остальное» | «собрал»)
+--         только WHISPER, Author.lua. Заняты также S1, K* (Security.lua) и J1-J3 (Recruit.lua);
+--         новый тип не начинать с C (так помечены куски) и K.
 local ADDON, ns = ...
 
 local Codec = {}

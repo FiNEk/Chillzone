@@ -1,7 +1,10 @@
 -- Диагностика: записи ошибок (дедуп, стек, миграция), блокировки игрой, отчёт об ошибке без
--- секретов, профайлер, журнал действий доверия.
+-- секретов, профайлер, журнал действий доверия и персонаж автора («Просмотр как», отчёт
+-- автору кусками B1/B2, отказ не автору).
 local T = ...
 local Wow = assert(loadfile(T.ROOT .. "/tests/wow.lua"))(T)
+
+local PVP = "CAMWOWEU1Realm12PvP"
 
 local function One(opts)
 	local w = Wow.World()
@@ -267,4 +270,162 @@ T.test("журнал действий доверия: корни, связь, с
 	T.eq(#O.ns.Acts.List(), O.ns.Acts.MAX)
 	T.eq(O.ns.Acts.List()[O.ns.Acts.MAX].guild, "Гильдия 320", "новые в конце")
 	for _, cl in ipairs({ A, O, V }) do T.eq(#cl.ns.db.errors, 0, cl:Name() .. ": " .. T.errors(cl.ns.db.errors)) end
+end)
+
+T.test("автор: Config.AUTHOR и U.IsAuthor", function()
+	local _, c = One()
+	local U, C = c.ns.Util, c.ns.Config
+	T.eq(C.AUTHOR.name, "Могаю Прохожих")
+	T.eq(U.GroupOf(PVP), C.AUTHOR.group, "группа автора — как её считает U.GroupOf")
+	T.ok(U.IsAuthor("Могаю Прохожих", "ForeverPvP"))
+	T.ok(U.IsAuthor("Могаю Прохожих-" .. PVP, "ForeverPvP"), "с реалмом")
+	T.ok(U.IsAuthor("могаю прохожих", "ForeverPvP"), "регистр имени не важен")
+	T.no(U.IsAuthor("Могаю Прохожих", "ForeverPvE"), "другая группа")
+	T.no(U.IsAuthor("Могаю Другой", "ForeverPvP"))
+	T.no(U.IsAuthor(nil, "ForeverPvP"))
+	T.no(c.ns.Author.IsMe())
+end)
+
+T.test("автор: «Просмотр как» меняет показ, но не Chat.MyLevel", function()
+	local w = Wow.World()
+	w:Guild("Чиллзон")
+	local P = w:Client({ first = "Могаю", surname = "Прохожих", realm = PVP, guild = "Чиллзон", rank = 3 })
+	local N = w:Client({ first = "Могаю", surname = "Прохожих", realm = "CAMWOWUS2Realm7PvE", guild = "Чиллзон", rank = 3 })
+	w:Run(30)
+	local A, Chat, Debug = P.ns.Author, P.ns.Chat, P.ns.Debug
+	T.ok(A.IsMe(), "автор на PvP")
+	T.no(N.ns.Author.IsMe(), "тёзка в другой группе реалмов — не автор")
+	T.eq(Chat.MyLevel(), 1, "автор — рядовой участник")
+	T.ok(Debug.Allowed(), "автору «Отладка» видна всегда")
+	T.no(N.ns.Debug.Allowed(), "рядовому — нет")
+	local function Chans(cl) return table.concat(cl.ns.Chat.Channels(), ",") end
+	T.eq(Chans(P), "G,A")
+	T.ok(A.SetView(3))
+	T.eq(Chans(P), "G,A,C,L", "как Лорд/Король")
+	T.ok(Debug.Allowed())
+	T.eq(Chat.MyLevel(), 1, "настоящий уровень не тронут")
+	T.ok(A.SetView(2))
+	T.eq(Chans(P), "G,A,C", "как Капитан")
+	T.ok(A.SetView(1))
+	T.eq(Chans(P), "G,A")
+	T.no(Debug.Allowed(), "участнику «Отладка» не видна")
+	T.ok(A.SetView(0))
+	T.eq(Chans(P), "G", "вне связи")
+	T.no(A.SetView(7), "неверный уровень")
+	A.CycleView()
+	T.eq(A.ViewLevel(), 1, "кнопка идёт по кругу")
+	T.ok(A.SetView(nil))
+	T.eq(A.ViewLevel(), nil)
+	T.no(N.ns.Author.SetView(3), "не автору нельзя")
+	T.eq(N.ns.Author.ViewLevel(), nil)
+	N:Slash("/chillzone", "view 3")
+	T.ok(N:Saw(N.ns.L.VIEW_ONLY_AUTHOR) > 0)
+	P:Slash("/chillzone", "view 2")
+	T.eq(A.ViewLevel(), 2)
+	-- Раздел автора на «Отладке».
+	local author = false
+	for _, l in ipairs(Debug.Lines()) do if l.text:find("Автор аддона", 1, true) then author = true end end
+	T.ok(author)
+	for _, l in ipairs(N.ns.Debug.Lines()) do T.no(l.text:find("Автор аддона", 1, true), "у не автора раздела нет") end
+	-- Настоящий уровень решает отправку: рядовой в «Просмотре как Король» в канал глав не пишет.
+	local before = #w.log
+	Chat.Send("L", "проверка")
+	for i = before + 1, #w.log do T.no(w.log[i].msg:find("проверка", 1, true), "уровень L не отправлен") end
+	for _, cl in ipairs({ P, N }) do T.eq(#cl.ns.db.errors, 0, cl:Name() .. ": " .. T.errors(cl.ns.db.errors)) end
+end)
+
+T.test("автор: отчёт кусками по шёпоту, ответы автора, лимиты, отказ не автору", function()
+	local w = Wow.World()
+	w:Guild("Чиллзон")
+	local P = w:Client({ first = "Могаю", surname = "Прохожих", realm = PVP, guild = "Чиллзон", rank = 3 })
+	local X = w:Client({ first = "Игрок", surname = "Тестов", realm = PVP, guild = "Чиллзон", rank = 3 })
+	local Y = w:Client({ first = "Яна", surname = "Вторая", realm = PVP, guild = "Чиллзон", rank = 3 })
+	local N = w:Client({ first = "Нина", surname = "Ничья", realm = PVP, guild = "Чиллзон", rank = 3 })
+	w:Run(30)
+	T.ok(X.ns.Author.Online(), "автор в ростере и в игре")
+	T.no(P.ns.Author.Online(), "сам себе не отправляет")
+	X:Slash("/chillzone", "bug")
+	local copy = X.ns.UI.copy
+	local send = copy.actions[1]
+	T.ok(send and send:IsShown(), "кнопка «Отправить автору»")
+	T.eq(send.text, X.ns.L.AUTHOR_SEND)
+	local report = copy.text
+	local mark = #w.log
+	send.scripts.OnClick(send)
+	w:Run(120)
+	T.ok(X:Saw(X.ns.L.AUTHOR_DELIVERED) > 0, "автор подтвердил приём")
+	local inbox = P.ns.Author.Inbox()
+	T.eq(#inbox, 1)
+	T.eq(inbox[1].from, "Игрок Тестов")
+	T.eq(inbox[1].text, report:gsub("\\", "/"), "отчёт собран целиком, с переводами строк")
+	-- Куски: только шёпот на «Имя Фамилия» без реалма, каждый в пределах 255 байт.
+	local pieces = 0
+	for i = mark + 1, #w.log do
+		local m = w.log[i]
+		if m.msg:sub(1, 2) == "B1" then
+			pieces = pieces + 1
+			T.eq(m.dist, "WHISPER")
+			T.eq(m.target, "Могаю Прохожих")
+			T.ok(#m.msg <= 255, "кусок не длиннее 255 байт")
+		end
+		if m.msg:sub(1, 2) == "B2" then T.eq(m.from, "Могаю Прохожих", "отвечает только автор") end
+	end
+	T.ok(pieces > 1, "отчёт ушёл несколькими кусками: " .. pieces)
+	-- Не чаще раза в 10 минут.
+	T.no(X.ns.Author.Send("ещё"), "второй отчёт сразу — нельзя")
+	T.ok(X:Saw("следующий отчёт можно отправить через 8 мин") > 0, "осталось 8 минут из 10")
+	-- B2 не от автора не считается.
+	T.ok(Y.ns.Author.Send("проба Яны"))
+	local id
+	for _ = 1, 50 do
+		w:Run(0.2)
+		for i = #w.log, 1, -1 do
+			local m = w.log[i]
+			if m.from == "Яна Вторая" and m.msg:sub(1, 2) == "B1" then id = m.msg:match("^B1~(%w+)~") break end
+		end
+		if id then break end
+	end
+	T.ok(id, "первый кусок Яны ушёл")
+	Y.ns.Comm.Dispatch("B2~" .. id .. "~2", "Нина Ничья-" .. PVP, "WHISPER")
+	T.ok(Y.ns.Author.Sending(), "чужое подтверждение не принято")
+	w:Run(60)
+	T.no(Y.ns.Author.Sending())
+	T.ok(Y:Saw(Y.ns.L.AUTHOR_DELIVERED) > 0)
+	-- Не автору B1 ничего не даёт: ни отчёта, ни ответа.
+	mark = #w.log
+	X.ns.Comm.Send("WHISPER", "B1~zz~1~1~привет", { target = "Нина Ничья", prio = true })
+	w:Run(10)
+	T.eq(#N.ns.Author.Inbox(), 0, "не автор отчёты не хранит")
+	for i = mark + 1, #w.log do T.no(w.log[i].from == "Нина Ничья" and w.log[i].msg:sub(1, 2) == "B2", "не автор не отвечает") end
+	-- У автора: не больше трёх отчётов в час от одного игрока.
+	for i = 1, 3 do
+		X.ns.db.bugSentAt = nil
+		X.ns.Author.Send("проба " .. i)
+		w:Run(40)
+	end
+	local fromX = 0
+	for _, e in ipairs(inbox) do if e.from == "Игрок Тестов" then fromX = fromX + 1 end end
+	T.eq(fromX, 3, "четвёртый за час не принят")
+	T.ok(X:Saw(X.ns.L.AUTHOR_NO_ANSWER) > 0, "игроку сказано, что ответа нет")
+	-- Принятые — на «Отладке» автора, щелчок открывает отчёт.
+	local opened = false
+	for _, l in ipairs(P.ns.Debug.Lines()) do
+		if l.onClick and l.text:find("Игрок Тестов", 1, true) and not opened then
+			l.onClick()
+			opened = true
+		end
+	end
+	T.ok(opened)
+	T.ok(P.ns.UI.copy.heading:find("Отчёт от", 1, true))
+	-- Автор вышел — кнопки нет.
+	P:Logout()
+	X:Fire("GUILD_ROSTER_UPDATE")
+	w:Run(30)
+	X.ns.db.bugSentAt = nil
+	X:Slash("/chillzone", "bug")
+	T.no(X.ns.UI.copy.actions[1] and X.ns.UI.copy.actions[1]:IsShown(), "без автора в игре кнопки нет")
+	for _, cl in ipairs({ X, Y, N }) do
+		T.eq(#cl.ns.db.errors, 0, cl:Name() .. ": " .. T.errors(cl.ns.db.errors))
+		T.eq(#cl:Leaks(), 0, cl:Name() .. ": утечки " .. table.concat(cl:Leaks(), ", "))
+	end
 end)
