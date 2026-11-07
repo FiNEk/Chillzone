@@ -318,6 +318,23 @@ L.CHECK_RECRUITS = "Принимать обращения о вступлени�
 L.CHECK_RECRUITS_TIP = "Ваш персонаж будет предлагаться новичкам как адресат просьбы о вступлении. Общая настройка для всех персонажей этого аккаунта."
 L.HELP_NOCONTACT = "обращения о вступлении на этом аккаунте: /chillzone nocontact on|off"
 
+-- Рамки ролей (Borders.lua)
+L.HELP_BORDERS = "рамки ролей у портрета цели и фокуса: /chillzone borders on|off"
+L.BORDERS_ON = "рамки ролей у портрета цели и фокуса включены"
+L.BORDERS_OFF = "рамки ролей выключены"
+L.BORDERS_GAMEPAD = "в режиме геймпада рамки ролей не показываются"
+L.CHECK_BORDERS = "Рамки ролей"
+L.CHECK_BORDERS_TIP = "Рамка вокруг портрета цели и фокуса у игроков гильдий «Чиллзон»: золотая с крыльями — Король, серебряная с крыльями — Лорд, серебряная — Капитан. То же, что /chillzone borders on|off."
+L.BORDERS_STATUS = "Рамки ролей: %s"
+L.BORDERS_STATUS_ON = "включены"
+L.BORDERS_STATUS_OFF = "выключены"
+L.BORDERS_STATUS_GAMEPAD = "скрыты в режиме геймпада"
+L.BORDERS_STATUS_WAIT = "ещё не поставлены"
+L.BORDERS_STATUS_COMBAT = "будут поставлены после боя"
+L.BORDERS_STATUS_NONE = "у клиента нет кадров или атласов для них"
+L.BORDERS_STATUS_TARGET = "; цель: «%s», звание %s, роль: %s"
+L.BORDERS_NO_ROLE = "нет"
+
 L.CLASS = {
 	WARRIOR = "Воин", PALADIN = "Паладин", HUNTER = "Охотник", ROGUE = "Разбойник", PRIEST = "Жрец",
 	SHAMAN = "Шаман", MAGE = "Маг", WARLOCK = "Чернокнижник", DRUID = "Друид", DEATHKNIGHT = "Рыцарь смерти",

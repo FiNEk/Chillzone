@@ -191,6 +191,36 @@ function Data.Kingdom(now)
 	return tree
 end
 
+-- Роль игрока для рамки у портрета (Borders.lua): "king", "lord", "captain" или nil.
+-- p — что игра сказала о нём: guild, rank (rankIndex, 0 — глава), name («Имя Фамилия» или
+-- с реалмом), faction, realm (реалм из имени; nil — свой). Только своя фракция и группа
+-- реалмов, как в переписи, и только гильдии «Чиллзон». Король — глава главной гильдии,
+-- Лорд — глава другой. Капитан своей гильдии — по ростеру (флаг «Офицер»,
+-- Roster.IsOfficerRank), чужой — по officers свежего подписанного отчёта R1 без конфликта
+-- подписей. Если сервер не дал rankIndex, глава берётся из ростера или из того же отчёта.
+-- Только чтение: пометок и сообщений не добавляет.
+function Data.RoleOf(p, now)
+	if type(p) ~= "table" or not U.IsMemberGuild(p.guild) or p.faction ~= ns.faction then return nil end
+	if p.realm and p.realm ~= ns.realm and U.GroupOf(p.realm) ~= ns.group then return nil end
+	local key = U.Key(p.name)
+	local rank = type(p.rank) == "number" and p.rank or nil
+	local mine = ns.MyGuild()
+	if mine and U.GuildKey(mine) == U.GuildKey(p.guild) then
+		if rank == nil then rank = ns.Roster.RankOf(p.name) end
+		if rank == 0 then return U.IsMainGuild(p.guild) and "king" or "lord" end
+		return rank ~= nil and ns.Roster.IsOfficerRank(rank) and "captain" or nil
+	end
+	local row = Data.Row(p.guild)
+	local r = row and not row.mine and row.signed and not row.conflict and Data.IsFresh(row, now) and row.r or nil
+	if rank == nil and r and key and U.Key(r.leader) == key then rank = 0 end
+	if rank == 0 then return U.IsMainGuild(p.guild) and "king" or "lord" end
+	if not r or not key then return nil end
+	for _, o in ipairs(r.officers or {}) do
+		if U.Key(o.name) == key then return "captain" end
+	end
+	return nil
+end
+
 -- Для карты: [zoneKey] = { total = n, guilds = { [название] = n } } по свежим отчётам.
 function Data.ZoneCounts(now)
 	local out = {}
