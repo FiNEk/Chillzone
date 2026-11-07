@@ -60,12 +60,6 @@ local function Tooltip(owner)
 	return GameTooltip
 end
 
--- Щелчок по имени в карточке — шёпот в поле окна чата.
-local function Whisper(name)
-	ns.UI.Toggle("chat")
-	ns.ChatPane.WhisperTo(name)
-end
-
 ---------------------------------------------------------------------------
 -- Список гильдий
 ---------------------------------------------------------------------------
@@ -199,8 +193,9 @@ local function Person(i)
 		GameTooltip:Show()
 	end)
 	p:SetScript("OnLeave", function() GameTooltip:Hide() end)
+	-- Щелчок по имени — карточка игрока; шёпот — кнопкой в ней.
 	p:SetScript("OnClick", function(self)
-		if self.person then ns.SafeCall("census whisper", Whisper, self.person.name) end
+		if self.person then ns.SafeCall("census person", ns.PersonCard.Open, self.person) end
 	end)
 	people[i] = p
 	return p

@@ -33,6 +33,7 @@ Views.lua
 ChatPane.lua
 RecruitPane.lua
 CensusPane.lua
+PersonCard.lua
 Debug.lua
 UI.lua
 Map.lua
