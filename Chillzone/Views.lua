@@ -1,6 +1,6 @@
 -- Chillzone: содержимое вкладок окна — список гильдий и карточка гильдии «Переписи», дерево
--- «Королевства» (строки { text, right, indent, tip(tooltip) }, их рисует UI.lua), шапка окна,
--- строки и люди чата, подсказки.
+-- «Королевства» (строки { text, right, indent, tip(tooltip), person }, их рисует UI.lua), шапка
+-- окна, строки и люди чата, подсказки, карточка игрока (её рисует PersonCard.lua).
 local ADDON, ns = ...
 
 local U = ns.Util
@@ -182,21 +182,83 @@ function Views.StatusTip(tt, now)
 	tt:AddLine(L.HEAD_TIP_MORE, 0.6, 0.6, 0.6)
 end
 
--- Список гильдий слева на «Переписи»: { key, s, text, right, sub }. Подробности — Views.GuildCard.
-function Views.CensusRows(now)
+-- Поиск сравнивает одни и те же имена при каждой букве и перерисовке: сведённые строки
+-- (U.SearchKey) держим до SEARCH_KEPT штук, потом начинаем заново.
+local SEARCH_KEPT = 5000
+local searchKeys, searchKept = {}, 0
+local function Holds(q, text)
+	if type(text) ~= "string" or text == "" then return false end
+	local k = searchKeys[text]
+	if not k then
+		searchKept = searchKept + 1
+		if searchKept > SEARCH_KEPT then searchKeys, searchKept = {}, 1 end
+		k = U.SearchKey(text)
+		searchKeys[text] = k
+	end
+	return k:find(q, 1, true) ~= nil
+end
+
+-- Что запрос q (U.SearchKey) нашёл в гильдии s: nil — ничего; "" — название или глава (подпись
+-- строки прежняя, глава в ней и так виден); иначе подпись — первое совпадение и сколько ещё:
+-- «Капитан: Имя», «Связной: Имя», звание и имя согильдийца (свой ростер, и не в игре тоже),
+-- «Где сейчас: Зона (3)» (зоны — только из свежего отчёта).
+local function SearchHit(s, q)
+	local r = s.r
+	if Holds(q, Codec.Plain(s.guild)) or Holds(q, r.leader) then return "" end
+	local hits, seen = {}, {}
+	if r.leader then seen[U.Key(r.leader) or ""] = true end
+	local function person(label, name, class, online)
+		local k = U.Key(name)
+		if not k or seen[k] or not Holds(q, U.Display(name)) then return end
+		seen[k] = true
+		local shown = online and Views.Name(U.Display(name), class) or (GREY .. Codec.Plain(U.Display(name)) .. "|r")
+		hits[#hits + 1] = GREY .. Codec.Plain(label) .. ":|r " .. Dot(online) .. shown
+	end
+	for _, o in ipairs(r.officers or {}) do person(L.ROLE_CAPTAIN, o.name, o.class, s.fresh and o.online) end
+	for _, o in ipairs(r.veterans or {}) do person(L.ROLE_RELAY, o.name, o.class, s.fresh and o.online) end
+	if s.mine then
+		for _, m in ipairs(ns.Roster.members or {}) do
+			local label = (type(m.rankName) == "string" and m.rankName ~= "") and m.rankName or L.SEARCH_MEMBER
+			person(label, m.name, m.class, m.online)
+		end
+	end
+	if s.fresh then
+		for _, e in ipairs(SortedMap(r.zones)) do
+			local name = ns.Zones.NameForKey(e.k)
+			if Holds(q, name) then
+				hits[#hits + 1] = GREY .. L.CARD_ZONES .. ":|r " .. Codec.Plain(name) .. " " .. GREY .. "(" .. U.Num(e.v) .. ")|r"
+			end
+		end
+	end
+	if #hits == 0 then return nil end
+	if #hits == 1 then return hits[1] end
+	return hits[1] .. " " .. GREY .. L.SEARCH_MORE:format(#hits - 1) .. "|r"
+end
+
+-- Список гильдий слева на «Переписи»: { key, s, text, right, sub, hit }. Подробности —
+-- Views.GuildCard. query — текст из поля поиска: только гильдии, где он нашёлся (по названию,
+-- главе, офицерам, связным, зонам и участникам своей гильдии), в прежнем порядке; в подписи —
+-- что нашлось. Пустой запрос (или одни пробелы) — весь список.
+function Views.CensusRows(now, query)
+	local q = query and U.SearchKey(query) or ""
 	local out = {}
 	for _, s in ipairs(ns.Data.Summary(now)) do
-		local right
-		if s.recent then
-			right = (s.online and (GREEN .. U.Num(s.online) .. "|r") or (GREY .. "?|r")) .. GREY .. " / |r" .. U.Num(s.total or 0)
-		else
-			right = GREY .. L.CENSUS_OLD:format(Views.Ago(s.age)) .. "|r"
+		local hit
+		if q ~= "" then hit = SearchHit(s, q) end
+		if q == "" or hit then
+			local right
+			if s.recent then
+				right = (s.online and (GREEN .. U.Num(s.online) .. "|r") or (GREY .. "?|r")) .. GREY .. " / |r" .. U.Num(s.total or 0)
+			else
+				right = GREY .. L.CENSUS_OLD:format(Views.Ago(s.age)) .. "|r"
+			end
+			local leader = s.r.leader and (Dot(s.fresh and s.r.leaderOnline) .. Views.Name(s.r.leader, s.r.leaderClass)) or GREY .. "—|r"
+			out[#out + 1] = {
+				key = U.GuildKey(s.guild), s = s, text = GuildLabel(s), right = right,
+				sub = (hit and hit ~= "") and hit or (GREY .. L.CENSUS_LEADER .. "|r " .. leader),
+				hit = hit,
+			}
 		end
-		local leader = s.r.leader and (Dot(s.fresh and s.r.leaderOnline) .. Views.Name(s.r.leader, s.r.leaderClass)) or GREY .. "—|r"
-		out[#out + 1] = {
-			key = U.GuildKey(s.guild), s = s, text = GuildLabel(s), right = right,
-			sub = GREY .. L.CENSUS_LEADER .. "|r " .. leader,
-		}
 	end
 	return out
 end
@@ -210,7 +272,16 @@ local function PersonTip(p, role, guild)
 		tt:AddLine(role .. ", " .. Codec.Plain(guild), 0.8, 0.8, 0.8)
 		if p.level and p.level > 0 then tt:AddLine(L.TIP_LEVEL:format(p.level), 0.8, 0.8, 0.8) end
 		tt:AddLine(Views.State(p.online, p.days), 0.6, 0.6, 0.6)
+		tt:AddLine(L.TIP_CLICK_CARD, 0.5, 0.83, 0.76)
 	end
+end
+
+-- Человек строки «Королевства» для карточки игрока (щелчок по строке).
+local function LinePerson(p, role, node)
+	return {
+		name = p.name, class = p.class, level = p.level, online = p.online, days = p.days,
+		role = role, guild = node.guild, main = node.main,
+	}
 end
 
 local function Captains(lines, node, indent)
@@ -219,6 +290,7 @@ local function Captains(lines, node, indent)
 			text = ICON_OFFICER .. " " .. Dot(c.online) .. Views.Name(c.name, c.class),
 			right = GREY .. L.ROLE_CAPTAIN .. "|r", indent = indent,
 			tip = PersonTip(c, L.ROLE_CAPTAIN, node.guild),
+			person = LinePerson(c, "officer", node),
 		}
 	end
 end
@@ -229,10 +301,12 @@ function Views.Kingdom()
 	lines[#lines + 1] = { text = GOLD .. L.KINGDOM_KING .. "|r", header = true }
 	local king = tree.king
 	if king then
+		local p = { name = king.leader, class = king.leaderClass, level = king.leaderLevel, online = king.leaderOnline, days = king.leaderDays }
 		lines[#lines + 1] = {
 			text = ICON_KING .. " " .. Dot(king.leaderOnline) .. Views.Name(king.leader, king.leaderClass) .. "  " .. GREY .. "<" .. Codec.Plain(king.guild) .. ">|r" .. (king.conflict and (" " .. RED .. "!|r") or ""),
 			right = GOLD .. L.ROLE_KING .. "|r",
-			tip = PersonTip({ name = king.leader, class = king.leaderClass, level = king.leaderLevel, online = king.leaderOnline, days = king.leaderDays }, L.ROLE_KING, king.guild),
+			tip = PersonTip(p, L.ROLE_KING, king.guild),
+			person = LinePerson(p, "leader", king),
 		}
 		Captains(lines, king, 1)
 	else
@@ -244,10 +318,12 @@ function Views.Kingdom()
 			if lords == 0 then lines[#lines + 1] = { text = GOLD .. L.KINGDOM_LORDS .. "|r", header = true, gap = true } end
 			lords = lords + 1
 			local lord = node.leader and (Dot(node.leaderOnline) .. Views.Name(node.leader, node.leaderClass)) or (GREY .. "—|r")
+			local p = node.leader and { name = node.leader, class = node.leaderClass, level = node.leaderLevel, online = node.leaderOnline, days = node.leaderDays }
 			lines[#lines + 1] = {
 				text = lord .. "  " .. GREY .. "<" .. Codec.Plain(node.guild) .. ">|r" .. (node.conflict and (" " .. RED .. "!|r") or ""),
 				right = GREY .. L.ROLE_LORD .. "|r",
-				tip = node.leader and PersonTip({ name = node.leader, class = node.leaderClass, level = node.leaderLevel, online = node.leaderOnline, days = node.leaderDays }, L.ROLE_LORD, node.guild) or nil,
+				tip = p and PersonTip(p, L.ROLE_LORD, node.guild) or nil,
+				person = p and LinePerson(p, "leader", node) or nil,
 			}
 			Captains(lines, node, 1)
 		end
@@ -390,7 +466,142 @@ function Views.PersonTip(tt, p)
 	if p.zone and p.online then tt:AddLine(Codec.Plain(p.zone), 0.8, 0.8, 0.8) end
 	if p.role ~= "active" then tt:AddLine(Views.State(p.online, p.days), 0.6, 0.6, 0.6) end
 	if p.wrote then tt:AddLine(L.TIP_WROTE:format(Views.Ago(ns.ServerTime() - p.wrote)), 0.6, 0.6, 0.6) end
-	tt:AddLine(L.TIP_CLICK_WHISPER, 0.5, 0.83, 0.76)
+	tt:AddLine(L.TIP_CLICK_CARD, 0.5, 0.83, 0.76)
+end
+
+---------------------------------------------------------------------------
+-- Карточка игрока (PersonCard.lua рисует её сбоку от окна). Только то, что клиент уже знает:
+-- открытие карточки ничего не спрашивает у игры и не шлёт в сеть.
+---------------------------------------------------------------------------
+local CHAT_CHANNELS = { "A", "C", "L", "G", "O" }
+local CERT_ROLE = { leader = true, officer = true }
+
+-- Роль в «Королевстве»: Король, Лорд, Капитан, Связной или "".
+function Views.KingdomRole(role, main)
+	if role == "leader" then return main and L.ROLE_KING or L.ROLE_LORD end
+	if role == "officer" then return L.ROLE_CAPTAIN end
+	if role == "veteran" then return L.ROLE_RELAY end
+	return ""
+end
+
+-- Всё, что клиент знает о человеке по имени: свой ростер (звание, зона; и кто не в игре),
+-- отчёты переписи (глава, офицеры, связные; в игре ли — только по свежему отчёту, из
+-- нескольких — самый новый), последняя строка в чате. nil — имени нет.
+-- { key, name, class, level, guild, main, mine, role, rank, rankName, online, days, zone, wrote }
+function Views.FindPerson(name, now)
+	local key = U.Key(name)
+	if not key then return nil end
+	now = now or ns.ServerTime()
+	local p = { key = key }
+	for _, m in ipairs(ns.Roster.members or {}) do
+		if (m.key or U.Key(m.name)) == key then
+			local rank = m.rank or 9
+			p.name, p.class, p.level, p.rank, p.rankName = U.Display(m.name), m.class, m.level, rank, m.rankName
+			p.online, p.days, p.zone = m.online and true or false, m.days, m.online and m.zone or nil
+			p.guild, p.mine = ns.Roster.guild, true
+			p.role = rank == 0 and "leader" or (ns.Roster.IsOfficerRank(rank) and "officer")
+				or (U.IsRelayRankName(m.rankName) and "veteran") or "member"
+			break
+		end
+	end
+	if not p.mine then
+		local best
+		for _, s in ipairs(ns.Data.Summary(now)) do
+			local r = s.r
+			local function take(q, role)
+				if U.Key(q.name) == key and (not best or s.age < best.s.age) then best = { s = s, q = q, role = role } end
+			end
+			if r.leader then take({ name = r.leader, class = r.leaderClass, level = r.leaderLevel, online = r.leaderOnline, days = r.leaderDays }, "leader") end
+			for _, o in ipairs(r.officers or {}) do take(o, "officer") end
+			for _, o in ipairs(r.veterans or {}) do take(o, "veteran") end
+		end
+		if best then
+			local q, s = best.q, best.s
+			p.name, p.class, p.level, p.role, p.guild = U.Display(q.name), q.class, q.level, best.role, s.guild
+			if s.fresh then p.online, p.days = q.online and true or false, q.days end
+		end
+	end
+	for _, ch in ipairs(CHAT_CHANNELS) do
+		for _, e in ipairs(ns.Chat.History(ch)) do
+			if (e.t or 0) > (p.wrote or 0) and U.Key(e.s) == key then
+				p.wrote = e.t
+				p.name = p.name or U.Display(e.s)
+				p.class = p.class or e.c
+				if not p.guild and type(e.g) == "string" and e.g ~= "" then p.guild = e.g end
+			end
+		end
+	end
+	if p.guild then p.main = U.IsMainGuild(p.guild) end
+	return p
+end
+
+-- Сертификат: подтверждает ли он роль человека в гильдии (Security.Member, Security.Level).
+local function CertLine(guild, name)
+	local cert = guild and ns.Security and ns.Security.Member(guild, name)
+	local level = cert and ns.Security.Level(cert) or 0
+	if level == 0 then return L.PERSON_CERT_NONE, 0.6, 0.6, 0.6 end
+	if CERT_ROLE[cert.role] and level < 2 then return L.PERSON_CERT_STALE, 1, 0.6, 0.2 end
+	return L.PERSON_CERT_OK:format(L.DBG_ROLE[cert.role] or cert.role), 0.25, 1, 0.25
+end
+
+-- Карточка человека p (строка списка, по которой щёлкнули; хватит и одного имени): что о нём
+-- знает клиент (Views.FindPerson), а чего не знает — из p.
+-- { key, name, title, lines = { { text, r, g, b } }, online, me, tell, whisper, invite, person }.
+-- whisper и invite — можно ли (не я и не «не в игре»); «Кто» можно всегда.
+function Views.PersonCard(p, now)
+	if type(p) ~= "table" or not U.Key(p.name) then return nil end
+	now = now or ns.ServerTime()
+	local f = Views.FindPerson(p.name, now)
+	for _, k in ipairs({ "name", "class", "level", "guild", "rankName", "days", "zone", "wrote" }) do
+		if f[k] == nil then f[k] = p[k] end
+	end
+	-- «Писал в канал» — не роль, и «в игре» у таких — лишь догадка по времени строки.
+	if f.role == nil and p.role ~= "active" then f.role = p.role end
+	if f.online == nil and p.role ~= "active" then f.online = p.online end
+	if f.main == nil and f.guild then f.main = U.IsMainGuild(f.guild) end
+	local name = Codec.Plain(U.Display(f.name) or "?")
+	local card = {
+		key = f.key, name = name, title = Views.Name(name, f.class), online = f.online, person = f,
+		me = ns.IsMe(f.name), tell = Codec.Plain(U.TellName(f.name) or name), lines = {},
+	}
+	card.whisper = not card.me and f.online ~= false
+	card.invite = card.whisper
+	local function add(text, r, g, b) card.lines[#card.lines + 1] = { text = text, r = r or 0.85, g = g or 0.85, b = b or 0.85 } end
+	local role = Views.KingdomRole(f.role, f.main)
+	if f.guild then
+		local guild = Codec.Plain(f.guild)
+		if role ~= "" then add(L.PERSON_ROLE_GUILD:format(role, guild), 1, 0.82, 0) else add(L.PERSON_GUILD:format(guild), 1, 0.82, 0) end
+	end
+	if f.mine and type(f.rankName) == "string" and f.rankName ~= "" then add(L.PERSON_RANK:format(Codec.Plain(f.rankName))) end
+	local class = f.class and L.CLASS[f.class]
+	if f.level and f.level > 0 then
+		add(L.TIP_LEVEL:format(f.level) .. (class and (", " .. class) or ""))
+	elseif class then
+		add(class)
+	end
+	if f.online then
+		add(L.ONLINE, 0.25, 1, 0.25)
+	elseif f.online == false then
+		add(Views.State(false, f.days), 0.6, 0.6, 0.6)
+	end
+	if f.mine and f.online and type(f.zone) == "string" and f.zone ~= "" then
+		add(L.CARD_ZONES .. ": " .. Codec.Plain(f.zone))
+	end
+	if f.wrote then add(L.PERSON_WROTE:format(Views.Ago(now - f.wrote)), 0.6, 0.6, 0.6) end
+	if f.guild then add(CertLine(f.guild, f.name)) end
+	if card.me then
+		add(L.PERSON_VERSION:format(Codec.Plain(ns.VERSION)), 0.6, 0.6, 0.6)
+	elseif f.mine then
+		local peer = ns.Census.Peers()[f.key]
+		if peer then
+			local version = Codec.Plain(peer.version or "?")
+			if version == ns.VERSION then add(L.PERSON_VERSION:format(version), 0.6, 0.6, 0.6) else add(L.PERSON_VERSION:format(version), 1, 0.25, 0.25) end
+		elseif f.online then
+			add(L.PERSON_NO_ADDON, 0.6, 0.6, 0.6)
+		end
+	end
+	if not f.guild and not f.level and not class and not f.wrote then add(L.PERSON_UNKNOWN, 0.6, 0.6, 0.6) end
+	return card
 end
 
 ---------------------------------------------------------------------------

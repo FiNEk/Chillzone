@@ -237,7 +237,8 @@ local function Env(c)
 	env.UnitLevel = function() return c.level end
 	env.issecretvalue = function() return false end
 	env.GetMaxPlayerLevel = function() return 60 end
-	c.invites, c.whoQueries = {}, {}
+	c.invites, c.whoQueries, c.partyInvites = {}, {}, {}
+	env.C_PartyInfo = { InviteUnit = function(name) c.partyInvites[#c.partyInvites + 1] = name end }
 	env.CanGuildInvite = function()
 		if c.canInvite ~= nil then return c.canInvite end
 		return c.guild ~= nil and c.rank <= 1

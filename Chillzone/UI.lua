@@ -23,6 +23,7 @@ local DEBUG_EVERY = 5 -- «Отладка» обновляется чаще ос
 local frame, body, scroll, child, settings = nil, nil, nil, nil, nil
 local status, heading -- шапка (крупно и мелко) и название вкладки слева вверху
 local tabs, rows, checks = {}, {}, {}
+UI.rows = rows -- строки «Королевства» и «Отладки»: тесты щёлкают по ним
 local current = "chat"
 local minimapButton
 
@@ -71,6 +72,10 @@ local function Row(i)
 	hl:SetAllPoints()
 	hl:SetColorTexture(1, 1, 1, 0.08)
 	SetTip(r, nil)
+	-- Строка человека в «Королевстве»: щелчок — карточка игрока.
+	r:SetScript("OnClick", function(self)
+		if self.person then ns.SafeCall("kingdom person", ns.PersonCard.Open, self.person) end
+	end)
 	rows[i] = r
 	return r
 end
@@ -88,7 +93,8 @@ local function RenderRows(lines)
 		r.left:SetText(line.text or "")
 		r.right:SetText(line.right or "")
 		r.tip = line.tip
-		r:EnableMouse(line.tip ~= nil)
+		r.person = line.person
+		r:EnableMouse(line.tip ~= nil or line.person ~= nil)
 		r:Show()
 		y = y + ROW_H
 	end
@@ -355,7 +361,7 @@ local function Create()
 	UI.tabs = tabs
 
 	f:SetScript("OnShow", function() UI.Render() end)
-	f:SetScript("OnHide", function() ns.ChatPane.Hide(); ns.Recruit.Cancel() end)
+	f:SetScript("OnHide", function() ns.ChatPane.Hide(); ns.Recruit.Cancel(); ns.PersonCard.Hide() end)
 	local elapsed, debugElapsed = 0, 0
 	f:SetScript("OnUpdate", function(_, dt)
 		elapsed, debugElapsed = elapsed + (dt or 0), debugElapsed + (dt or 0)

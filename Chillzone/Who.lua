@@ -1,6 +1,6 @@
--- Chillzone: поиск участников сервером для вступления. Поиск и обход лимита 50 строк
--- адаптированы из Olympus Who.lua (MIT). Один запрос только из щелчка игрока.
--- Результат идёт в штатный список /who: чужие фреймы и их события не меняем.
+-- Chillzone: поиск участников сервером для вступления и «Кто» из карточки игрока. Поиск и обход
+-- лимита 50 строк адаптированы из Olympus Who.lua (MIT). Один запрос только из щелчка игрока.
+-- Результат идёт в чат или штатный список /who: чужие фреймы и их события не меняем.
 local ADDON, ns = ...
 
 local U, L = ns.Util, ns.L
@@ -104,6 +104,24 @@ function Who.Search()
 	if not ok then pending = nil; ns.Print(L.RECRUIT_NO_WHO); return false end
 	ns.Print(L.RECRUIT_SEARCHING)
 	ns.Fire("RECRUIT")
+	return true
+end
+
+-- «Кто» из карточки игрока: обычный /who по имени, ответ — в чате или штатном списке /who игры.
+-- Только из щелчка по кнопке и синхронно (без таймеров): сервер ограничивает /who. Не чаще
+-- COOLDOWN после любого своего запроса и не пока ждём ответа на поиск гильдий.
+function Who.SendPlain(query)
+	local now = ns.Now()
+	if pending or now < lateUntil then ns.Print(L.RECRUIT_SEARCH_WAIT); return false end
+	local wait = Who.COOLDOWN - (now - lastSend)
+	if wait > 0 then ns.Print(L.WHO_WAIT:format(math.ceil(wait))); return false end
+	local send = C_FriendList and C_FriendList.SendWho or SendWho
+	if type(send) ~= "function" then ns.Print(L.RECRUIT_NO_WHO); return false end
+	lastSend = now
+	sending = true
+	local ok = pcall(send, query)
+	sending = false
+	if not ok then ns.Print(L.RECRUIT_NO_WHO); return false end
 	return true
 end
 

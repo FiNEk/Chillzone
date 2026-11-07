@@ -43,6 +43,7 @@ local TIP_LINKS = { item = true, spell = true, enchant = true, quest = true, tal
 
 local pane, list, chatArea, messages, jump, box, prompt, title, scope, count, people, peopleChild, empty
 local entries, rows = {}, {}
+ChatPane.peopleRows = rows -- строки списка людей: тесты щёлкают по ним
 local current = "A"
 local shown = false
 local unread = {} -- [канал] = непрочитанные строки
@@ -273,8 +274,9 @@ local function PeopleRow(i)
 		GameTooltip:Show()
 	end)
 	r:SetScript("OnLeave", function() GameTooltip:Hide() end)
+	-- Щелчок по имени — карточка игрока; шёпот — кнопкой в ней.
 	r:SetScript("OnClick", function(self)
-		if self.person then ns.SafeCall("person click", ChatPane.WhisperTo, self.person.name) end
+		if self.person then ns.SafeCall("person click", ns.PersonCard.Open, self.person) end
 	end)
 	rows[i] = r
 	return r

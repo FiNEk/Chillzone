@@ -38,6 +38,7 @@ read_globals = {
 	"C_FriendList",
 	"C_InputInterfaceStyle",
 	"C_Map",
+	"C_PartyInfo",
 	"C_Timer",
 	"Enum",
 

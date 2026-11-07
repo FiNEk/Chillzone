@@ -600,12 +600,12 @@ T.test("перепись: список гильдий и карточка выб
 	end
 	T.ok(#card.classes > 0, "в игре есть классы")
 	T.eq(items, #card.classes, "строк подписи — сколько классов в игре")
-	-- Руководство: глава первой, щелчок — шёпот в окне чата.
+	-- Руководство: глава первой, щелчок — карточка игрока (шёпот — кнопкой в ней).
 	local first = f.people[1]
 	T.ok(first:IsShown() and first.person.name == "Вера Верная" and first.person.role == "leader", "глава первой")
 	first.scripts.OnClick(first)
-	T.eq(B.ns.UI.Current(), "chat", "щелчок по имени открывает чат")
-	T.eq(B.ns.ChatPane.frames.box:GetText(), "/w Вера Верная ", "и шёпот в поле")
+	T.eq(B.ns.UI.Current(), "census", "щелчок по имени оставляет перепись")
+	T.eq(B.ns.PersonCard.Shown().name, "Вера Верная", "и открывает карточку")
 	-- Другая гильдия: главная.
 	B.ns.UI.Toggle("census")
 	P.Select(key("Чиллзон"))
