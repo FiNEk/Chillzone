@@ -1,6 +1,7 @@
 -- Chillzone: вкладка «Перепись» — слева список гильдий, справа карточка выбранной, как вкладка
 -- «Сведения» окна гильдии: крупные числа, руководство, полоса классов, гистограмма уровней,
--- зоны полосками. Данные — Views.CensusRows и Views.GuildCard; здесь только рисование.
+-- зоны полосками. Над списком — поле поиска (Views.CensusRows с запросом). Данные —
+-- Views.CensusRows и Views.GuildCard; здесь только рисование.
 -- Живёт во вставке окна (UI.lua body, 804×340), ширины заданы числами: окно не меняет размер.
 local ADDON, ns = ...
 
@@ -23,11 +24,13 @@ local COL_R_W = CARD_W - COL_R_X
 local LEVEL_BAR_H, PERSON_H, ZONE_H = 40, 16, 16
 local ZONE_NAME_W = 170
 
-local pane, list, listChild, empty, card, cardChild
+local SEARCH_H = 20
+local pane, list, listChild, empty, card, cardChild, search
 local rows, people, segments, levels, zones, legend = {}, {}, {}, {}, {}, {}
 local LEGEND_COLS, LEGEND_H = 2, 14
 local w = {} -- надписи карточки
 local selected -- U.GuildKey выбранной гильдии
+local query = "" -- текст поля поиска: живёт до конца сессии, не сохраняется
 
 local function FS(parent, font, justify)
 	local fs = parent:CreateFontString(nil, "OVERLAY", font)
@@ -110,7 +113,64 @@ local function RenderList(items)
 	end
 	for i = #items + 1, #rows do rows[i]:Hide() end
 	listChild:SetHeight(math.max(#items * (ROW_H + 2), 10))
+	empty:SetText(ns.Util.Trim(query) ~= "" and L.SEARCH_NONE or L.CENSUS_EMPTY)
 	empty:SetShown(#items == 0)
+end
+
+---------------------------------------------------------------------------
+-- Поле поиска над списком. Своё поле: SearchBoxTemplate (значок лупы и крестик), если клиент
+-- его знает, иначе InputBoxTemplate, иначе голое поле с подложкой. Фокус само не берёт;
+-- Esc и Enter убирают курсор. Шаблонные обработчики не заменяем — только дополняем (HookScript).
+---------------------------------------------------------------------------
+local function SearchBox(parent)
+	for _, template in ipairs({ "SearchBoxTemplate", "InputBoxTemplate" }) do
+		local ok, f = pcall(CreateFrame, "EditBox", nil, parent, template)
+		if ok and f then return f, template end
+	end
+	local f = CreateFrame("EditBox", nil, parent)
+	f:SetFontObject("GameFontHighlightSmall")
+	f:SetTextInsets(6, 6, 0, 0)
+	local bg = f:CreateTexture(nil, "BACKGROUND")
+	bg:SetAllPoints()
+	bg:SetColorTexture(0, 0, 0, 0.5)
+	return f, nil
+end
+
+function CensusPane.SetQuery(text)
+	text = tostring(text or "")
+	if text == query then return end
+	query = text
+	if not list then return end
+	list:SetVerticalScroll(0)
+	CensusPane.Render()
+end
+
+function CensusPane.Query() return query end
+
+local function BuildSearch()
+	local template
+	search, template = SearchBox(pane)
+	search:SetSize(LIST_W - (template and 6 or 0), SEARCH_H)
+	search:SetPoint("TOPLEFT", pane, "TOPLEFT", 8 + (template and 6 or 0), -8)
+	search:SetAutoFocus(false)
+	search:SetMaxLetters(60)
+	local hint = search.Instructions
+	if hint and hint.SetText then hint:SetText(L.SEARCH_HINT) end
+	search:SetText(query)
+	search:HookScript("OnTextChanged", function(self)
+		ns.SafeCall("census search", CensusPane.SetQuery, self:GetText())
+	end)
+	search:HookScript("OnEscapePressed", function(self) self:ClearFocus() end)
+	search:HookScript("OnEnterPressed", function(self) self:ClearFocus() end)
+	-- Окно закрыли с курсором в поле: скрытое поле не должно забирать нажатия клавиш.
+	search:HookScript("OnHide", function(self) self:ClearFocus() end)
+	search:HookScript("OnEnter", function(self)
+		GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+		GameTooltip:AddLine(L.SEARCH_HINT, 1, 0.82, 0)
+		GameTooltip:AddLine(L.SEARCH_TIP, 1, 1, 1, true)
+		GameTooltip:Show()
+	end)
+	search:HookScript("OnLeave", function() GameTooltip:Hide() end)
 end
 
 ---------------------------------------------------------------------------
@@ -384,8 +444,9 @@ function CensusPane.Build(parent)
 	pane = CreateFrame("Frame", nil, parent)
 	pane:SetAllPoints(parent)
 
+	BuildSearch()
 	list = CreateFrame("ScrollFrame", nil, pane, "UIPanelScrollFrameTemplate")
-	list:SetPoint("TOPLEFT", 8, -8)
+	list:SetPoint("TOPLEFT", 8, -8 - SEARCH_H - 6)
 	list:SetPoint("BOTTOMLEFT", 8, 8)
 	list:SetWidth(LIST_W)
 	listChild = CreateFrame("Frame", nil, list)
@@ -475,24 +536,27 @@ function CensusPane.Build(parent)
 	w.zonesNote:SetWidth(CARD_W)
 
 	pane:Hide()
-	CensusPane.frames = { pane = pane, rows = rows, people = people, segments = segments, levels = levels, zones = zones, legend = legend, w = w, card = card }
+	CensusPane.frames = { pane = pane, rows = rows, people = people, segments = segments, levels = levels, zones = zones, legend = legend, w = w, card = card, search = search, empty = empty }
 	return pane
 end
 
 -- Перерисовать: выбор держится, пока гильдия в списке; иначе — своя гильдия, иначе первая.
+-- Поиск ничего не нашёл — карточка (и заявки над ней) остаётся на выбранной гильдии.
 function CensusPane.Render()
 	if not pane then return end
-	local items = Views.CensusRows()
+	local items = Views.CensusRows(nil, query)
+	local pool = items
+	if #items == 0 and ns.Util.Trim(query) ~= "" then pool = Views.CensusRows() end
 	local pick
-	for _, it in ipairs(items) do
+	for _, it in ipairs(pool) do
 		if it.key == selected then pick = it end
 	end
 	if not pick then
-		for _, it in ipairs(items) do
+		for _, it in ipairs(pool) do
 			if it.s.mine then pick = it end
 		end
 	end
-	pick = pick or items[1]
+	pick = pick or pool[1]
 	selected = pick and pick.key or nil
 	RenderList(items)
 	RenderCard(pick and Views.GuildCard(pick.s) or nil)
@@ -514,5 +578,6 @@ function CensusPane.Show()
 end
 
 function CensusPane.Hide()
+	if search then search:ClearFocus() end
 	if pane then pane:Hide() end
 end
