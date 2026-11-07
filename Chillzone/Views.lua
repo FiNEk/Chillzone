@@ -182,21 +182,83 @@ function Views.StatusTip(tt, now)
 	tt:AddLine(L.HEAD_TIP_MORE, 0.6, 0.6, 0.6)
 end
 
--- Список гильдий слева на «Переписи»: { key, s, text, right, sub }. Подробности — Views.GuildCard.
-function Views.CensusRows(now)
+-- Поиск сравнивает одни и те же имена при каждой букве и перерисовке: сведённые строки
+-- (U.SearchKey) держим до SEARCH_KEPT штук, потом начинаем заново.
+local SEARCH_KEPT = 5000
+local searchKeys, searchKept = {}, 0
+local function Holds(q, text)
+	if type(text) ~= "string" or text == "" then return false end
+	local k = searchKeys[text]
+	if not k then
+		searchKept = searchKept + 1
+		if searchKept > SEARCH_KEPT then searchKeys, searchKept = {}, 1 end
+		k = U.SearchKey(text)
+		searchKeys[text] = k
+	end
+	return k:find(q, 1, true) ~= nil
+end
+
+-- Что запрос q (U.SearchKey) нашёл в гильдии s: nil — ничего; "" — название или глава (подпись
+-- строки прежняя, глава в ней и так виден); иначе подпись — первое совпадение и сколько ещё:
+-- «Капитан: Имя», «Связной: Имя», звание и имя согильдийца (свой ростер, и не в игре тоже),
+-- «Где сейчас: Зона (3)» (зоны — только из свежего отчёта).
+local function SearchHit(s, q)
+	local r = s.r
+	if Holds(q, Codec.Plain(s.guild)) or Holds(q, r.leader) then return "" end
+	local hits, seen = {}, {}
+	if r.leader then seen[U.Key(r.leader) or ""] = true end
+	local function person(label, name, class, online)
+		local k = U.Key(name)
+		if not k or seen[k] or not Holds(q, U.Display(name)) then return end
+		seen[k] = true
+		local shown = online and Views.Name(U.Display(name), class) or (GREY .. Codec.Plain(U.Display(name)) .. "|r")
+		hits[#hits + 1] = GREY .. Codec.Plain(label) .. ":|r " .. Dot(online) .. shown
+	end
+	for _, o in ipairs(r.officers or {}) do person(L.ROLE_CAPTAIN, o.name, o.class, s.fresh and o.online) end
+	for _, o in ipairs(r.veterans or {}) do person(L.SEARCH_RELAY, o.name, o.class, s.fresh and o.online) end
+	if s.mine then
+		for _, m in ipairs(ns.Roster.members or {}) do
+			local label = (type(m.rankName) == "string" and m.rankName ~= "") and m.rankName or L.SEARCH_MEMBER
+			person(label, m.name, m.class, m.online)
+		end
+	end
+	if s.fresh then
+		for _, e in ipairs(SortedMap(r.zones)) do
+			local name = ns.Zones.NameForKey(e.k)
+			if Holds(q, name) then
+				hits[#hits + 1] = GREY .. L.CARD_ZONES .. ":|r " .. Codec.Plain(name) .. " " .. GREY .. "(" .. U.Num(e.v) .. ")|r"
+			end
+		end
+	end
+	if #hits == 0 then return nil end
+	if #hits == 1 then return hits[1] end
+	return hits[1] .. " " .. GREY .. L.SEARCH_MORE:format(#hits - 1) .. "|r"
+end
+
+-- Список гильдий слева на «Переписи»: { key, s, text, right, sub, hit }. Подробности —
+-- Views.GuildCard. query — текст из поля поиска: только гильдии, где он нашёлся (по названию,
+-- главе, офицерам, связным, зонам и участникам своей гильдии), в прежнем порядке; в подписи —
+-- что нашлось. Пустой запрос (или одни пробелы) — весь список.
+function Views.CensusRows(now, query)
+	local q = query and U.SearchKey(query) or ""
 	local out = {}
 	for _, s in ipairs(ns.Data.Summary(now)) do
-		local right
-		if s.recent then
-			right = (s.online and (GREEN .. U.Num(s.online) .. "|r") or (GREY .. "?|r")) .. GREY .. " / |r" .. U.Num(s.total or 0)
-		else
-			right = GREY .. L.CENSUS_OLD:format(Views.Ago(s.age)) .. "|r"
+		local hit
+		if q ~= "" then hit = SearchHit(s, q) end
+		if q == "" or hit then
+			local right
+			if s.recent then
+				right = (s.online and (GREEN .. U.Num(s.online) .. "|r") or (GREY .. "?|r")) .. GREY .. " / |r" .. U.Num(s.total or 0)
+			else
+				right = GREY .. L.CENSUS_OLD:format(Views.Ago(s.age)) .. "|r"
+			end
+			local leader = s.r.leader and (Dot(s.fresh and s.r.leaderOnline) .. Views.Name(s.r.leader, s.r.leaderClass)) or GREY .. "—|r"
+			out[#out + 1] = {
+				key = U.GuildKey(s.guild), s = s, text = GuildLabel(s), right = right,
+				sub = (hit and hit ~= "") and hit or (GREY .. L.CENSUS_LEADER .. "|r " .. leader),
+				hit = hit,
+			}
 		end
-		local leader = s.r.leader and (Dot(s.fresh and s.r.leaderOnline) .. Views.Name(s.r.leader, s.r.leaderClass)) or GREY .. "—|r"
-		out[#out + 1] = {
-			key = U.GuildKey(s.guild), s = s, text = GuildLabel(s), right = right,
-			sub = GREY .. L.CENSUS_LEADER .. "|r " .. leader,
-		}
 	end
 	return out
 end
