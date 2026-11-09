@@ -50,5 +50,19 @@ SOFTWARE.
 |---|---|---|
 | LibStub | — | общественное достояние (public domain) |
 | CallbackHandler-1.0 | r8 | BSD-подобная лицензия Ace3, см. `libs/CallbackHandler-1.0/LICENSE-Ace3.txt` |
+| LibDataBroker-1.1 | minor 4 | All Rights Reserved; автор разрешает включение в аддоны, см. ссылку ниже |
+| LibDBIcon-1.0 | minor 57, SVN r165 | Ace3 Style BSD на странице проекта, см. `libs/LibDBIcon-1.0/LICENSE-Ace3.txt` |
 | HereBeDragons-2.0 | r33 | BSD (`X-License` в `HereBeDragons.toc` автора, Nevcairiel), см. <https://github.com/Nevcairiel/HereBeDragons> |
 | HereBeDragons-Pins-2.0 | r17 | то же |
+
+LibDataBroker взят без изменений из <https://github.com/tekkub/libdatabroker-1-1>,
+коммит `1a63ede0248c11aa1ee415187c1f9c9489ce3e02`.
+Условия и указание автора включать библиотеку непосредственно в аддон:
+<https://www.wowace.com/projects/libdatabroker-1-1>.
+
+LibDBIcon взят без изменений из официального SVN, ревизия 165:
+<https://repos.wowace.com/wow/libdbicon-1-0/!svn/bc/165/trunk/LibDBIcon-1.0/LibDBIcon-1.0.lua>.
+Лицензия на странице проекта: <https://www.wowace.com/project/15552/license>.
+В toc автора указано All Rights Reserved; отдельно на странице проекта опубликована
+Ace3 Style BSD и прямо предусмотрено включение библиотеки в аддоны:
+<https://www.wowace.com/projects/libdbicon-1-0>.

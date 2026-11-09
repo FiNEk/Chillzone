@@ -3,7 +3,7 @@
 -- Вкладка «Объединение» (UnionPane.lua): глава главной гильдии управляет составом,
 -- офицер гильдии вне объединения запрашивает связь.
 -- Чат рисует ChatPane.lua, Перепись — CensusPane.lua, остальные вкладки — список строк из Views.lua
--- и Debug.lua во вставке окна. Кнопка у миникарты — по образцу Olympus UI.lua.
+-- и Debug.lua во вставке окна. Кнопка у миникарты — LibDBIcon, объект запуска — LibDataBroker.
 local ADDON, ns = ...
 
 local L = ns.L
@@ -33,7 +33,7 @@ local status, heading -- шапка (крупно и мелко) и назван
 local titleText -- свой текст заголовка, если у рамки нет SetTitle
 local tabs, rows, checks = {}, {}, {}
 local current = "chat"
-local minimapButton
+local minimapLauncher
 
 local function SetTip(owner, tip)
 	owner:SetScript("OnEnter", function(self)
@@ -792,63 +792,33 @@ ns.On("UPDATE", function() UI.RenderTitle() end)
 ---------------------------------------------------------------------------
 -- Кнопка у миникарты: левый щелчок — окно, правый — круги на карте, перетаскивание — место.
 ---------------------------------------------------------------------------
-local function PlaceButton()
-	if not (minimapButton and rawget(_G, "Minimap")) then return end
-	local angle = math.rad(ns.db.settings.minimap.angle or 200)
-	local radius = (Minimap:GetWidth() / 2) + 5
-	minimapButton:ClearAllPoints()
-	minimapButton:SetPoint("CENTER", Minimap, "CENTER", math.cos(angle) * radius, math.sin(angle) * radius)
-end
-
-local function CreateButton()
-	local b = CreateFrame("Button", "ChillzoneMinimapButton", Minimap)
-	b:SetSize(31, 31)
-	b:SetFrameStrata("MEDIUM")
-	b:SetFrameLevel(8)
-	local bg = b:CreateTexture(nil, "BACKGROUND")
-	bg:SetTexture("Interface\\Minimap\\UI-Minimap-Background")
-	bg:SetSize(20, 20)
-	bg:SetPoint("TOPLEFT", 6, -6)
-	local icon = b:CreateTexture(nil, "ARTWORK")
-	icon:SetTexture(ICON)
-	icon:SetSize(18, 18)
-	icon:SetPoint("TOPLEFT", 7, -7)
-	local ring = b:CreateTexture(nil, "OVERLAY")
-	ring:SetTexture("Interface\\Minimap\\MiniMap-TrackingBorder")
-	ring:SetSize(53, 53)
-	ring:SetPoint("TOPLEFT")
-	b:SetHighlightTexture("Interface\\Minimap\\UI-Minimap-ZoomButton-Highlight")
-	b:RegisterForClicks("LeftButtonUp", "RightButtonUp")
-	b:RegisterForDrag("LeftButton")
-	b:SetScript("OnClick", function(_, button)
-		ns.SafeCall("minimap click", function()
-			if button == "RightButton" then ns.Map.SetEnabled(not ns.db.settings.showMap) else UI.Toggle() end
-		end)
-	end)
-	b:SetScript("OnDragStart", function(self)
-		self:SetScript("OnUpdate", function()
-			local mx, my = Minimap:GetCenter()
-			local px, py = GetCursorPosition()
-			local scale = Minimap:GetEffectiveScale()
-			ns.db.settings.minimap.angle = math.deg(math.atan2(py / scale - my, px / scale - mx))
-			PlaceButton()
-		end)
-	end)
-	b:SetScript("OnDragStop", function(self) self:SetScript("OnUpdate", nil) end)
-	b:SetScript("OnEnter", function(self)
-		GameTooltip:SetOwner(self, "ANCHOR_LEFT")
-		ns.SafeCall("minimap tip", ns.Views.MinimapTip, GameTooltip)
-		GameTooltip:Show()
-	end)
-	b:SetScript("OnLeave", function() GameTooltip:Hide() end)
-	return b
-end
-
 function UI.UpdateMinimapButton()
 	if not rawget(_G, "Minimap") then return end
-	minimapButton = minimapButton or CreateButton()
-	PlaceButton()
-	minimapButton:SetShown(not ns.db.settings.minimap.hide)
+	local icon = LibStub("LibDBIcon-1.0")
+	local db = ns.db.settings.minimap
+	-- Старые настройки переносим один раз: после перетаскивания положение хранит LibDBIcon.
+	if db.minimapPos == nil then db.minimapPos = db.angle or 200 end
+	if not minimapLauncher then
+		minimapLauncher = LibStub("LibDataBroker-1.1"):NewDataObject(ADDON, {
+			type = "launcher",
+			label = "Chillzone",
+			icon = ICON,
+			OnClick = function(_, button)
+				ns.SafeCall("minimap click", function()
+					if button == "RightButton" then ns.Map.SetEnabled(not ns.db.settings.showMap)
+					elseif button == "LeftButton" then UI.Toggle() end
+				end)
+			end,
+			OnTooltipShow = function(tt) ns.SafeCall("minimap tip", ns.Views.MinimapTip, tt) end,
+		})
+		icon:Register(ADDON, minimapLauncher, db)
+		-- Сохраняем прежнюю геометрию и пути текстур для клиента Forever.
+		icon:SetButtonIcon(ADDON, ICON, 18, "TOPLEFT", 7, -7)
+		icon:SetButtonBackground(ADDON, "Interface\\Minimap\\UI-Minimap-Background", 20, "TOPLEFT", 6, -6)
+		icon:SetButtonBorder(ADDON, "Interface\\Minimap\\MiniMap-TrackingBorder", 53, "TOPLEFT", 0, 0)
+		icon:SetButtonHighlightTexture(ADDON, "Interface\\Minimap\\UI-Minimap-ZoomButton-Highlight")
+	end
+	if db.hide then icon:Hide(ADDON) else icon:Show(ADDON) end
 end
 
 ns.On("LOGIN", function()
