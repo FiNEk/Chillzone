@@ -84,9 +84,20 @@ function Census.Reporter(withoutMe)
 	return Codec.PickReporter(me, ns.char and ns.char.shareZones or false, live, now, C.PEER_WINDOW, eligible)
 end
 
+local acting, handingUntil = false, nil -- я репортёр; до каких пор я передаю аренду
+local deafUntil = 0 -- до каких пор приветы могли до меня не дойти: блокировка чата и LOGIN_QUIET после неё
+
+-- В блокировке чата клиент может не слышать приветы дольше PEER_WINDOW. Тогда согильдийцы для
+-- него исчезают, он выбирает себя и после блокировки шлёт гильдии свой кэш, а его RG никто не
+-- принимает. Поэтому новым репортёром можно стать только через LOGIN_QUIET после блокировки,
+-- когда приветы уже дошли. Действующий репортёр остаётся: короткий бой не должен стоить
+-- гильдии передачи дел и новой регистрации у реле.
 function Census.IsReporter()
 	if not ns.IsMember() or not ns.loginAt then return false end
-	if ns.Now() - ns.loginAt < C.LOGIN_QUIET then return false end
+	local now = ns.Now()
+	if ns.Comm.InLockdown() then deafUntil = now + C.LOGIN_QUIET end
+	if now - ns.loginAt < C.LOGIN_QUIET then return false end
+	if now < deafUntil and not acting then return false end
 	return Census.Reporter() == ns.myKey
 end
 
@@ -97,7 +108,6 @@ end
 -- преемника (RU), а гильдия принимает RG и от него.
 ---------------------------------------------------------------------------
 local elected, previous = nil, nil -- ключ выбранного репортёра; { key, untilAt } — прежний
-local acting, handingUntil = false, nil -- я репортёр; до каких пор я передаю аренду
 local inheritedUntil -- до каких пор вошедший репортёр может узнать своего предшественника
 
 function Census.Track()
