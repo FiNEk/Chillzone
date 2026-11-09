@@ -294,25 +294,62 @@ T.test("окно: строка приходит в окно, непрочита�
 	Errors(c)
 end)
 
-T.test("окно: метка в чате игры открывает окно", function()
+T.test("чат игры: метка канала открывает ввод команды своего канала", function()
 	local w, c = Build()
 	local B = c.B
-	c.G:Slash("/cz1", "метка")
+	c.A:Slash("/cz1", "метка")
 	w:Run(30)
 	local line
 	for _, l in ipairs(B.printed) do
 		if l:find("метка", 1, true) then line = l end
 	end
-	T.ok(line and line:find("|Haddon:Chillzone:chan:A|h[Чиллзон]|h", 1, true), "метка — ссылка")
+	local link = line and line:match("|H([^|]+)|h%[Чиллзон%]|h")
+	T.eq(link, B.ns.Chat.TAG_LINK .. "A", "ссылка на общий канал")
+	T.ok(line:find(" |cff999999<Чз>|r ", 1, true), "сокращение гильдии выводится обычным текстом")
+	B.ns.char.chatTagNative = true
+	local box = B.env.ChatFrame1EditBox
 	B:CallHooks("SetItemRef", "addon:Chillzone:chan:A", "[Чиллзон]", "RightButton")
-	T.eq(B.ns.UI.Current(), nil, "правый клик не открывает окно аддона")
 	B:CallHooks("SetItemRef", "item:19019", "[x]", "LeftButton")
-	T.eq(B.ns.UI.Current(), nil, "чужие ссылки не трогаем")
-	B:CallHooks("SetItemRef", "addon:Chillzone:chan:A", "[Чиллзон]", "LeftButton")
-	T.eq(B.ns.UI.Current(), "chat", "окно на чате")
-	T.eq(B.ns.ChatPane.Current(), "A", "канал «Чиллзон»")
-	T.ok(B.ns.ChatPane.frames.box:HasFocus(), "курсор в поле")
+	T.no(box:HasFocus(), "ПКМ и чужие ссылки не открывают ввод")
+	local sent = B.ns.Chat.stats.sent
+	for i, tier in ipairs({ "A", "C", "L" }) do
+		local label = B.ns.Chat.Tag(tier)
+		B:CallHooks("SetItemRef", label:match("|H([^|]+)|h"), label, "LeftButton")
+		local text = "/cz" .. i .. " "
+		T.eq(box:GetText(), text)
+		T.eq(box.cursor, #text)
+		T.ok(box:HasFocus(), "курсор в штатном чате")
+		T.eq(B.ns.UI.Current(), nil, "окно аддона закрыто")
+	end
+	T.eq(B.ns.Chat.stats.sent, sent, "клик ничего не отправляет")
 	Errors(c)
+end)
+
+T.test("метка канала: настройка переключает ввод и сохраняется для персонажа", function()
+	local w, c = SlashClient()
+	local ns = c.ns
+	ns.UI.Toggle("settings")
+	local check = ns.UI.chatTagNative
+	T.no(check:GetChecked(), "по умолчанию галочка снята")
+	c:CallHooks("SetItemRef", ns.Chat.TAG_LINK .. "C", "[Офицеры]", "LeftButton")
+	T.eq(ns.UI.Current(), "chat")
+	T.eq(ns.ChatPane.Current(), "C")
+	T.ok(ns.ChatPane.frames.box:HasFocus())
+	T.no(c.env.ChatFrame1EditBox:HasFocus())
+
+	ns.UI.Toggle("settings")
+	check:SetChecked(true)
+	check.scripts.OnClick(check)
+	c:CallHooks("SetItemRef", ns.Chat.TAG_LINK .. "L", "[Главы]", "LeftButton")
+	T.eq(c.env.ChatFrame1EditBox:GetText(), "/cz3 ")
+	T.eq(ns.UI.Current(), "settings")
+
+	local db = ns.db
+	c:Logout()
+	c = w:Client({ first = "Автор", surname = "Чата", guild = "Чиллзон", db = db })
+	ns = c.ns
+	ns.UI.Toggle("settings")
+	T.ok(ns.UI.chatTagNative:GetChecked(), "включённая настройка сохранилась после входа")
 end)
 
 T.test("окно: без дубля в чат игры строка только в окне", function()

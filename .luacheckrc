@@ -95,6 +95,8 @@ read_globals = {
 	"ChatFontNormal",
 	"Constants",
 	"DEFAULT_CHAT_FRAME",
+	"ChatFrameUtil",
+	"ChatFrame_OpenChat",
 	"ERR_CHAT_PLAYER_NOT_FOUND_S",
 	"GameTooltip",
 	"GENERAL_CHAT_DOCK",
