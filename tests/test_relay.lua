@@ -50,6 +50,36 @@ local function Quit(w, cl)
 	w:AddOffline(cl.guild, cl:Name() .. "-" .. cl.realm, cl.rank, cl.level, cl.class, 0)
 end
 
+-- Клиент, который в блокировке чата не слышит аддон-сообщений. Сам симулятор доставляет их
+-- и в блокировке, а приходят ли они в игре, неизвестно: тесты берут худший случай.
+local function Deafen(cl)
+	local fire = cl.Fire
+	cl.Fire = function(self, event, ...)
+		if self.lockdown and (event == "CHAT_MSG_ADDON" or event == "CHAT_MSG_ADDON_LOGGED") then return end
+		return fire(self, event, ...)
+	end
+end
+
+-- Сколько раз cl отказал name в пересылке гильдии (RG).
+local function RejectedRG(cl, name)
+	local n = 0
+	for _, line in ipairs(cl.ns.db.log) do
+		if tostring(line):find("RG от " .. name .. " отклонён", 1, true) then n = n + 1 end
+	end
+	return n
+end
+
+-- Единственный клиент гильдии с настоящими выборами, но без сети: сертификат считается выданным.
+local function LoneMember()
+	local w = Wow.World()
+	w:Guild("Чиллзон")
+	local c = w:Client({ first = "Карл", surname = "Великий", guild = "Чиллзон", rank = 0 })
+	c.ns.Security.MyCertificate = function() return {} end
+	c.ns.Security.Seal = function(raw, done) done(raw); return true end
+	c.ns.Relay.Out = function() end
+	return w, c
+end
+
 -- Настоящие ростер и перепись, но без фоновых таймеров: проверяем точные границы
 -- REPORT_EVERY / REPORT_IDLE и не смешиваем отправку отчёта с доставкой по сети.
 local function CensusReports(withVeteran)
@@ -77,6 +107,59 @@ local function CensusReports(withVeteran)
 	end
 	return w, c, reports, reportAt
 end
+
+T.test("census: оглохший в блокировке не выбирает себя и не шлёт гильдии свой кэш", function()
+	local w, c = Build()
+	local yana = w:Client({ first = "Яна", surname = "Последняя", guild = "Чиллзон", rank = 3 })
+	Deafen(yana)
+	w:Run(300)
+	local census = yana.ns.Census
+	T.ok(yana.ns.Security.MyCertificate(), "сертификат получен")
+	T.ok(#yana.ns.Data.Cached() > 0, "в кэше есть чужие отчёты")
+	T.no(census.IsReporter(), "пока слышит гильдию, репортёром не выбрана")
+
+	yana.lockdown = true
+	w:Run(yana.ns.Config.PEER_WINDOW + 20)
+	T.eq(census.Reporter(), yana.ns.myKey, "приветы устарели, и выбрать больше некого")
+	T.no(census.IsReporter(), "в блокировке себя не назначает")
+
+	yana.lockdown = false
+	w:Run(120)
+	T.no(census.IsReporter(), "после блокировки снова слышит офицеров")
+	T.eq(RejectedRG(c.M, "Яна Последняя"), 0, "гильдия не получила от неё RG")
+	for _, name in ipairs({ "A", "K", "M" }) do
+		T.eq(#c[name].ns.db.errors, 0, name .. ": ошибки " .. table.concat(c[name].ns.db.errors, " | "))
+	end
+end)
+
+T.test("census: после блокировки новый репортёр ждёт LOGIN_QUIET", function()
+	local w, c = LoneMember()
+	local quiet = c.ns.Config.LOGIN_QUIET
+	c.lockdown = true
+	w:Run(quiet + 30)
+	T.no(c.ns.Census.IsReporter(), "в блокировке себя не назначает")
+	c.lockdown = false
+	w:Run(quiet - 10)
+	T.no(c.ns.Census.IsReporter(), "приветы ещё могли не дойти")
+	w:Run(15)
+	T.ok(c.ns.Census.IsReporter(), "окно истекло, а других кандидатов нет")
+end)
+
+T.test("census: действующий репортёр переживает блокировку без передачи дел", function()
+	local w, c = LoneMember()
+	w:Run(c.ns.Config.LOGIN_QUIET + 10)
+	T.ok(c.ns.Census.IsReporter(), "репортёр до блокировки")
+	local changes = 0
+	c.ns.On("REPORTER", function() changes = changes + 1 end)
+	c.lockdown = true
+	w:Run(40)
+	T.ok(c.ns.Census.IsReporter(), "в блокировке остаётся репортёром")
+	c.lockdown = false
+	w:Run(40)
+	T.ok(c.ns.Census.IsReporter(), "после блокировки остаётся репортёром")
+	T.eq(changes, 0, "ни передачи дел, ни новой регистрации")
+	T.no(c.ns.Census.Handing(), "дела никому не передаёт")
+end)
 
 for _, withVeteran in ipairs({ false, true }) do
 	local hasVeteran = withVeteran
