@@ -315,7 +315,6 @@ T.test("chat input: вкладка из меню метки получает п�
 	local created = h.selected
 	EnableNativeChat(h, ns, env)
 	h:Tick()
-	T.eq(ns.char.chatTab, nil, "вкладка числится только в копиях")
 	T.ok(h.box and h.box:IsShown())
 	T.ok(h.client.bindings.ENTER)
 	h:Select(env.ChatFrame1)
@@ -328,7 +327,7 @@ T.test("chat input: вкладка из меню метки получает п�
 	T.eq(h.client.bindings.ENTER, nil)
 	ns.char.chatMirror = false
 	h:Select(created)
-	T.no(h.box:IsShown(), "выключенные копии без кнопки окна не дают поля")
+	T.no(h.box:IsShown(), "выключенные копии не дают поля")
 	T.eq(#ns.db.errors, 0, ns.db.errors[1])
 end)
 
@@ -981,33 +980,114 @@ T.test("chat tab: видна одна строка, штатная возвра�
 	T.eq(native:GetAlpha(), 0.35)
 end)
 
-T.test("chat tab: открытие вкладки не меняет настройки дублирования", function()
+T.test("chat tab: кнопка отмечает вкладку и сохраняет остальные назначения", function()
 	local h, ns, env = Build()
-	h.client:ChatWindow(4, "Гильдия")
-	T.ok(ns.Chat.SetWindow("Гильдия"))
-	ns.char.chatMirror = false
 	ns.char.chatTime = true
+	T.same(ns.Chat.SelectedWindows(), { "" })
 	T.ok(ns.ChatTab.Open())
 	h:Tick()
 	T.eq(h.opened, 1)
-	T.same(ns.Chat.SelectedWindows(), { "Гильдия" })
-	T.eq(ns.char.chatTab, ns.L.CHAT_TAB_NAME)
-	T.eq(ns.char.chatMirror, false)
+	T.same(ns.Chat.SelectedWindows(), { "", ns.L.CHAT_TAB_NAME }, "вкладка отмечена в настройке")
+	T.eq(ns.char.chatMirror, true)
 	T.ok(h.box and h.box:IsShown())
 	T.no(h.smileButton, "без Hepega кнопка смайликов не появляется")
 	T.eq(h.client.bindings.ENTER.button, "ChillzoneChatKey", "Enter ведёт в поле вкладки")
 
 	ns.Chat.Show("A", "Чиллзон", "Автор Чата", "MAGE", "Проверка новой вкладки")
-	T.eq(#h.tab.lines, 1, "строка видна во вкладке союза при выключенном дублировании")
+	T.eq(#h.tab.lines, 1, "строка видна во вкладке один раз")
 	local prefix = "|cff999999" .. env.date("%H:%M", ns.ServerTime()) .. "|r "
 	T.eq(h.tab.lines[1]:sub(1, #prefix), prefix)
 	T.ok(h.tab.lines[1]:find("Проверка новой вкладки", 1, true))
-	T.eq(#env.ChatFrame4.lines, 0)
-	T.eq(h.client:Saw("Проверка новой вкладки"), 0)
+	T.eq(h.client:Saw("Проверка новой вкладки"), 1, "основное окно получает строку как раньше")
 	h.selected = env.ChatFrame1
 	T.ok(ns.ChatTab.Open())
 	T.eq(h.opened, 1, "повторное нажатие не создаёт вторую вкладку")
 	T.eq(h.selected, h.tab)
+	T.same(ns.Chat.SelectedWindows(), { "", ns.L.CHAT_TAB_NAME }, "повторное нажатие не дублирует галочку")
+end)
+
+T.test("chat tab: при выключенных копиях кнопка включает только вкладку", function()
+	local h, ns, env = Build()
+	h.client:ChatWindow(4, "Гильдия")
+	T.ok(ns.Chat.SetWindow("Гильдия"))
+	ns.char.chatMirror = false
+	T.ok(ns.ChatTab.Open())
+	h:Tick()
+	T.same(ns.Chat.SelectedWindows(), { ns.L.CHAT_TAB_NAME })
+	T.eq(ns.char.chatMirror, true)
+	ns.Chat.Show("A", "Чиллзон", "Автор Чата", "MAGE", "Только во вкладку")
+	T.eq(#h.tab.lines, 1)
+	T.eq(#env.ChatFrame4.lines, 0, "выключенные раньше назначения не включаются")
+	T.eq(h.client:Saw("Только во вкладку"), 0)
+end)
+
+T.test("chat tab: снятая галочка убирает у вкладки строки и поле", function()
+	local h, ns = Build()
+	local name = ns.L.CHAT_TAB_NAME
+	T.ok(ns.ChatTab.Open())
+	h:Tick()
+	T.ok(h.box:IsShown())
+	T.ok(ns.Chat.ToggleWindow(name))
+	h:Tick()
+	T.no(h.box:IsShown(), "вкладка без галочки остаётся обычной")
+	T.eq(h.client.bindings.ENTER, nil, "Enter возвращается игре")
+	ns.Chat.Show("A", "Чиллзон", "Автор Чата", "MAGE", "После снятия галочки")
+	T.eq(#h.tab.lines, 0)
+	T.eq(h.client:Saw("После снятия галочки"), 1)
+
+	T.ok(ns.ChatTab.Open())
+	h:Tick()
+	T.ok(h.box:IsShown(), "кнопка снова отмечает вкладку")
+	ns.char.chatMirror = false
+	h:Tick()
+	T.no(h.box:IsShown(), "выключенные копии убирают поле")
+	ns.Chat.Show("A", "Чиллзон", "Автор Чата", "MAGE", "Копии выключены")
+	T.eq(#h.tab.lines, 0)
+	T.eq(h.client:Saw("Копии выключены"), 0)
+end)
+
+T.test("chat tab: вкладка прежней версии переносится в настройку один раз", function()
+	local h, ns = Build()
+	local name = ns.L.CHAT_TAB_NAME
+	ns.char.chatTab = name
+	ns.Fire("SETTINGS")
+	h:Tick()
+	T.eq(ns.char.chatTab, name, "закрытая вкладка ждёт появления")
+	T.same(ns.Chat.SelectedWindows(), { "" })
+
+	local tab = h.client:ChatWindow(3, name)
+	tab.isDocked = true
+	tab:Show()
+	h:Tick()
+	T.no(ns.char.chatTab)
+	T.same(ns.Chat.SelectedWindows(), { "", name })
+	ns.Chat.Show("A", "Чиллзон", "Автор Чата", "MAGE", "После переноса")
+	T.eq(#tab.lines, 1)
+	T.eq(h.client:Saw("После переноса"), 1)
+
+	T.ok(ns.Chat.ToggleWindow(name))
+	h:Tick()
+	T.same(ns.Chat.SelectedWindows(), { "" }, "снятая галочка не возвращается")
+
+	ns.char.chatTab = name
+	ns.char.chatMirror = false
+	h:Tick()
+	T.same(ns.Chat.SelectedWindows(), { name }, "при выключенных копиях строки шли только во вкладку")
+	T.eq(ns.char.chatMirror, true)
+	T.eq(#ns.db.errors, 0, ns.db.errors[1])
+end)
+
+T.test("chat tab: перенос вкладки не трогает настройку при Chattynator", function()
+	local h, ns = BuildChattynator()
+	local name = ns.L.CHAT_TAB_NAME
+	local tab = h.client:ChatWindow(3, name)
+	tab:Show()
+	ns.char.chatTab = name
+	ns.Fire("SETTINGS")
+	h:Mount(1)
+	h:Tick()
+	T.eq(ns.char.chatTab, name)
+	T.same(ns.Chat.SelectedWindows(), { "" })
 end)
 
 T.test("chat tab: смайлик из окна Hepega попадает только в активную вкладку союза", function()
@@ -1118,7 +1198,6 @@ end)
 T.test("chat tab: простой текст идёт в союз только из выбранной вкладки", function()
 	local h, ns, env = Build()
 	T.ok(ns.ChatTab.Open())
-	ns.char.chatMirror = false
 	h:Tick()
 	local box, sent, accept = h.box, {}, false
 	ns.Chat.Send = function(tier, message)

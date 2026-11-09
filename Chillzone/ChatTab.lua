@@ -115,30 +115,31 @@ local function MuteNative(native)
 	return ok
 end
 
--- Открытая вкладка союза принимает строки и в фоне, независимо от дополнительных копий.
-function ChatTab.OutputFrame()
+-- Поле ввода есть только у вкладки «Чиллзон», отмеченной в настройке копий.
+-- Остальные отмеченные вкладки только получают строки, их ввод остаётся у игры.
+function ChatTab.InputFrame()
 	local char = ns.char
-	if ChattynatorLoaded() or not char or type(char.chatTab) ~= "string"
-		or not char.chatOn or not ns.IsMember() then return end
-	local window = FindWindow(char.chatTab)
+	if ChattynatorLoaded() or not char or not char.chatOn or char.chatMirror == false
+		or not ns.IsMember() or not Chat.WindowSelected(L.CHAT_TAB_NAME) then return end
+	local window = FindWindow(L.CHAT_TAB_NAME)
 	return window and window.frame
 end
 
--- Поле ввода есть только у вкладки «Чиллзон»: открытой кнопкой окна или созданной меню метки.
--- Остальные вкладки из настройки копий только получают строки, их ввод остаётся у игры.
-local function InputFrame()
-	local frame = ChatTab.OutputFrame()
-	if frame then return frame end
-	if ChattynatorLoaded() or ns.char.chatMirror == false or not Chat.WindowSelected(L.CHAT_TAB_NAME) then return end
-	local window = FindWindow(L.CHAT_TAB_NAME)
-	return window and window.frame
+-- Прежние версии хранили вкладку отдельно от настройки копий. Переносим её в список один раз:
+-- старое поле удаляем до записи, иначе снятая игроком галочка вернётся при следующем обновлении.
+-- Закрытую вкладку ждём: при входе окна чата могут быть ещё не готовы.
+local function AdoptSavedTab()
+	local name = ns.char and ns.char.chatTab
+	if type(name) ~= "string" or ChattynatorLoaded() or not FindWindow(name) then return end
+	ns.char.chatTab = nil
+	Chat.ActivateWindow(name)
 end
 
 local function SelectedWindow()
 	local char = ns.char
 	if not char or not char.chatOn or not ns.IsMember() then return end
 	local host, hosted = HostedWindow()
-	local frame = host or InputFrame()
+	local frame = host or ChatTab.InputFrame()
 	if not host then hosted = false end
 	if not IsSelected(frame, hosted) then return end
 	-- Штатный ввод с фокусом остаётся доступным для команд игры.
@@ -320,6 +321,7 @@ local function CreateInput()
 end
 
 local function Refresh()
+	AdoptSavedTab()
 	local frame, native, hosted = SelectedWindow()
 	if not frame then HideInput(); return end
 	if not input then input = CreateInput() end
@@ -403,7 +405,7 @@ function ChatTab.Open()
 	if SelectedInDock(dock) ~= window.frame or not window.frame:IsVisible() then
 		return Failed(L.CHAT_TAB_UNAVAILABLE)
 	end
-	ns.char.chatTab = window.name
+	if not Chat.ActivateWindow(window.name) then return Failed(L.CHAT_TAB_UNAVAILABLE) end
 	ns.Fire("SETTINGS")
 	return true
 end

@@ -205,6 +205,20 @@ function Chat.ToggleWindow(name)
 	return true
 end
 
+-- Отмечает открытую вкладку, не снимая остальных галочек. При выключенных копиях строки
+-- в чат игры не шли совсем, поэтому вкладка становится единственным назначением.
+function Chat.ActivateWindow(name)
+	if not WindowByName(name) then return false end
+	if ns.char.chatMirror == false then
+		ns.char.chatMirror = true
+		return Chat.SetWindow(name)
+	end
+	if not Chat.WindowSelected(name) then return Chat.ToggleWindow(name) end
+	-- Вкладку могли создать заново: настройки должны убрать красную отметку.
+	ns.Fire("CHAT_WINDOWS")
+	return true
+end
+
 function Chat.WindowCreateError()
 	if InCombatLockdown and InCombatLockdown() then return L.WINDOW_CREATE_COMBAT end
 	if type(rawget(_G, "Chattynator")) == "table" then return L.WINDOW_CREATE_CHATTY end
@@ -275,14 +289,12 @@ function Chat.Frames()
 end
 
 -- При ошибке API сохраняем строку в основном окне один раз, даже если упали несколько
--- выбранных вкладок или основное окно уже выбрано. skip уже получил строку отдельно.
-local function WriteToFrames(frames, text, r, g, b, skip)
-	local failed, mainWritten = false, skip == DEFAULT_CHAT_FRAME
+-- выбранных вкладок или основное окно уже выбрано.
+local function WriteToFrames(frames, text, r, g, b)
+	local failed, mainWritten = false, false
 	for _, f in ipairs(frames) do
-		if f ~= skip then
-			if f:AddMessage(text, r, g, b) == false then failed = true end
-			if f == DEFAULT_CHAT_FRAME then mainWritten = true end
-		end
+		if f:AddMessage(text, r, g, b) == false then failed = true end
+		if f == DEFAULT_CHAT_FRAME then mainWritten = true end
 	end
 	if failed and not mainWritten and DEFAULT_CHAT_FRAME then
 		DEFAULT_CHAT_FRAME:AddMessage(text, r, g, b)
@@ -374,14 +386,11 @@ end
 
 function Chat.Show(tier, guild, sender, class, text)
 	Chat.stats.shown = Chat.stats.shown + 1
-	local tab = ns.ChatTab and ns.ChatTab.OutputFrame()
 	local frames = (not ns.char or ns.char.chatMirror ~= false) and Chat.Frames() or {}
-	if tab or #frames > 0 then
+	if #frames > 0 then
 		local stamp = (ns.char and ns.char.chatTime and date) and ("|cff999999" .. date("%H:%M", ns.ServerTime()) .. "|r ") or ""
 		local line = stamp .. Chat.Format(tier, guild, sender, class, text)
-		local r, g, b = Chat.Color(tier)
-		if tab then tab:AddMessage(line, r, g, b) end
-		WriteToFrames(frames, line, r, g, b, tab)
+		WriteToFrames(frames, line, Chat.Color(tier))
 	end
 	Chat.Remember(tier, guild, sender, class, text)
 end
@@ -626,7 +635,7 @@ function Chat.TagClick(link, _, button, frame)
 	if button == "RightButton" then return ns.UI.OpenTagMenu(tier) end
 	if button and button ~= "LeftButton" then return false end
 	ns.UI.HideTagMenu()
-	if tier == "A" and frame and ns.ChatTab and frame == ns.ChatTab.OutputFrame() then
+	if tier == "A" and frame and ns.ChatTab and frame == ns.ChatTab.InputFrame() then
 		local box = ns.ChatTab.InputFor(frame)
 		if box then
 			box:SetFocus()
