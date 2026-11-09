@@ -98,6 +98,11 @@ local function Row(i)
 	return r
 end
 
+-- Пустой список: «ещё запрашиваем» и «данных нет» — разные вещи. Окно зовёт это по тику.
+function CensusPane.RenderEmpty()
+	if empty then empty:SetText(ns.Activity.Running("census") and L.CENSUS_LOADING or L.CENSUS_EMPTY) end
+end
+
 local function RenderList(items)
 	for i, it in ipairs(items) do
 		local r = Row(i)
@@ -111,6 +116,7 @@ local function RenderList(items)
 	for i = #items + 1, #rows do rows[i]:Hide() end
 	listChild:SetHeight(math.max(#items * (ROW_H + 2), 10))
 	empty:SetShown(#items == 0)
+	CensusPane.RenderEmpty()
 end
 
 ---------------------------------------------------------------------------
@@ -394,6 +400,7 @@ function CensusPane.Build(parent)
 	empty:SetWidth(LIST_W - 12)
 	empty:SetText(L.CENSUS_EMPTY)
 	empty:Hide()
+	CensusPane.empty = empty
 
 	local divider = pane:CreateTexture(nil, "ARTWORK")
 	divider:SetColorTexture(1, 1, 1, 0.08)

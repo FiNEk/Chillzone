@@ -732,6 +732,8 @@ ns.Comm.On("RG", function(msg, sender, dist)
 	end
 	local kind, mode, origin, inner = Codec.DecodeRelay(msg)
 	if kind ~= "RG" then return end
+	-- Здесь, а не в R1: повторы отсекаются раньше него, а ответ на Q1 часто состоит из повторов.
+	if mode == "L" then ns.Activity.Touch("census", C.CENSUS_QUIET, 1) end
 	Deliver(mode, origin, inner, { via = "RG", relay = sender }, false)
 end)
 
@@ -822,6 +824,19 @@ ns.On("GUILD_CHANGED", Relay.Invalidate)
 function Relay.Known() return known end
 function Relay.Reporters() return reporters end
 function Relay.HoldSize() return #hold end
+
+-- Сколько реле спрошено и ещё не ответило.
+function Relay.Asking()
+	local n = 0
+	for _, e in pairs(known) do
+		if e.asked then n = n + 1 end
+	end
+	return n
+end
+
+ns.Activity.Probe(function()
+	if #hold > 0 then return { kind = "wait", text = L.ACT_HOLD:format(#hold), detail = L.ACT_HOLD_TIP } end
+end)
 
 -- Состояние реле для показа: подпись и код ("down", "ok", "asked", "unknown").
 local function StateOf(e, now)

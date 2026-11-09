@@ -30,6 +30,7 @@ local SUITES = {
 	"test_recruit",
 	"test_recruit_sync",
 	"test_update",
+	"test_activity",
 	"test_map",
 	"test_minimap",
 }

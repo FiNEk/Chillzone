@@ -1528,6 +1528,25 @@ ns.Command("trust", function(arg)
         for _, root in ipairs(list) do ns.Print(ns.L.AUTH_ROOT_LINE, root.guild, U.Display(root.name)) end
     end
 end, "доверие: /chillzone trust — корни; init — задать свой корень; reset Гильдия — сброс корня; issuer-revoke/issuer-grant Имя Фамилия — допуск издателя; owner-reset — восстановление ключа управления")
+ns.Activity.Probe(function()
+    local n = Ed.Busy()
+    -- Одна подпись — обычная работа, строка появляется, когда копится очередь.
+    if n >= 2 then return { kind = "work", text = ns.L.ACT_CRYPTO:format(n), detail = ns.L.ACT_CRYPTO_TIP } end
+end)
+ns.Activity.Probe(function()
+    if not ns.IsMember() or S.MyCertificate() then return nil end
+    -- Сразу после входа сертификат ещё грузится, это не повод для красной точки.
+    if not ns.loginAt or ns.Now() - ns.loginAt < 20 then return nil end
+    return { kind = "block", text = ns.L.ACT_NO_CERT, detail = S.NotReadyReason() }
+end)
+ns.Activity.Probe(function()
+    if initAsking then return { kind = "wait", text = ns.L.ACT_TRUST_INIT } end
+end)
+ns.Activity.Probe(function()
+    local n = 0
+    for _ in pairs(outgoing) do n = n + 1 end
+    if n > 0 then return { kind = "wait", text = ns.L.ACT_LINKING:format(n) } end
+end)
 ns.Status(function()
     return ns.L.AUTH_STATUS:format(S.MyCertificate() and ns.L.YES or ns.L.NO, S.stats.verified, S.stats.rejected)
 end)

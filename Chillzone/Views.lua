@@ -190,6 +190,75 @@ function Views.StatusTip(tt, now)
 	tt:AddLine(L.HEAD_TIP_MORE, 0.6, 0.6, 0.6)
 end
 
+---------------------------------------------------------------------------
+-- Что идёт сейчас: строка внизу окна и подсказки к ней и к кнопке обновления.
+---------------------------------------------------------------------------
+local HOLD_LAST = 1 -- столько держим последнюю строку, чтобы короткие очереди не мигали
+local lastActivity
+
+-- { text, kind } или nil, если показывать нечего. kind: block, wait, work, done, fail.
+function Views.Activity(now)
+	now = now or ns.Now()
+	local list = ns.Activity.List()
+	local top = list[1]
+	if top then
+		local text = top.text
+		if #list > 1 then text = L.ACT_MORE:format(text, #list - 1) end
+		lastActivity = { text = text, kind = top.kind, at = now }
+		return lastActivity
+	end
+	local note = ns.Activity.LastNote()
+	if note then
+		lastActivity = nil
+		return note
+	end
+	if lastActivity and now - lastActivity.at < HOLD_LAST then return lastActivity end
+	lastActivity = nil
+	return nil
+end
+
+-- Насколько свежи данные: общий хвост обеих подсказок.
+local function Freshness(tt, now)
+	local scanned = ns.Roster.scannedAt
+	tt:AddLine(L.ACT_TIP_ROSTER:format(scanned and Views.Ago(now - scanned) or L.ACT_TIP_NEVER), 0.7, 0.7, 0.7)
+	if not ns.IsMember() then return end
+	local newest = Views.Status().newest
+	tt:AddLine(L.ACT_TIP_CENSUS:format(newest and Views.Ago(newest) or L.ACT_TIP_NEVER), 0.7, 0.7, 0.7)
+	local ok, list = 0, ns.Relay.Candidates()
+	for _, e in ipairs(list) do
+		local _, code = ns.Relay.StateOf(e, now)
+		if code == "ok" then ok = ok + 1 end
+	end
+	tt:AddLine(L.ACT_TIP_RELAYS:format(ok, #list), 0.7, 0.7, 0.7)
+end
+
+local ACTIVITY_COLOR = { block = { 1, 0.35, 0.35 }, wait = { 1, 0.82, 0 }, work = { 1, 0.82, 0 } }
+
+function Views.ActivityTip(tt, now)
+	now = now or ns.Now()
+	local list = ns.Activity.List()
+	if #list == 0 then tt:AddLine(L.ACT_TIP_IDLE, 1, 1, 1) end
+	for _, row in ipairs(list) do
+		local c = ACTIVITY_COLOR[row.kind] or ACTIVITY_COLOR.wait
+		tt:AddLine(row.text, c[1], c[2], c[3])
+		if row.detail then tt:AddLine(row.detail, 0.8, 0.8, 0.8, true) end
+	end
+	tt:AddLine(" ")
+	Freshness(tt, now)
+end
+
+function Views.RefreshTip(tt, now)
+	now = now or ns.Now()
+	tt:AddLine(L.REFRESH, 1, 1, 1)
+	tt:AddLine(L.REFRESH_TIP, 0.8, 0.8, 0.8, true)
+	local wait = ns.Refresh.Wait()
+	if wait > 0 then tt:AddLine(L.REFRESH_TIP_WAIT:format(math.ceil(wait)), 1, 0.82, 0) end
+	local reports = ns.IsMember() and ns.Census.RefreshWait() or 0
+	if reports > 0 then tt:AddLine(L.REFRESH_TIP_REPORTS:format(math.ceil(reports)), 1, 0.82, 0) end
+	tt:AddLine(" ")
+	Freshness(tt, now)
+end
+
 -- Список гильдий слева на «Переписи»: { key, s, text, right, sub }. Подробности — Views.GuildCard.
 function Views.CensusRows(now)
 	local out = {}

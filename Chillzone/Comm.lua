@@ -382,6 +382,15 @@ ns.On("LOGIN", function()
 	end)
 end)
 
+ns.Activity.Probe(function()
+	local n, L = #queue, ns.L
+	if n == 0 then return nil end
+	if Comm.InLockdown() then return { kind = "block", text = L.ACT_LOCKDOWN, detail = L.ACT_LOCKDOWN_TIP:format(n) } end
+	if ns.Now() < waitUntil then return { kind = "wait", text = L.ACT_THROTTLED, detail = L.ACT_THROTTLED_TIP:format(n) } end
+	-- Одно-два сообщения уходят за пару секунд, отдельной строки они не стоят.
+	if n >= 3 then return { kind = "work", text = L.ACT_SENDING:format(n) } end
+end)
+
 ns.Status(function()
 	local s = Comm.stats
 	return ns.L.STATUS_COMM:format(s.sent, s.recv, #queue, s.fails, s.dropped)

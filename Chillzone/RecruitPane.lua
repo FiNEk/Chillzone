@@ -6,7 +6,7 @@ local L, U, R = ns.L, ns.Util, ns.Recruit
 local Pane = { frames = {}, requestRows = {}, guildRows = {} }
 ns.RecruitPane = Pane
 local guildRows, replyRows = Pane.guildRows, {}
-local pane, child, intro, note, inbox, inboxChild, inboxHint, inboxEmpty, inboxRefresh
+local pane, child, intro, note, inbox, inboxChild, inboxHint, inboxEmpty
 
 local function Label(parent, x, y, width, font)
 	local f = parent:CreateFontString(nil, "OVERLAY", font or "GameFontHighlightSmall")
@@ -61,8 +61,20 @@ local function Unavailable(guild, officers)
 	return officers > 0 and L.RECRUIT_NOBODY or L.RECRUIT_NO_OFFICERS
 end
 
+-- Кнопка поиска показывает, когда сервер примет следующий /who. Окно зовёт это по тику.
+function Pane.RenderSearch()
+	local search = Pane.frames.search
+	if not search then return end
+	local wait, busy = ns.Who.Wait(), ns.Who.IsPending()
+	search:SetEnabled(not busy and wait <= 0)
+	if busy then search:SetText(L.RECRUIT_SEARCHING)
+	elseif wait > 0 then search:SetText(L.RECRUIT_SEARCH_IN:format(math.ceil(wait)))
+	else search:SetText(L.RECRUIT_SEARCH) end
+end
+
 function Pane.Render()
 	if not pane then return end
+	Pane.RenderSearch()
 	-- Экран виден только вне объединения. Игрок в гильдии должен понять, что его гильдия
 	-- не подключена, а не что аддон сломался, и знать, кто её подключает.
 	local own = ns.MyGuild()
@@ -169,8 +181,6 @@ function Pane.BuildInbox(parent)
 	inbox = CreateFrame("Frame", nil, parent)
 	inbox:SetAllPoints(parent)
 	inboxHint = Label(inbox, 16, 14, 570)
-	inboxRefresh = Button(inbox, L.RECRUIT_REFRESH, 135, function() ns.RecruitSync.RequestSync() end)
-	inboxRefresh:SetPoint("TOPRIGHT", -16, -10)
 	local scroll = CreateFrame("ScrollFrame", nil, inbox, "UIPanelScrollFrameTemplate")
 	scroll:SetPoint("TOPLEFT", 16, -58)
 	scroll:SetPoint("BOTTOMRIGHT", -30, 12)
@@ -194,7 +204,6 @@ function Pane.RenderInbox()
 	end)
 	local shared = ns.RecruitSync.IsOfficer()
 	inboxHint:SetText(shared and (R.CanInvite() and L.RECRUIT_INBOX_SHARED or L.RECRUIT_INBOX_NO_INVITE) or L.RECRUIT_INBOX_PERSONAL)
-	inboxRefresh:SetShown(shared)
 	inboxEmpty:SetShown(#reqs == 0)
 	local y = 0
 	for count, req in ipairs(reqs) do

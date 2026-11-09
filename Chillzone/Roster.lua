@@ -235,6 +235,16 @@ function Roster.RequestScan(force)
 	end)
 end
 
+-- Чтение, которого ждёт игрок: в отличие от планового, оно видно в окне.
+function Roster.Load()
+	if not (IsInGuild and IsInGuild()) then return false end
+	ns.Activity.Start("roster", ns.L.ACT_ROSTER, 8)
+	Roster.RequestScan(true)
+	return true
+end
+
+ns.On("ROSTER", function() ns.Activity.Finish("roster") end)
+
 ns.RegisterEvent("GUILD_ROSTER_UPDATE", function()
 	if pending then ns.After(1, "roster update", Roster.TryScan) end
 end)
@@ -266,6 +276,6 @@ ns.RegisterEvent("GUILD_RANKS_UPDATE", RanksChanged)
 ns.RegisterEvent("GUILD_RANKS_UPDATE_ACTIVE_PLAYER", RanksChanged)
 
 ns.On("LOGIN", function()
-	ns.After(6, "first scan", function() Roster.RequestScan(true) end)
+	ns.After(6, "first scan", Roster.Load)
 	ns.Every(C.SCAN_EVERY, "scan ticker", function() Roster.RequestScan() end)
 end)
