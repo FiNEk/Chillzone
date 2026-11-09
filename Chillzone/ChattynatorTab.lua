@@ -6,6 +6,8 @@ local ChattynatorTab = {}
 ns.ChattynatorTab = ChattynatorTab
 
 local panels, active, registered = {}, nil, nil
+local selectedWindow
+local watchedWindows = setmetatable({}, { __mode = "k" })
 
 local function ReadWarning()
 	if not ns.IsMember() then return L.CHAT_TAB_NOT_MEMBER end
@@ -133,6 +135,38 @@ end
 
 function ChattynatorTab.ActiveHost()
 	if active and active:IsVisible() then return active end
+end
+
+-- Запоминаем окно, где вкладку выбрали последней. Только пост-хуки, методы окон не меняем.
+-- Вызывается с таймера: окна можно создать, пока специальная вкладка уже открыта.
+function ChattynatorTab.WatchWindows()
+	local api = active and API()
+	local hook = rawget(_G, "hooksecurefunc")
+	if not api or type(hook) ~= "function" or type(api.GetHyperlinkHandler) ~= "function" then return end
+	local ok, handler = pcall(api.GetHyperlinkHandler)
+	if not ok or not handler or type(handler.GetChildren) ~= "function" then return end
+	for _, window in ipairs({ handler:GetChildren() }) do
+		if not watchedWindows[window] then
+			watchedWindows[window] = true
+			for _, name in ipairs({ "SetTabSelectedAndFilter", "SetTabSelectedOnly" }) do
+				if type(window[name]) == "function" then
+					pcall(hook, window, name, function()
+						selectedWindow = window
+						ns.Fire("CHATTYNATOR_TAB")
+					end)
+				end
+			end
+		end
+	end
+end
+
+-- Enter у окон общий, поэтому обычная вкладка другого окна освобождает его,
+-- даже если специальная вкладка ещё видна. Зовётся каждый кадр, таблиц здесь не создаём.
+function ChattynatorTab.InputHost()
+	local custom = ChattynatorTab.ActiveHost()
+	if not custom or not selectedWindow or not selectedWindow:IsVisible() then return custom end
+	local holder = custom:GetParent()
+	if holder and holder:GetParent() == selectedWindow then return custom end
 end
 
 function ChattynatorTab.Register()
