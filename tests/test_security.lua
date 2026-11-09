@@ -858,6 +858,8 @@ T.test("security: выдача продолжается, если корень �
     w:Run(20)
     local B = w:Client({ first = "Борис", surname = "Быстрый", guild = "Чиллзон Север", rank = 3 })
     V.ns.Roster.Scan()
+    -- Выдаёт корень: K1 новичка, которого нет в его ростере, он отбросит, а следующий придёт через минуту.
+    returned.ns.Roster.Scan()
     w:Run(90)
     T.eq(B.ns.Security.MyCertificate().issuerName, returned:Name(), "вернувшийся корень снова выдаёт сертификаты")
     for _, cl in ipairs({ V, G, N, returned, B }) do T.eq(#cl.ns.db.errors, 0, cl:Name() .. ": без ошибок") end
