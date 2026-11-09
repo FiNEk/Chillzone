@@ -19,7 +19,7 @@
 -- Чат:    M1~tier~guild~id~class~text          (tier A|C|L, id 0-9999, class — 2 буквы)
 -- Реле:   RP~fp · RY~Имя1,Имя2 · RR~guild~fp · RU~guild~преемник · RL~mode~inner
 --         RM~mode~origin~inner · RG~mode~origin~inner     (fp — отпечаток сертификата)
--- Онлайн: OQ~guild~fp · OL~guild~fp~st~i~n~имя:класс:уровень,...  (шёпотом напрямую, без реле)
+-- Онлайн: OQ~guild~fp · OL~guild~fp~st~i~n~имя:класс:уровень[:1],...  (шёпотом напрямую, без реле; 1 — есть аддон)
 local ADDON, ns = ...
 
 local Codec = {}
@@ -380,7 +380,7 @@ function Codec.DecodeOnlineQuery(s)
 	return guild, fp
 end
 
--- people: { name, class, level }. Без зон: другим гильдиям уходят только их числа.
+-- people: { name, class, level, addon }. Без зон: другим гильдиям уходят только их числа.
 function Codec.EncodeOnlinePages(guild, fp, st, people)
 	local head = ("OL~%s~%s~%s~"):format(clean(guild), fp, Codec.Base36(st) or "0")
 	-- Запас на самые длинные номера: сколько страниц выйдет, пока неизвестно.
@@ -390,6 +390,7 @@ function Codec.EncodeOnlinePages(guild, fp, st, people)
 		local name = clean(p.name)
 		if name ~= "" then
 			local entry = ("%s:%s:%d"):format(name, classCode(p.class), floor(p.level or 0))
+			if p.addon then entry = entry .. ":1" end
 			if #current > 0 and (size + #entry + 1 > room or #current >= Codec.ONLINE_MAX_PER_PAGE) then
 				bodies[#bodies + 1], current, size = concat(current, ","), {}, 0
 			end
@@ -402,7 +403,8 @@ function Codec.EncodeOnlinePages(guild, fp, st, people)
 	return out
 end
 
--- { guild, fp, st, i, n, people = { { name, class, level } } } или nil.
+-- { guild, fp, st, i, n, people = { { name, class, level, addon } } } или nil. Отметка после
+-- уровня: 1 — аддон есть, незнакомые значения не отбрасывают страницу.
 function Codec.DecodeOnlinePage(s)
 	if type(s) ~= "string" or #s > Codec.ONLINE_PAGE then return nil end
 	local guild, fp, stamp, i, n, body = s:match("^OL~([^~]+)~([%w_-]+)~([0-9a-z]+)~(%d%d?)~(%d%d?)~([^~]*)$")
@@ -412,9 +414,9 @@ function Codec.DecodeOnlinePage(s)
 	if not st or i < 1 or i > n or n > Codec.ONLINE_MAX_PAGES then return nil end
 	local out = {}
 	for entry in body:gmatch("[^,]+") do
-		local name, code, level = entry:match("^([^:]+):(%u*):(%d+)$")
+		local name, code, level, flag = entry:match("^([^:]+):(%u*):(%d+):?(%w*)$")
 		if not name or #name > 48 or #out >= Codec.ONLINE_MAX_PER_PAGE then return nil end
-		out[#out + 1] = { name = name, class = classFile(code), level = num(level) }
+		out[#out + 1] = { name = name, class = classFile(code), level = num(level), addon = flag == "1" or nil }
 	end
 	return { guild = guild, fp = fp, st = st, i = i, n = n, people = out }
 end

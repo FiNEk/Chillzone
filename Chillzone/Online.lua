@@ -175,7 +175,9 @@ local function Serve(sender, key, guild)
 	if not mine or not report or serving[key] or ServingCount() >= C.ONLINE_SERVE_MAX then return end
 	local people = {}
 	for _, m in ipairs(ns.Roster.members) do
-		if m.online then people[#people + 1] = { name = U.Display(m.name), class = m.class, level = m.level } end
+		if m.online then
+			people[#people + 1] = { name = U.Display(m.name), class = m.class, level = m.level, addon = ns.Census.Addon(m.key) == true }
+		end
 	end
 	local pages, i = Codec.EncodeOnlinePages(guild, mine.fp, report.st, people), 0
 	serving[key] = true
