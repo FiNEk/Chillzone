@@ -31,7 +31,7 @@ local floor, max, min = math.floor, math.max, math.min
 local active, skipFrame = false, false
 local session, plainSafeCall, plainAfter, tickFrame
 local depth, childMs, childKb = 0, {}, {}
-local frameOurs, frameKb, frameLabels, lastMemory = 0, 0, {}, 0
+local frameOurs, frameKb, frameLabels, lastMemory, lastTick = 0, 0, {}, 0, 0
 
 local function NewSession()
 	return {
@@ -129,9 +129,9 @@ local function Remember(s, record)
 	worst[Perf.KEEP_WORST + 1] = nil
 end
 
-local function EndFrame(elapsed)
+local function EndFrame(ms)
 	local s = session
-	local ms, ours, kb = elapsed * 1000, frameOurs, frameKb
+	local ours, kb = frameOurs, frameKb
 	local memory = collectgarbage("count")
 	local freed = max(0, lastMemory - memory)
 	frameOurs, frameKb, lastMemory = 0, 0, memory
@@ -158,13 +158,21 @@ local function EndFrame(elapsed)
 		combat = InCombatLockdown() and true or false, tab = ns.UI and ns.UI.Current() or nil })
 end
 
--- Один вызов на кадр: всё, что мы сделали с прошлого вызова, относится к прошедшему кадру.
+-- Один вызов на кадр. Длину кадра считаем сами: игра измеряет elapsed в начале кадра, до событий,
+-- и наша работа попала бы только в elapsed следующего кадра, рывок достался бы кадру без нашей
+-- работы. Промежуток между двумя вызовами всегда содержит всё, что мы сделали между ними.
+-- Другой аддон может сбросить общий таймер (debugprofilestart): тогда разность не больше нуля
+-- и остаётся elapsed.
 function Perf.Tick(elapsed)
+	local now = debugprofilestop()
+	local ms = now - lastTick
+	lastTick = now
+	if ms <= 0 then ms = elapsed * 1000 end
 	-- Первый кадр записи начался до её включения.
-	if skipFrame or elapsed >= Perf.LOADING_S then
+	if skipFrame or ms >= Perf.LOADING_S * 1000 or elapsed >= Perf.LOADING_S then
 		skipFrame, frameOurs, frameKb, lastMemory = false, 0, 0, collectgarbage("count")
 	else
-		EndFrame(elapsed)
+		EndFrame(ms)
 	end
 	if next(frameLabels) then wipe(frameLabels) end
 end
@@ -184,7 +192,7 @@ function Perf.Start()
 		return false
 	end
 	session = NewSession()
-	frameOurs, frameKb, lastMemory, skipFrame = 0, 0, collectgarbage("count"), true
+	frameOurs, frameKb, lastMemory, skipFrame, lastTick = 0, 0, collectgarbage("count"), true, debugprofilestop()
 	wipe(frameLabels)
 	plainSafeCall, ns.SafeCall = ns.SafeCall, MeasuredSafeCall
 	local Ed = ns.Ed25519

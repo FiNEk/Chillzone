@@ -24,6 +24,14 @@ end
 local function Work(clock, ms, kb)
 	clock.ms = clock.ms + ms
 	clock.kb = clock.kb + (kb or 0)
+	clock.inFrame = (clock.inFrame or 0) + ms
+end
+
+-- Конец кадра длиной seconds: часы доходят до его конца, работа Work уже внутри кадра.
+local function Frame(P, clock, seconds)
+	clock.ms = clock.ms + seconds * 1000 - (clock.inFrame or 0)
+	clock.inFrame = 0
+	P.Tick(seconds)
 end
 
 T.test("perf: без записи обычные функции не подменены", function()
@@ -88,7 +96,7 @@ T.test("perf: рывок запоминает длину кадра, нашу д
 	w.now = 130
 	for i = 1, 5 do c.ns.SafeCall("метка " .. i, function() Work(clock, i * 2, 100) end) end
 	clock.kb = clock.kb - 900 -- сборщик освободил больше, чем мы выделили
-	P.Tick(0.1)
+	Frame(P, clock, 0.1)
 	local s = P.Session()
 	T.eq(s.hitches, 1)
 	T.eq(s.ourHitches, 1)
@@ -107,6 +115,34 @@ T.test("perf: рывок запоминает длину кадра, нашу д
 	T.eq(s.ourHitches, 1, "кадр без нашей работы не наш")
 	T.eq(s.worst[1].ours, 30, "первым остаётся кадр с наибольшей нашей долей")
 	T.eq(#s.worst[2].labels, 0, "метки прошлого кадра сброшены")
+end)
+
+-- Игра считает elapsed до событий кадра, поэтому в отчёте шли пары «кадр 6 мс, наших 77 мс»
+-- и следом «кадр 81 мс, наших 0.1 мс».
+T.test("perf: рывок считается кадру, в котором была наша работа, а не следующему", function()
+	local _, c, clock = Fresh()
+	local P = Started(c)
+	for _ = 1, 10 do Frame(P, clock, 0.006) end
+	c.ns.SafeCall("тяжёлая", function() Work(clock, 77) end)
+	clock.ms = clock.ms + 4 -- остаток кадра, а elapsed ещё про прошлый короткий кадр
+	clock.inFrame = 0
+	P.Tick(0.006)
+	clock.ms = clock.ms + 6
+	P.Tick(0.081)
+	local s = P.Session()
+	T.eq(s.hitches, 1, "короткий кадр после тяжёлого не рывок")
+	T.eq(s.ourHitches, 1)
+	T.eq(s.worst[1].ms, 81)
+	T.eq(s.worst[1].ours, 77)
+end)
+
+T.test("perf: сброшенный общий таймер не портит длину кадра", function()
+	local _, c, clock = Fresh()
+	local P = Started(c)
+	clock.ms = 5 -- другой аддон вызвал debugprofilestart
+	P.Tick(0.02)
+	T.eq(P.Session().frames, 1)
+	T.eq(P.Session().frameMs, 20)
 end)
 
 T.test("perf: тяжёлый для нас кадр запоминается и без рывка", function()
@@ -137,7 +173,7 @@ T.test("perf: хранится ограниченное число кадров 
 	for i = 1, P.KEEP_WORST + 10 do
 		for _ = 1, 3 do P.Tick(0.016) end
 		c.ns.SafeCall("кадр", function() Work(clock, i) end)
-		P.Tick(0.2)
+		Frame(P, clock, 0.2)
 	end
 	for _ = 1, P.KEEP_TIMES do
 		for _ = 1, 3 do P.Tick(0.016) end
@@ -206,7 +242,7 @@ T.test("perf: команда и кнопка управляют записью, 
 	c.ns.Perf.Tick(0.016)
 	for _ = 1, 5 do c.ns.Perf.Tick(0.016) end
 	c.ns.SafeCall("метка отчёта", function() Work(clock, 60, 200) end)
-	c.ns.Perf.Tick(0.15)
+	Frame(c.ns.Perf, clock, 0.15)
 	f.perf:Click()
 	T.no(c.ns.Perf.Enabled())
 	T.eq(f.perf:GetText(), c.ns.L.PERF_START)
