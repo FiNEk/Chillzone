@@ -85,9 +85,15 @@ function T.load(files, env, ns)
 end
 
 function T.run()
-	for _, t in ipairs(T.tests) do
-		local filter = os.getenv("CZ_TEST_FILTER")
-		if not filter or t.name:find(filter, 1, true) then
+	local indexText, countText = os.getenv("CZ_TEST_SHARD_INDEX"), os.getenv("CZ_TEST_SHARD_COUNT")
+	local index, count = tonumber(indexText or "1"), tonumber(countText or "1")
+	if (indexText == nil) ~= (countText == nil) or not index or not count
+		or index < 1 or count < 1 or index % 1 ~= 0 or count % 1 ~= 0 or index > count then
+		error("CZ_TEST_SHARD_INDEX и CZ_TEST_SHARD_COUNT должны задавать целую часть от 1 до числа частей", 2)
+	end
+	local filter = os.getenv("CZ_TEST_FILTER")
+	for i, t in ipairs(T.tests) do
+		if (i - 1) % count == index - 1 and (not filter or t.name:find(filter, 1, true)) then
 		local ok, err = xpcall(t.fn, debug.traceback)
 		if ok then
 			T.passed = T.passed + 1

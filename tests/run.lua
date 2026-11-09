@@ -7,6 +7,7 @@ local T = require("lib")
 T.ROOT = here .. "/.."
 
 local SUITES = {
+	"test_runner",
 	"test_loader",
 	"test_static",
 	"test_util",

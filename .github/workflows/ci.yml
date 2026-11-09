@@ -44,4 +44,6 @@ jobs:
       - name: Run functional, cryptographic and adversarial tests
         env:
           CZ_TEST_PROGRESS: '1'
-        run: ${{ matrix.interpreter }} tests/run.lua
+        run: |
+          bash tests/test_parallel_runner.sh
+          bash tests/run-parallel.sh ${{ matrix.interpreter }}
