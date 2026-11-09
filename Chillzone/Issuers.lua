@@ -69,6 +69,7 @@ local function Keep(d, dist)
     local old = Store()[gk][d.key]
     if not old or old.raw ~= d.raw then
         Store()[gk][d.key] = Compact(d)
+        ns.Fire("AUTH_CHANGED", d.guild)
         if d.blocked then
             Blocks()[gk] = Blocks()[gk] or {}
             Blocks()[gk][d.key] = d.root
