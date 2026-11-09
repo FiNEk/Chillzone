@@ -24,13 +24,10 @@ local function Secrets(t, out, seen)
 	return out
 end
 
-local function Printed(c, text)
-	return c:Saw(text) > 0
-end
-
 T.test("диагностика: ошибки — запись со стеком, дедуп, лимит, аргументы", function()
 	local _, c = One()
 	local ns = c.ns
+	c.env.debugstack = function(level) return debug.traceback("", level) end
 	local function Boom() error("сломалось") end
 	T.no(ns.SafeCall("проба", Boom), "ошибка — false")
 	T.no(ns.SafeCall("проба", Boom))
@@ -57,9 +54,13 @@ T.test("диагностика: ошибки — запись со стеком,
 	T.eq(got[1], 1); T.eq(got[2], nil); T.eq(got[3], 3)
 	for i = 1, 70 do ns.SafeCall("много " .. i, Boom) end
 	T.eq(#errors, ns.MAX_ERRORS, "не больше MAX_ERRORS")
+	local printed = #c.printed
 	c:Slash("/chillzone", "log 1")
-	T.ok(Printed(c, "[1x] много 70"), "/chillzone log показывает ошибки")
-	T.ok(Printed(c, "/chillzone bug"), "и куда смотреть дальше")
+	T.ok(ns.JournalPane.frames.pane:IsShown(), "/chillzone log открывает журнал")
+	T.eq(#c.printed, printed, "журнал не выводится в обычный чат")
+	local report = ns.Diagnostics.Report()
+	T.ok(report:find("[1x] много 70", 1, true), "счётчик в экспорте журнала")
+	T.ok(report:find(errors[1].stack, 1, true), "стек в экспорте журнала")
 end)
 
 T.test("диагностика: старые записи-строки переводятся в таблицы", function()
@@ -74,6 +75,25 @@ T.test("диагностика: старые записи-строки пере�
 	T.eq(errors[1].stack, "")
 	T.eq(errors[2].where, "x")
 	T.eq(#c:Leaks(), 0, "утечки: " .. table.concat(c:Leaks(), ", "))
+end)
+
+T.test("диагностика: миграция датированных ошибок сохраняет время и версию в экспорте", function()
+	local _, c = One({ first = "Старая", surname = "Ошибка", guild = "Чиллзон", db = { errors = {
+		"[11-09 12:34:56, v0.10.1] event CHAT_MSG_GUILD: GuildChat.lua:49: старая ошибка",
+		"место: без даты",
+	} } })
+	local e = c.ns.db.errors[1]
+	T.eq(e.where, "event CHAT_MSG_GUILD")
+	T.eq(e.first, "11-09 12:34:56")
+	T.eq(e.last, e.first)
+	T.eq(e.version, "0.10.1")
+	local report = c.ns.Diagnostics.Report()
+	T.ok(report:find("11-09 12:34:56", 1, true))
+	T.ok(report:find("v0.10.1", 1, true))
+	T.ok(report:find(c.ns.L.JOURNAL_OLD_ERROR .. "[1x] место: без даты", 1, true))
+	c.ns.UI.Toggle("journal")
+	c.ns.JournalPane.frames.copy:Click()
+	T.eq(c.ns.JournalPane.frames.box:GetText(), report, "копирование работает после миграции")
 end)
 
 T.test("диагностика: блокировки игрой — только свои, со счётчиком", function()
@@ -229,7 +249,9 @@ T.test("журнал действий доверия: корни, связь, с
 	T.ok(Has(A, "link_ok", "Чиллзон Север", "Арагорн Светлый", "accept"), "подтверждение связи")
 	T.ok(Has(V, "root", "Чиллзон", "Арагорн Светлый", "link"), "корень по ответу на link")
 	T.ok(Has(V, "link_ok", "Чиллзон"), "у второй стороны — тоже")
-	T.ok(Has(O, "root", "Чиллзон Север", "Арагорн Светлый", "KT"), "корень чужой гильдии от своего офицера")
+	-- В актуальном протоколе чужая гильдия становится своей по подписанному KA:
+	-- ранний KT до включения в объединение намеренно не закрепляет чужой корень.
+	T.ok(Has(O, "root", "Чиллзон Север", "Арагорн Светлый", "KA"), "корень из подписанного состава объединения")
 	T.no(Has(O, "link_in"), "чужой запрос связи видит только адресат")
 	-- Повторный KT того же корня — не новое действие.
 	local before = #O.ns.Acts.List()

@@ -32,8 +32,8 @@ function ns.Log(fmt, ...)
 	if not db then return end
 	local log = db.log
 	log[#log + 1] = (date and date("%m-%d %H:%M:%S ") or "") .. msg
-	while #log > 300 do table.remove(log, 1) end
-	if db.settings.debug then ns.Print("|cff999999" .. msg .. "|r") end
+	while #log > 1000 do table.remove(log, 1) end
+	ns.logRevision = (ns.logRevision or 0) + 1
 end
 
 ---------------------------------------------------------------------------
@@ -135,8 +135,10 @@ local function LoadErrors(db)
 	local out = {}
 	for _, e in ipairs(type(db.errors) == "table" and db.errors or {}) do
 		if type(e) == "string" then
-			local where, msg = e:match("^(.-): (.*)$")
-			out[#out + 1] = { where = where or "?", msg = msg or e, stack = "", count = 1, first = "?", last = "?", version = "?" }
+			local stamp, version, body = e:match("^%[([^,]+), v([^%]]+)%] (.*)$")
+			local where, msg = (body or e):match("^(.-): (.*)$")
+			out[#out + 1] = { where = where or "?", msg = msg or body or e, stack = "", count = 1,
+				first = stamp or "?", last = stamp or "?", version = version or "?" }
 		elseif type(e) == "table" and e.msg ~= nil then
 			e.where, e.msg, e.count = tostring(e.where or "?"), tostring(e.msg), tonumber(e.count) or 1
 			if type(e.stack) ~= "string" then e.stack = "" end
@@ -277,10 +279,12 @@ local DB_DEFAULTS = {
 	log = {},
 	errors = {},
 	blocked = {},
+	versions = {}, -- версии новее моей, которые называли другие игроки (Update.lua)
 }
 
 local CHAR_DEFAULTS = {
-	shareZones = false, chatOn = true, chatWindow = false, warned = false,
+	shareZones = true, chatOn = true, chatWindow = false, warned = false,
+	chatGuildTagsUpper = false,
 	chatMirror = true, chatTime = false, chatChannel = false, history = { G = {}, O = {} }, historyGuild = false, drafts = {},
 }
 local STORE_DEFAULTS = { guilds = {}, relays = {}, manual = {}, ignore = {}, chat = { A = {}, C = {}, L = {} } }
@@ -326,6 +330,10 @@ ns.RegisterEvent("PLAYER_LOGIN", function()
 	local db = ns.db
 	db.chars[ns.myKey] = Defaults(db.chars[ns.myKey] or {}, CHAR_DEFAULTS)
 	ns.char = db.chars[ns.myKey]
+	-- Зоны стали включены по умолчанию. Тем, кто заходил раньше, включаем один раз, дальше решает игрок.
+	if not ns.char.zonesDefaulted then
+		ns.char.zonesDefaulted, ns.char.shareZones = true, true
+	end
 	db.realms[ns.group] = db.realms[ns.group] or {}
 	db.realms[ns.group][ns.faction] = Defaults(db.realms[ns.group][ns.faction] or {}, STORE_DEFAULTS)
 	ns.store = db.realms[ns.group][ns.faction]
@@ -360,7 +368,7 @@ function ns.IsMember()
 end
 
 ---------------------------------------------------------------------------
--- Управление: /chillzone <команда> [аргументы]. Короткие алиасы принадлежат чату.
+-- Управление: /chillzone <команда> [аргументы]; короткие алиасы также принимают текст чата.
 ---------------------------------------------------------------------------
 local commands, order = {}, {}
 function ns.Command(name, fn, help)
@@ -409,8 +417,8 @@ ns.Command("status", function()
 end, L.HELP_STATUS)
 
 ns.Command("debug", function()
-	ns.db.settings.debug = not ns.db.settings.debug
-	ns.Print(ns.db.settings.debug and L.DEBUG_ON or L.DEBUG_OFF)
+	ns.Diagnostics.SetEnabled(not ns.Diagnostics.Enabled())
+	ns.UI.Toggle("journal")
 end, L.HELP_DEBUG)
 
 -- Ошибка одной строкой: «[3x] где: что».
@@ -421,24 +429,29 @@ end
 
 ns.Command("log", function(arg)
 	local n = tonumber(arg) or 20
-	local log = ns.db.log
-	for i = math.max(1, #log - n + 1), #log do DEFAULT_CHAT_FRAME:AddMessage("|cff999999" .. log[i] .. "|r") end
-	local errors = ns.db.errors or {}
-	for i = 1, math.min(3, #errors) do DEFAULT_CHAT_FRAME:AddMessage("|cffff6060" .. ns.ErrorLine(errors[i]):gsub("|", "||") .. "|r") end
-	if #errors > 0 or #(ns.db.blocked or {}) > 0 then ns.Print(L.LOG_MORE:format(#errors, #(ns.db.blocked or {}))) end
+	ns.UI.Toggle("journal")
+	ns.JournalPane.SetLimit(math.max(1, math.floor(n)))
 end, L.HELP_LOG)
+
+ns.Command("journal", function() ns.UI.Toggle("journal") end, L.HELP_JOURNAL)
+
+-- true — команда найдена, даже если её обработчик завершился ошибкой.
+-- Короткие алиасы отправляют в чат только текст, не совпавший с командой.
+function ns.RunCommand(msg)
+	if not ns.me then return false end
+	local name, rest = U.Trim(msg):match("^(%S*)%s*(.-)$")
+	name = U.Fold(name or "")
+	local c = commands[name]
+	if not c then return false end
+	ns.SafeCall("/chillzone " .. name, c.fn, rest)
+	return true
+end
 
 SLASH_CHILLZONE1 = "/chillzone"
 SlashCmdList.CHILLZONE = function(msg)
 	if not ns.me then return end
-	local name, rest = U.Trim(msg):match("^(%S*)%s*(.-)$")
-	name = U.Fold(name or "")
-	if name == "" then
+	if U.Trim(msg) == "" then
 		if ns.UI and ns.UI.Toggle then return ns.UI.Toggle() end
-		name = "help"
 	end
-	local c = commands[name]
-	-- Метка — имя команды, а не набранное слово: в журнале ошибок и профайлере нет ввода игрока.
-	if not c then name, c = "help", commands.help end
-	ns.SafeCall("/chillzone " .. name, c.fn, rest)
+	if not ns.RunCommand(msg) then ns.RunCommand("help") end
 end

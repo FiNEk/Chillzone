@@ -57,7 +57,7 @@ local function Tooltip(owner)
 	return GameTooltip
 end
 
--- Щелчок по имени в карточке — шёпот в поле окна чата.
+-- «Шёпот» из меню человека в карточке — в поле окна чата.
 local function Whisper(name)
 	ns.UI.Toggle("chat")
 	ns.ChatPane.WhisperTo(name)
@@ -139,8 +139,11 @@ local function Person(i)
 		GameTooltip:Show()
 	end)
 	p:SetScript("OnLeave", function() GameTooltip:Hide() end)
-	p:SetScript("OnClick", function(self)
-		if self.person then ns.SafeCall("census whisper", Whisper, self.person.name) end
+	p:RegisterForClicks("RightButtonUp")
+	p:SetScript("OnClick", function(self, button)
+		if button == "RightButton" and self.person then
+			ns.SafeCall("census menu", ns.ChatPane.OpenPersonMenu, self, self.person, Whisper)
+		end
 	end)
 	people[i] = p
 	return p
@@ -344,16 +347,11 @@ end
 local function RenderCard(c)
 	card:SetShown(c ~= nil)
 	if not c then return end
-	local requestsHeight = ns.RecruitPane.RenderRequests(cardChild)
-	w.title:ClearAllPoints()
-	w.title:SetPoint("TOPLEFT", 0, -requestsHeight)
-	w.updated:ClearAllPoints()
-	w.updated:SetPoint("TOPRIGHT", 0, -requestsHeight - 5)
 	w.title:SetText(c.guild)
 	if c.main then w.title:SetTextColor(1, 0.82, 0) else w.title:SetTextColor(1, 1, 1) end
 	w.marks:SetText(c.marks)
 	w.updated:SetText(c.updated)
-	local y = requestsHeight + 28
+	local y = 28
 	w.conflict:SetShown(c.conflict and true or false)
 	if c.conflict then
 		Place(w.conflict, 0, y)
