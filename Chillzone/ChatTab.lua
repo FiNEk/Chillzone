@@ -63,7 +63,7 @@ local function ChattynatorLoaded()
 end
 
 local function HostedWindow()
-	if ns.ChattynatorTab then return ns.ChattynatorTab.ActiveHost(), true end
+	if ns.ChattynatorTab then return ns.ChattynatorTab.InputHost(), true end
 end
 
 local function IsSelected(frame, hosted)
@@ -322,6 +322,7 @@ end
 
 local function Refresh()
 	AdoptSavedTab()
+	if ns.ChattynatorTab then ns.ChattynatorTab.WatchWindows() end
 	local frame, native, hosted = SelectedWindow()
 	if not frame then HideInput(); return end
 	if not input then input = CreateInput() end

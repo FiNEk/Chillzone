@@ -476,6 +476,100 @@ T.test("chat input: обычные вкладки Chattynator оставляют
 	T.eq(#ns.db.errors, 0, ns.db.errors[1])
 end)
 
+T.test("chat input: обычная вкладка второго окна Chattynator забирает Enter у видимой специальной", function()
+	local h, ns, env = BuildChattynator()
+	local api = env.Chattynator.API
+	api.GetWindowsAndTabs = function() return { { "GENERAL", ns.L.CHAT_TAB_NAME }, { "Гильдия", "Торговля" } } end
+	api.AddMessageToWindowAndTab = function() end
+	local handler = env.CreateFrame("Frame")
+	local function Window(id, index)
+		local window = env.CreateFrame("Frame", nil, handler)
+		window.tabIndex = index
+		function window.GetID() return id end
+		function window.SetTabSelectedAndFilter(self, selected) self.tabIndex = selected end
+		function window.SetTabSelectedOnly(self, selected) self.tabIndex = selected end
+		return window
+	end
+	local first, second = Window(1, 2), Window(2, 1)
+	function handler.GetChildren() return first, second end
+	api.GetHyperlinkHandler = function() return handler end
+	EnableNativeChat(h, ns, env)
+	local holder = env.CreateFrame("Frame", nil, first)
+	h.install(holder)
+	h:Tick()
+	local box, native, sent = h.box, env.ChatFrame1EditBox, 0
+	ns.Chat.Send = function() sent = sent + 1; return true end
+	T.ok(h.client.bindings.ENTER, "видимая специальная вкладка забирает Enter")
+	h:PressEnter()
+	T.ok(box:HasFocus())
+	box:SetText("Черновик в первом окне")
+
+	second:SetTabSelectedAndFilter(1)
+	T.ok(holder:IsVisible(), "другое окно не скрывает специальную вкладку первого")
+	T.eq(h.client.bindings.ENTER, nil, "обычная вкладка второго окна возвращает Enter игре")
+	T.no(box:IsShown())
+	box.scripts.OnEnterPressed(box)
+	T.eq(sent, 0, "устаревшее поле первого окна не отправляет черновик")
+	T.eq(box:GetText(), "Черновик в первом окне")
+	h:Tick()
+	T.eq(h.client.bindings.ENTER, nil, "таймер не возвращает Enter видимой соседней вкладке")
+	h:PressEnter()
+	T.ok(native:HasFocus(), "Enter открывает штатное поле")
+	h:CloseNative()
+
+	second:Hide()
+	h:Tick()
+	T.ok(h.client.bindings.ENTER, "скрытое второе окно не мешает видимой специальной вкладке")
+	second:Show()
+	second:SetTabSelectedAndFilter(1)
+	T.eq(h.client.bindings.ENTER, nil, "повторный выбор второго окна снова возвращает Enter игре")
+	first:SetTabSelectedAndFilter(2)
+	T.ok(h.client.bindings.ENTER, "возврат к специальной вкладке снова забирает Enter")
+	T.ok(box:IsShown())
+	T.eq(box:GetText(), "Черновик в первом окне", "черновик не теряется")
+
+	second:SetTabSelectedOnly(2)
+	T.eq(h.client.bindings.ENTER, nil, "выбор без обновления фильтра тоже возвращает Enter игре")
+	h:Tick()
+	T.eq(h.client.bindings.ENTER, nil, "таймер учитывает последний SetTabSelectedOnly")
+	first:SetTabSelectedOnly(2)
+	T.ok(h.client.bindings.ENTER, "тот же метод возвращает Enter специальной вкладке")
+
+	second:SetTabSelectedAndFilter(3)
+	T.eq(h.client.bindings.ENTER, nil)
+	h.install(env.CreateFrame("Frame", nil, second))
+	h:Tick()
+	T.ok(h.client.bindings.ENTER, "специальная вкладка второго окна тоже забирает Enter")
+	T.eq(sent, 0)
+	T.eq(#ns.db.errors, 0, ns.db.errors[1])
+end)
+
+T.test("chat input: окно Chattynator, созданное при открытой специальной вкладке, тоже отслеживается", function()
+	local h, ns, env = BuildChattynator()
+	local api = env.Chattynator.API
+	local handler = env.CreateFrame("Frame")
+	local function Window()
+		local window = env.CreateFrame("Frame", nil, handler)
+		function window.SetTabSelectedAndFilter() end
+		return window
+	end
+	local first = Window()
+	local windows = { first }
+	function handler.GetChildren() return unpack(windows) end
+	api.GetHyperlinkHandler = function() return handler end
+	EnableNativeChat(h, ns, env)
+	h.install(env.CreateFrame("Frame", nil, first))
+	h:Tick()
+	T.ok(h.client.bindings.ENTER)
+	local late = Window()
+	windows[2] = late
+	h:Tick()
+	T.ok(h.client.bindings.ENTER, "само появление окна не забирает Enter")
+	late:SetTabSelectedAndFilter(1)
+	T.eq(h.client.bindings.ENTER, nil, "выбор вкладки в новом окне возвращает Enter игре")
+	T.eq(#ns.db.errors, 0, ns.db.errors[1])
+end)
+
 T.test("chat input: ПКМ по метке работает внутри специальной вкладки Chattynator", function()
 	local h, ns = BuildChattynator()
 	h:Mount(1)
