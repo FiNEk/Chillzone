@@ -17,6 +17,7 @@ Config.lua
 Locale.lua
 Util.lua
 Core.lua
+Activity.lua
 Codec.lua
 Comm.lua
 Diagnostics.lua
@@ -40,6 +41,7 @@ GuildChat.lua
 Who.lua
 Recruit.lua
 RecruitSync.lua
+Refresh.lua
 Views.lua
 ChatPane.lua
 RecruitPane.lua

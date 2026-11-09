@@ -465,6 +465,13 @@ ns.Comm.On("M1", Chat.Receive)
 ---------------------------------------------------------------------------
 -- Отправка (из слэш-команды или Enter в окне). true — строка ушла.
 ---------------------------------------------------------------------------
+local SEAL_SHOW = 30 -- подпись дольше этого считается потерянной и в окне не показывается
+local sealing, sealingAt = 0, -1e9
+
+ns.Activity.Probe(function()
+	if sealing > 0 and ns.Now() - sealingAt < SEAL_SHOW then return { kind = "work", text = L.ACT_CHAT } end
+end)
+
 function Chat.Send(tier, text)
 	if not ns.me then return false end
 	local guild = ns.MyGuild()
@@ -518,7 +525,9 @@ function Chat.Send(tier, text)
 		local msg = Codec.EncodeChat(tier, guild, nextId, class, part)
 		if msg then
 			local id, textPart = nextId, part
+			sealing, sealingAt = sealing + 1, now
 			local ok, why = ns.Security.Seal(msg, function(wire, failed)
+				sealing = math.max(0, sealing - 1)
 				if not wire then Failed(failed); return end
 				ns.Comm.Send("GUILD", wire, { prio = true, logged = true })
 				ns.Relay.Out("P", wire)
@@ -528,6 +537,7 @@ function Chat.Send(tier, text)
 				ns.SafeCall("guild mirror", ns.GuildChat.Mirror, tier, textPart)
 			end)
 			if not ok then
+				sealing = math.max(0, sealing - 1)
 				Failed(why)
 				break
 			end

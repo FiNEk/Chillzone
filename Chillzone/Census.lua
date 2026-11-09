@@ -196,6 +196,7 @@ end)
 -- signing — подпись уже идёт (не ставить вторую); epoch меняется со сменой гильдии.
 local signing, epoch = nil, 0
 local SIGN_WAIT = 30 -- подпись дольше этого считается потерянной
+local lastRefresh = -1e9 -- когда игрок последний раз просил обновить перепись
 
 function Census.MaybeReport(force)
 	if not Census.IsReporter() then return end
@@ -218,6 +219,7 @@ function Census.MaybeReport(force)
 	local queued, why = ns.Security.Seal(raw, function(wire, failed)
 		if mine ~= epoch then return end
 		signing = nil
+		ns.Activity.Finish("report", wire ~= nil)
 		if not wire then
 			ns.Log("отчёт не подписан (%s), повтор при следующей проверке", tostring(failed))
 			return
@@ -232,6 +234,7 @@ function Census.MaybeReport(force)
 		signing = nil
 		ns.Log("отчёт не подписан (%s), повтор при следующей проверке", tostring(why))
 	end
+	return queued and true or false
 end
 
 ns.On("ROSTER", function(r)
@@ -268,6 +271,41 @@ end)
 ---------------------------------------------------------------------------
 -- Q1: вошедший просит у репортёра своей гильдии всё, что тот знает.
 ---------------------------------------------------------------------------
+-- Ответов на Q1 бывает сколько угодно и ни одного: репортёр молчит при пустом кэше и чаще
+-- Q1_GAP. Поэтому конец ожидания — тишина (отчёты считает обработчик RG в Relay).
+local function AskReports(key)
+	ns.Activity.Start("census", L.ACT_CENSUS, C.CENSUS_WAIT)
+	ns.Comm.Send("GUILD", "Q1~", { key = key })
+end
+
+-- Сколько секунд до следующего запроса отчётов (0 — можно сейчас). Репортёр считает Q1_GAP от
+-- получения Q1, а запрос сначала лежит в очереди: без запаса он промолчал бы на новый запрос.
+local REFRESH_MARGIN = 15
+function Census.RefreshWait()
+	return math.max(0, lastRefresh + C.Q1_GAP + REFRESH_MARGIN - ns.Now())
+end
+
+-- Обновление по просьбе игрока. Репортёр сам отчитывается за гильдию, остальные спрашивают
+-- его. Возвращает операцию, которую стоит дождаться, или nil и причину: "wait" — запрашивать
+-- рано, "failed" — отчёт поставить в подпись не удалось (интервал тогда не тратится).
+function Census.Refresh()
+	if not ns.IsMember() then return nil end
+	if Census.RefreshWait() > 0 then return nil, "wait" end
+	if Census.IsReporter() then
+		ns.Activity.Start("report", L.ACT_REPORT, SIGN_WAIT)
+		-- Уже идущая подпись тоже годится: её колбэк закроет операцию.
+		if not Census.MaybeReport(true) and not signing then
+			ns.Activity.Finish("report", false)
+			return nil, "failed"
+		end
+		lastRefresh = ns.Now()
+		return "report"
+	end
+	lastRefresh = ns.Now()
+	AskReports("census-request")
+	return "census"
+end
+
 ns.Comm.On("Q1", function(_, sender, dist)
 	if dist ~= "GUILD" or not Census.IsReporter() then return end
 	local now = ns.Now()
@@ -293,7 +331,7 @@ ns.On("AUTH_ROOT", function()
 		for _, root in pairs(ns.Security.Roots()) do
 			local row = ns.Data.Row(root.guild)
 			if not row or not row.r then
-				ns.Comm.Send("GUILD", "Q1~", { key = "census-request" })
+				AskReports("census-request")
 				return
 			end
 		end
@@ -307,10 +345,10 @@ ns.On("LOGIN", function()
 	listenSince = ns.Now()
 	ns.After(3, "first hello", Census.SendHello)
 	ns.After(15, "census ask", function()
-		if ns.IsMember() then ns.Comm.Send("GUILD", "Q1~") end
+		if ns.IsMember() then AskReports() end
 	end)
 	ns.After(35, "census ask after trust bootstrap", function()
-		if ns.IsMember() then ns.Comm.Send("GUILD", "Q1~", { key = "census-request" }) end
+		if ns.IsMember() then AskReports("census-request") end
 	end)
 	ns.Every(C.HELLO_EVERY, "hello", Census.SendHello)
 	ns.Every(5, "reporter change", Census.Track)
@@ -325,6 +363,7 @@ ns.On("GUILD_CHANGED", function()
 	elected, previous, acting, handingUntil = nil, nil, false, nil
 	inheritedUntil = nil
 	lastSent, lastSentAt, signing, epoch = nil, -1e9, nil, epoch + 1
+	lastRefresh = -1e9
 	ns.After(3, "hello after guild change", Census.SendHello)
 end)
 

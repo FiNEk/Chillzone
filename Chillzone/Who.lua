@@ -88,6 +88,14 @@ function Who.Targets()
 end
 
 function Who.IsPending() return pending ~= nil end
+-- Сколько секунд до следующего запроса (0 — можно сейчас).
+function Who.Wait()
+	local now = ns.Now()
+	return math.max(0, lateUntil - now, lastSend + Who.COOLDOWN - now)
+end
+ns.Activity.Probe(function()
+	if pending then return { kind = "wait", text = L.ACT_WHO } end
+end)
 function Who.Fresh() return roundAt ~= nil and ns.Now() - roundAt <= Who.ROUND_TTL end
 -- В раунде остались запросы: диапазоны уровней, известные гильдии объединения или названия из J2.
 function Who.RoundLeft() return Who.Fresh() and target <= #Who.Targets() end

@@ -28,8 +28,18 @@ local TABS = {
 	{ key = "union", text = "TAB_UNION", icons = { "Interface\\Icons\\INV_Misc_GroupLooking" } },
 }
 local DEBUG_EVERY = 5 -- «Отладка» обновляется чаще остальных: там счётчики и состояние реле
+local ACTIVITY_EVERY = 0.25 -- строка «что идёт сейчас» и обратные отсчёты на кнопках
+local ACTIVITY_WIDTH = 300 -- длиннее текст обрезается: левее начинается заголовок окна
+local DOTS = {
+	done = "Interface\\FriendsFrame\\StatusIcon-Online",
+	wait = "Interface\\FriendsFrame\\StatusIcon-Away",
+	work = "Interface\\FriendsFrame\\StatusIcon-Away",
+	block = "Interface\\FriendsFrame\\StatusIcon-DnD",
+	fail = "Interface\\FriendsFrame\\StatusIcon-DnD",
+}
 local frame, body, scroll, child, settings = nil, nil, nil, nil, nil
 local status, heading -- шапка (крупно и мелко) и название вкладки слева вверху
+local activity, refreshButton -- что идёт сейчас и кнопка обновления
 local titleText -- свой текст заголовка, если у рамки нет SetTitle
 local tabs, rows, checks = {}, {}, {}
 local current = "chat"
@@ -486,6 +496,30 @@ function UI.RenderStatus()
 	-- Наведение — на ширину текста, а не на все 300 точек.
 	local w = math.max(status.big:GetStringWidth() or 0, status.small:GetStringWidth() or 0)
 	if w > 0 then status:SetWidth(math.ceil(w) + 4) end
+	UI.RenderActivity()
+end
+
+-- Строка «что идёт сейчас» и кнопка обновления. Опрос только при открытом окне.
+function UI.RenderActivity()
+	if not activity or not frame:IsShown() then return end
+	local row = ns.Views.Activity()
+	activity:SetShown(row ~= nil)
+	activity.kind = row and row.kind or nil
+	if row then
+		activity.text:SetText(row.text)
+		activity.dot:SetTexture(DOTS[row.kind] or DOTS.wait)
+		-- Наведение — на ширину текста и точку, а не на всю возможную длину.
+		local w = activity.text:GetStringWidth() or 0
+		activity:SetWidth(math.ceil(math.min(w, ACTIVITY_WIDTH)) + 16)
+	end
+	local available = ns.Refresh.Available()
+	refreshButton:SetShown(available)
+	if not available then return end
+	local busy, wait = ns.Refresh.Busy(), ns.Refresh.Wait()
+	refreshButton:SetEnabled(not busy and wait <= 0)
+	if busy then refreshButton:SetText(L.REFRESH_BUSY)
+	elseif wait > 0 then refreshButton:SetText(L.REFRESH_IN:format(math.ceil(wait)))
+	else refreshButton:SetText(L.REFRESH) end
 end
 
 -- «Заявки» (общая очередь, RecruitSync.IsOfficer) и «Отладка» (Debug.Allowed) — только главам и
@@ -693,6 +727,37 @@ local function Create()
 		f:StopMovingOrSizing()
 		SavePosition(f)
 	end)
+	-- Кнопка стоит на месте при любой ширине счётчика справа, строка растёт влево от неё.
+	-- Кнопка текстовая, чтобы не зависеть от наличия значка в разных клиентах.
+	refreshButton = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
+	refreshButton:SetSize(96, 18)
+	refreshButton:SetPoint("TOPRIGHT", f, "TOPRIGHT", -334, -24)
+	refreshButton:SetNormalFontObject("GameFontNormalSmall")
+	refreshButton:SetHighlightFontObject("GameFontHighlightSmall")
+	refreshButton:SetDisabledFontObject("GameFontDisableSmall")
+	refreshButton:SetText(L.REFRESH)
+	-- Отключённая кнопка тоже показывает подсказку: там написано, когда она снова заработает.
+	if refreshButton.SetMotionScriptsWhileDisabled then refreshButton:SetMotionScriptsWhileDisabled(true) end
+	refreshButton:SetScript("OnClick", function()
+		ns.SafeCall("refresh click", ns.Refresh.Run, false)
+		UI.RenderActivity()
+	end)
+	SetTip(refreshButton, function(tt) ns.Views.RefreshTip(tt) end)
+	activity = CreateFrame("Frame", nil, f)
+	activity:SetSize(16, 16)
+	activity:SetPoint("RIGHT", refreshButton, "LEFT", -8, 0)
+	activity.dot = activity:CreateTexture(nil, "ARTWORK")
+	activity.dot:SetSize(12, 12)
+	activity.dot:SetPoint("RIGHT", 0, 0)
+	activity.text = activity:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	activity.text:SetPoint("RIGHT", activity.dot, "LEFT", -4, 0)
+	activity.text:SetWidth(ACTIVITY_WIDTH)
+	activity.text:SetJustifyH("RIGHT")
+	if activity.text.SetWordWrap then activity.text:SetWordWrap(false) end
+	activity:EnableMouse(true)
+	SetTip(activity, function(tt) ns.Views.ActivityTip(tt) end)
+	activity:Hide()
+	UI.activity, UI.refreshButton = activity, refreshButton
 	-- Название вкладки слева вверху (у чата там название канала — ChatPane).
 	heading = f:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
 	heading:SetPoint("BOTTOMLEFT", f, "TOPLEFT", 70, -54)
@@ -723,9 +788,20 @@ local function Create()
 
 	f:SetScript("OnShow", function() UI.Render() end)
 	f:SetScript("OnHide", function() ns.ChatPane.Hide(); ns.Recruit.Cancel(); ns.UnionPane.Hide(); ns.JournalPane.Hide() end)
-	local elapsed, debugElapsed = 0, 0
+	local elapsed, debugElapsed, activityElapsed, pulse = 0, 0, 0, 0
 	f:SetScript("OnUpdate", function(_, dt)
 		elapsed, debugElapsed = elapsed + (dt or 0), debugElapsed + (dt or 0)
+		activityElapsed, pulse = activityElapsed + (dt or 0), pulse + (dt or 0)
+		if activityElapsed >= ACTIVITY_EVERY then
+			activityElapsed = 0
+			UI.RenderActivity()
+			if current == "join" then ns.RecruitPane.RenderSearch()
+			elseif current == "census" then ns.CensusPane.RenderEmpty() end
+		end
+		if activity:IsShown() then
+			local waiting = activity.kind == "wait" or activity.kind == "work"
+			activity.dot:SetAlpha(waiting and 0.45 + 0.55 * math.abs(math.sin(pulse * 3)) or 1)
+		end
 		if current == "debug" and debugElapsed >= DEBUG_EVERY then
 			elapsed, debugElapsed = 0, 0
 			UI.Render()
