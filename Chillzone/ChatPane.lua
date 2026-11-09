@@ -618,24 +618,25 @@ function ChatPane.Build(host)
 	openTab:SetScript("OnLeave", function() GameTooltip:Hide() end)
 	openTab:Hide()
 
-	-- Люди справа: TOPLEFT (-165,-63) → BOTTOMRIGHT (-26,28).
+	-- Люди справа: TOPLEFT (-165,-63) → BOTTOMRIGHT (-26,44).
 	people = CreateFrame("ScrollFrame", nil, pane, "UIPanelScrollFrameTemplate")
 	people:SetPoint("TOPLEFT", host, "TOPRIGHT", -165, -63)
-	people:SetPoint("BOTTOMRIGHT", host, "BOTTOMRIGHT", -26, 28)
+	people:SetPoint("BOTTOMRIGHT", host, "BOTTOMRIGHT", -26, 44)
 	peopleChild = CreateFrame("Frame", nil, people)
 	peopleChild:SetSize(139, 10)
 	people:SetScrollChild(peopleChild)
 	local peopleBg = people:CreateTexture(nil, "BACKGROUND")
 	peopleBg:SetTexture("Interface\\FrameGeneral\\UI-Background-Marble")
 	peopleBg:SetAllPoints(people)
-	-- Сколько людей канала в сети — под списком: над ним, справа вверху, шапка окна (UI.lua).
+	-- Сколько людей канала в сети — под списком, вровень с полем ввода: над списком шапка окна,
+	-- а нижняя полоса занята строкой состояния и кнопкой обновления (UI.lua).
 	count = pane:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-	count:SetPoint("TOPLEFT", people, "BOTTOMLEFT", 2, -7)
+	count:SetPoint("TOPLEFT", people, "BOTTOMLEFT", 2, -3)
 
-	-- Сообщения: TOPLEFT списка каналов TOPRIGHT (31,-46) → BOTTOMLEFT людей (-22,28).
+	-- Сообщения: TOPLEFT списка каналов TOPRIGHT (31,-46) → BOTTOMLEFT людей (-22,12).
 	chatArea = CreateFrame("Frame", nil, pane)
 	chatArea:SetPoint("TOPLEFT", list, "TOPRIGHT", 31, -46)
-	chatArea:SetPoint("BOTTOMRIGHT", people, "BOTTOMLEFT", -22, 28)
+	chatArea:SetPoint("BOTTOMRIGHT", people, "BOTTOMLEFT", -22, 12)
 	local inset, insetReal = Template("Frame", chatArea, "InsetFrameTemplate")
 	inset:SetPoint("TOPLEFT", -10, 7)
 	inset:SetPoint("BOTTOMRIGHT", 10, -28)

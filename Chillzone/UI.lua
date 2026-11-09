@@ -29,7 +29,7 @@ local TABS = {
 }
 local DEBUG_EVERY = 5 -- «Отладка» обновляется чаще остальных: там счётчики и состояние реле
 local ACTIVITY_EVERY = 0.25 -- строка «что идёт сейчас» и обратные отсчёты на кнопках
-local ACTIVITY_WIDTH = 300 -- длиннее текст обрезается: левее начинается заголовок окна
+local ACTIVITY_WIDTH = 300 -- длиннее текст обрезается, самые длинные строки сюда помещаются
 local DOTS = {
 	done = "Interface\\FriendsFrame\\StatusIcon-Online",
 	wait = "Interface\\FriendsFrame\\StatusIcon-Away",
@@ -727,11 +727,11 @@ local function Create()
 		f:StopMovingOrSizing()
 		SavePosition(f)
 	end)
-	-- Кнопка стоит на месте при любой ширине счётчика справа, строка растёт влево от неё.
+	-- Нижняя полоса окна, под вставкой: кнопка в правом углу, строка растёт влево от неё.
 	-- Кнопка текстовая, чтобы не зависеть от наличия значка в разных клиентах.
 	refreshButton = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
 	refreshButton:SetSize(96, 18)
-	refreshButton:SetPoint("TOPRIGHT", f, "TOPRIGHT", -334, -24)
+	refreshButton:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -8, 6)
 	refreshButton:SetNormalFontObject("GameFontNormalSmall")
 	refreshButton:SetHighlightFontObject("GameFontHighlightSmall")
 	refreshButton:SetDisabledFontObject("GameFontDisableSmall")
