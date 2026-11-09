@@ -55,6 +55,30 @@ T.test("chat config: без игровой панели ничего не соз
 	T.eq(#c.ns.db.errors, 0)
 end)
 
+T.test("chat config: образец без штатной текстуры заливается своей, строка остаётся", function()
+	local c = Build()
+	Panel(c)
+	local cfg = c.ns.ChatConfig
+	T.ok(cfg.color, "образец цвета создан")
+	cfg.color.GetNormalTexture = function() return nil end
+	Tick(c)
+	T.ok(cfg.row:IsShown(), "строка не скрыта")
+	T.ok(cfg.fill, "цвет показывает своя текстура")
+	local fill = cfg.fill
+	Tick(c)
+	T.eq(cfg.fill, fill, "заливка создаётся один раз")
+	T.eq(#c.ns.db.errors, 0)
+end)
+
+T.test("chat config: со штатной текстурой своей заливки нет", function()
+	local c = Build()
+	Panel(c)
+	local cfg = Tick(c)
+	T.ok(cfg.row:IsShown())
+	T.no(cfg.fill)
+	T.eq(#c.ns.db.errors, 0)
+end)
+
 T.test("chat config: поздняя загрузка, вкладки, последний флажок и вывод", function()
 	local c = Build()
 	local panel = Panel(c)

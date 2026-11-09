@@ -22,6 +22,22 @@ local function CurrentWindow()
 	end
 end
 
+-- Цвет показывает штатная текстура образца из шаблона. На Forever GetNormalTexture вернул nil,
+-- строка падала и скрывалась. Без штатной текстуры образец заливается своей.
+local function PaintSwatch(color, r, g, b)
+	local texture = color:GetNormalTexture()
+	if texture then
+		texture:SetVertexColor(r, g, b)
+		return
+	end
+	if not Config.fill then
+		Config.fill = color:CreateTexture(nil, "ARTWORK")
+		Config.fill:SetPoint("TOPLEFT", 2, -2)
+		Config.fill:SetPoint("BOTTOMRIGHT", -2, 2)
+	end
+	Config.fill:SetColorTexture(r, g, b)
+end
+
 local function Refresh()
 	local row = Config.row
 	if not row then return end
@@ -53,7 +69,7 @@ local function Refresh()
 	end
 	Config.check:SetChecked(ns.char.chatMirror ~= false and Chat.WindowSelected(name))
 	Config.color.hex = Chat.TextColor()
-	Config.color:GetNormalTexture():SetVertexColor(Chat.HexToRGB(Config.color.hex))
+	PaintSwatch(Config.color, Chat.HexToRGB(Config.color.hex))
 	for _, s in ipairs(Config.swatches) do s.ring:SetShown(s.hex == Config.color.hex) end
 	row:Show()
 end
