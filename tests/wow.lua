@@ -172,6 +172,11 @@ local function NewFrame(c, name)
 	end
 	function methods.SetScript(self, k, fn) self.scripts[k] = fn end
 	function methods.GetScript(self, k) return self.scripts[k] end
+	function methods.GetVerticalScroll(self) return rawget(self, "verticalScroll") or 0 end
+	function methods.SetVerticalScroll(self, offset)
+		self.verticalScroll = offset
+		if self.scripts.OnVerticalScroll then self.scripts.OnVerticalScroll(self, offset) end
+	end
 	function methods.GetFrameLevel(self) return rawget(self, "frameLevel") or 1 end
 	function methods.SetFrameLevel(self, level) self.frameLevel = level end
 	function methods.HookScript(self, k, fn)
@@ -484,6 +489,7 @@ local function Env(c)
 	env.SlashCmdList = {}
 	env.UISpecialFrames = {}
 	env.RAID_CLASS_COLORS = {}
+	env.CLASS_ICON_TCOORDS = { DRUID = { 0.74, 0.98, 0, 0.25 }, PALADIN = { 0, 0.25, 0.5, 0.75 } }
 	env.ERR_CHAT_PLAYER_NOT_FOUND_S = "No player named '%s' is currently playing."
 	c.stubs = {}
 	for k in pairs(env) do c.stubs[k] = true end
@@ -506,7 +512,7 @@ function World:Client(opts)
 	c.ns = {}
 	for _, f in ipairs(T.tocFiles()) do
 		if (not f:find("^libs/") or f == "libs/Ed25519.lua")
-			and not (opts.legacy and (f == "Issuers.lua" or f == "IssuerRevocations.lua" or f == "UnionAuthority.lua")) then
+			and not (opts.legacy and (f == "Issuers.lua" or f == "IssuerRevocations.lua" or f == "UnionAuthority.lua" or f == "Online.lua")) then
 			if opts.legacy and (f == "Config.lua" or f == "Util.lua" or f == "Security.lua" or f == "Relay.lua" or f == "Census.lua") then
 				local chunk = assert(loadfile(T.ROOT .. "/tests/legacy/0.9/" .. f))
 				setfenv(chunk, c.env)("Chillzone", c.ns)

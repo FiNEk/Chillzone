@@ -22,12 +22,36 @@ local COL_L_W, COL_R_X = 200, 220
 local COL_R_W = CARD_W - COL_R_X
 local LEVEL_BAR_H, PERSON_H, ZONE_H = 40, 16, 16
 local ZONE_NAME_W = 170
+-- Строка «Все гильдии» над списком.
+local ALL_KEY, ALL_H, ALL_TOP = "*", 26, 28
+local ONLINE_TICK = 15 -- как часто открытая вкладка проверяет, не устарел ли список
+
+-- Таблица людей в игре. Область прокрутки 322 в высоту: 22 строки закрывают её с запасом на
+-- строку, обрезанную сверху, и больше их не создаётся при любой длине списка.
+local TABLE_HEAD_H, TABLE_ROWS, TABLE_COLS = 18, 22, 6
+local CLASS_ICONS = "Interface\\Glues\\CharacterCreate\\UI-CharacterCreate-Classes"
+local ADDON_ICON = "Interface\\AddOns\\" .. ADDON .. "\\media\\icon"
+-- icon — поле строки со значком: такая колонка рисует его вместо текста.
+local COL_LEVEL = { key = "level", title = L.ONLINE_COL_LEVEL, w = 38, justify = "CENTER" }
+local COL_CLASS = { key = "class", title = L.ONLINE_COL_CLASS, w = 50, justify = "CENTER", icon = "classIcon" }
+local COL_NAME = { key = "name", title = L.ONLINE_COL_NAME, w = 150 }
+local COL_ADDON = { key = "addon", title = L.ONLINE_COL_ADDON, w = 30, justify = "CENTER", icon = "addonIcon" }
+local COL_RANK = { key = "rank", title = L.ONLINE_COL_RANK, w = 100 }
+local TABLE_ALL = { COL_LEVEL, COL_CLASS, COL_NAME, COL_ADDON, { key = "guild", title = L.ONLINE_COL_GUILD, w = 118 }, COL_RANK }
+local TABLE_MINE = { COL_LEVEL, COL_CLASS, COL_NAME, COL_ADDON, { key = "zone", title = L.ONLINE_COL_ZONE, w = 118 }, COL_RANK }
+local TABLE_OTHER = {
+	COL_LEVEL, COL_CLASS,
+	{ key = "name", title = L.ONLINE_COL_NAME, w = 210 },
+	COL_ADDON,
+	{ key = "rank", title = L.ONLINE_COL_RANK, w = 158 },
+}
 
 local pane, list, listChild, empty, card, cardChild
+local allRow, all, allChild, cardTable, allTable
 local rows, people, segments, levels, zones, legend = {}, {}, {}, {}, {}, {}
 local LEGEND_COLS, LEGEND_H = 2, 14
 local w = {} -- надписи карточки
-local selected -- U.GuildKey выбранной гильдии
+local selected -- U.GuildKey выбранной гильдии или ALL_KEY
 
 local function FS(parent, font, justify)
 	local fs = parent:CreateFontString(nil, "OVERLAY", font)
@@ -122,23 +146,13 @@ end
 ---------------------------------------------------------------------------
 -- Карточка
 ---------------------------------------------------------------------------
-local function Person(i)
-	local p = people[i]
-	if p then return p end
-	p = CreateFrame("Button", nil, cardChild)
-	p:SetSize(COL_L_W, PERSON_H)
+-- Строка человека: подсветка, подсказка и меню по правой кнопке. Общая для руководства и таблицы.
+local function PersonButton(parent, width)
+	local p = CreateFrame("Button", nil, parent)
+	p:SetSize(width, PERSON_H)
 	local hl = p:CreateTexture(nil, "HIGHLIGHT")
 	hl:SetAllPoints()
 	hl:SetColorTexture(1, 1, 1, 0.07)
-	p.icon = p:CreateTexture(nil, "ARTWORK")
-	p.icon:SetSize(12, 12)
-	p.icon:SetPoint("LEFT", 2, 0)
-	p.level = FS(p, "GameFontDisableSmall", "RIGHT")
-	p.level:SetPoint("RIGHT", -2, 0)
-	p.name = FS(p, "GameFontHighlightSmall")
-	p.name:SetPoint("LEFT", p.icon, "RIGHT", 4, 0)
-	p.name:SetPoint("RIGHT", p.level, "LEFT", -4, 0)
-	if p.name.SetWordWrap then p.name:SetWordWrap(false) end
 	p:SetScript("OnEnter", function(self)
 		if not self.person then return end
 		ns.SafeCall("census person tip", Views.PersonTip, Tooltip(self), self.person)
@@ -151,8 +165,26 @@ local function Person(i)
 			ns.SafeCall("census menu", ns.ChatPane.OpenPersonMenu, self, self.person, Whisper)
 		end
 	end)
-	people[i] = p
 	return p
+end
+
+local function NewPerson(parent, width)
+	local p = PersonButton(parent, width)
+	p.icon = p:CreateTexture(nil, "ARTWORK")
+	p.icon:SetSize(12, 12)
+	p.icon:SetPoint("LEFT", 2, 0)
+	p.level = FS(p, "GameFontDisableSmall", "RIGHT")
+	p.level:SetPoint("RIGHT", -2, 0)
+	p.name = FS(p, "GameFontHighlightSmall")
+	p.name:SetPoint("LEFT", p.icon, "RIGHT", 4, 0)
+	p.name:SetPoint("RIGHT", p.level, "LEFT", -4, 0)
+	if p.name.SetWordWrap then p.name:SetWordWrap(false) end
+	return p
+end
+
+local function Person(i)
+	people[i] = people[i] or NewPerson(cardChild, COL_L_W)
+	return people[i]
 end
 
 local function Segment(i)
@@ -350,6 +382,159 @@ local function RenderZones(c, y)
 	return h
 end
 
+---------------------------------------------------------------------------
+-- Таблица людей в игре: строка на человека, щелчок по заголовку сортирует. Строки живут в
+-- содержимом прокрутки и переставляются под видимую часть, заголовок прилипает к её верху.
+---------------------------------------------------------------------------
+local function DefaultSort()
+	return { key = "level", desc = true }
+end
+
+-- Поставить заголовок и строки по текущей прокрутке.
+local function PlaceRows(t)
+	local offset = t.scroll:GetVerticalScroll() or 0
+	t.head:ClearAllPoints()
+	t.head:SetPoint("TOPLEFT", t.parent, "TOPLEFT", 0, -math.max(t.y, offset))
+	local top = t.y + TABLE_HEAD_H
+	local first = math.floor(math.max(0, offset - top) / PERSON_H) + 1
+	for i, r in ipairs(t.rows) do
+		local index = first + i - 1
+		local person = t.people[index]
+		r:SetShown(person ~= nil)
+		r.person = person
+		if person then
+			r:ClearAllPoints()
+			r:SetPoint("TOPLEFT", t.parent, "TOPLEFT", 0, -(top + (index - 1) * PERSON_H))
+			local cells = Views.OnlineCells(person)
+			for c, col in ipairs(t.columns) do
+				if not col.icon then r.cells[c]:SetText(cells[col.key]) end
+			end
+			local coords = person.class and CLASS_ICON_TCOORDS and CLASS_ICON_TCOORDS[person.class]
+			if coords then r.classIcon:SetTexCoord(coords[1], coords[2], coords[3], coords[4]) end
+			r.classIcon:SetShown(coords ~= nil)
+			r.addonIcon:SetShown(person.addon == true)
+		end
+	end
+end
+
+-- Первый щелчок по уровню — сначала старшие, по аддону — сначала те, у кого он есть, по остальным
+-- — по алфавиту. Повторный разворачивает.
+local function SortBy(t, key)
+	if t.sort.key == key then
+		t.sort.desc = not t.sort.desc
+	else
+		t.sort.key, t.sort.desc = key, key == "level" or key == "addon"
+	end
+	-- После сортировки нужно начало таблицы, а не случайная её середина.
+	if (t.scroll:GetVerticalScroll() or 0) > t.y then t.scroll:SetVerticalScroll(t.y) end
+	CensusPane.Render()
+end
+
+local function NewTableRow(parent)
+	local r = PersonButton(parent, CARD_W)
+	r.classIcon = r:CreateTexture(nil, "ARTWORK")
+	r.classIcon:SetSize(14, 14)
+	r.classIcon:SetTexture(CLASS_ICONS)
+	r.addonIcon = r:CreateTexture(nil, "ARTWORK")
+	r.addonIcon:SetSize(12, 12)
+	r.addonIcon:SetTexture(ADDON_ICON)
+	r.addonIcon:Hide()
+	r.cells = {}
+	for c = 1, TABLE_COLS do
+		r.cells[c] = FS(r, "GameFontHighlightSmall")
+		if r.cells[c].SetWordWrap then r.cells[c]:SetWordWrap(false) end
+	end
+	r:Hide()
+	return r
+end
+
+local function NewTable(scroll, parent)
+	local t = { scroll = scroll, parent = parent, heads = {}, rows = {}, people = {}, sort = DefaultSort(), y = 0 }
+	t.head = CreateFrame("Frame", nil, parent)
+	t.head:SetSize(CARD_W, TABLE_HEAD_H)
+	t.head:SetFrameLevel(parent:GetFrameLevel() + 5) -- прилипший заголовок лежит поверх строк
+	local bg = t.head:CreateTexture(nil, "BACKGROUND")
+	bg:SetAllPoints()
+	bg:SetColorTexture(0.13, 0.13, 0.13, 1)
+	for c = 1, TABLE_COLS do
+		local h = CreateFrame("Button", nil, t.head)
+		h:SetHeight(TABLE_HEAD_H)
+		local hl = h:CreateTexture(nil, "HIGHLIGHT")
+		hl:SetAllPoints()
+		hl:SetColorTexture(1, 1, 1, 0.07)
+		h.label = FS(h, "GameFontNormalSmall")
+		h.label:SetPoint("LEFT", 3, 0)
+		h.label:SetPoint("RIGHT", -3, 0)
+		h:SetScript("OnClick", function(self) ns.SafeCall("census sort", SortBy, t, self.key) end)
+		t.heads[c] = h
+	end
+	for i = 1, TABLE_ROWS do t.rows[i] = NewTableRow(parent) end
+	scroll:HookScript("OnVerticalScroll", function() ns.SafeCall("census table", PlaceRows, t) end)
+	return t
+end
+
+-- Разложить колонки вида: карточка своей гильдии и чужой показывают разные.
+local function ApplyColumns(t, columns)
+	if t.columns == columns then return end
+	t.columns = columns
+	local x = 0
+	for c = 1, TABLE_COLS do
+		local col, h = columns[c], t.heads[c]
+		h:SetShown(col ~= nil)
+		if col then
+			h.key = col.key
+			h:SetWidth(col.w)
+			h:ClearAllPoints()
+			h:SetPoint("LEFT", t.head, "LEFT", x, 0)
+			h.label:SetJustifyH(col.justify or "LEFT")
+		end
+		for _, r in ipairs(t.rows) do
+			local fs = r.cells[c]
+			fs:SetShown(col ~= nil and not col.icon)
+			if col and col.icon then
+				r[col.icon]:ClearAllPoints()
+				r[col.icon]:SetPoint("CENTER", r, "LEFT", x + col.w / 2, 0)
+			elseif col then
+				fs:ClearAllPoints()
+				fs:SetPoint("LEFT", r, "LEFT", x + 3, 0)
+				fs:SetWidth(col.w - 6)
+				fs:SetJustifyH(col.justify or "LEFT")
+			end
+		end
+		x = x + (col and col.w or 0)
+	end
+end
+
+-- Заполнить таблицу с отметки y; возвращает её высоту (пустая не занимает места).
+local function RenderTable(t, columns, persons, y)
+	ApplyColumns(t, columns)
+	local known = false
+	for _, col in ipairs(columns) do known = known or col.key == t.sort.key end
+	if not known then t.sort = DefaultSort() end -- например, «Зона» осталась от своей гильдии
+	Views.SortOnline(persons, t.sort.key, t.sort.desc)
+	for c, col in ipairs(columns) do
+		local active = col.key == t.sort.key
+		t.heads[c].label:SetText(active and ("|cffffffff" .. col.title .. (t.sort.desc and " v" or " ^") .. "|r") or col.title)
+	end
+	t.people, t.y = persons, y
+	t.head:SetShown(#persons > 0)
+	PlaceRows(t)
+	return #persons > 0 and TABLE_HEAD_H + #persons * PERSON_H or 0
+end
+
+local function RenderAll(c)
+	all:SetShown(c ~= nil)
+	if not c then return end
+	w.allCount:SetText(L.ONLINE_ALL_COUNT:format(ns.Util.Num(c.known), ns.Util.Num(c.online)))
+	local y = ALL_TOP
+	w.allStatus:SetShown(c.status ~= "")
+	if c.status ~= "" then
+		w.allStatus:SetText(c.status)
+		y = y + 14
+	end
+	allChild:SetHeight(y + RenderTable(allTable, TABLE_ALL, c.people, y) + 8)
+end
+
 local function RenderCard(c)
 	card:SetShown(c ~= nil)
 	if not c then return end
@@ -377,7 +562,11 @@ local function RenderCard(c)
 	local left = RenderPeople(c, y)
 	local right = RenderMix(c, y)
 	y = y + math.max(left, right) + 12
-	y = y + RenderZones(c, y)
+	y = y + RenderZones(c, y) + 8
+	w.onlineTitle:SetText(c.onlineGroup.title)
+	Place(w.onlineTitle, 0, y)
+	y = y + 18
+	y = y + RenderTable(cardTable, c.onlineGroup.mine and TABLE_MINE or TABLE_OTHER, c.onlineGroup.people, y)
 	cardChild:SetHeight(y + 8)
 end
 
@@ -388,8 +577,29 @@ function CensusPane.Build(parent)
 	pane = CreateFrame("Frame", nil, parent)
 	pane:SetAllPoints(parent)
 
+	-- Строка «Все гильдии» — вне прокрутки: общий список доступен при любой длине списка гильдий.
+	allRow = CreateFrame("Button", nil, pane)
+	allRow:SetSize(LIST_W, ALL_H)
+	allRow:SetPoint("TOPLEFT", 8, -8)
+	allRow.bg = allRow:CreateTexture(nil, "BACKGROUND")
+	allRow.bg:SetAllPoints()
+	allRow.bg:SetColorTexture(1, 1, 1, 0.03)
+	allRow.sel = allRow:CreateTexture(nil, "BORDER")
+	allRow.sel:SetAllPoints()
+	allRow.sel:SetColorTexture(1, 0.82, 0, 0.14)
+	allRow.sel:Hide()
+	local allHighlight = allRow:CreateTexture(nil, "HIGHLIGHT")
+	allHighlight:SetAllPoints()
+	allHighlight:SetColorTexture(1, 1, 1, 0.07)
+	allRow.right = FS(allRow, "GameFontHighlightSmall", "RIGHT")
+	allRow.right:SetPoint("RIGHT", -6, 0)
+	allRow.name = FS(allRow, "GameFontHighlight")
+	allRow.name:SetPoint("LEFT", 6, 0)
+	allRow.name:SetPoint("RIGHT", allRow.right, "LEFT", -6, 0)
+	allRow:SetScript("OnClick", function() ns.SafeCall("census select", CensusPane.Select, ALL_KEY) end)
+
 	list = CreateFrame("ScrollFrame", nil, pane, "UIPanelScrollFrameTemplate")
-	list:SetPoint("TOPLEFT", 8, -8)
+	list:SetPoint("TOPLEFT", 8, -(8 + ALL_H + 4))
 	list:SetPoint("BOTTOMLEFT", 8, 8)
 	list:SetWidth(LIST_W)
 	listChild = CreateFrame("Frame", nil, list)
@@ -414,6 +624,29 @@ function CensusPane.Build(parent)
 	cardChild = CreateFrame("Frame", nil, card)
 	cardChild:SetSize(CARD_W, 10)
 	card:SetScrollChild(cardChild)
+	cardTable = NewTable(card, cardChild)
+	w.onlineTitle = FS(cardChild, "GameFontNormal")
+	w.onlineTitle:SetWidth(CARD_W)
+	if w.onlineTitle.SetWordWrap then w.onlineTitle:SetWordWrap(false) end
+
+	-- Вид «Все гильдии» стоит на месте карточки и показывается вместо неё.
+	all = CreateFrame("ScrollFrame", nil, pane, "UIPanelScrollFrameTemplate")
+	all:SetPoint("TOPLEFT", CARD_X, -10)
+	all:SetPoint("BOTTOMRIGHT", -30, 8)
+	allChild = CreateFrame("Frame", nil, all)
+	allChild:SetSize(CARD_W, 10)
+	all:SetScrollChild(allChild)
+	all:Hide()
+	allTable = NewTable(all, allChild)
+	w.allTitle = FS(allChild, "GameFontNormalLarge")
+	w.allTitle:SetPoint("TOPLEFT", 0, 0)
+	w.allTitle:SetText(L.ONLINE_ALL_TITLE)
+	w.allCount = FS(allChild, "GameFontDisableSmall", "RIGHT")
+	w.allCount:SetPoint("TOPRIGHT", 0, -5)
+	w.allStatus = FS(allChild, "GameFontDisableSmall")
+	w.allStatus:SetPoint("TOPLEFT", 0, -ALL_TOP)
+	w.allStatus:SetWidth(CARD_W)
+	if w.allStatus.SetWordWrap then w.allStatus:SetWordWrap(false) end
 
 	w.title = FS(cardChild, "GameFontNormalLarge")
 	w.title:SetPoint("TOPLEFT", 0, 0)
@@ -480,11 +713,15 @@ function CensusPane.Build(parent)
 	w.zonesNote:SetWidth(CARD_W)
 
 	pane:Hide()
-	CensusPane.frames = { pane = pane, rows = rows, people = people, segments = segments, levels = levels, zones = zones, legend = legend, w = w, card = card }
+	CensusPane.frames = {
+		pane = pane, rows = rows, people = people, segments = segments, levels = levels, zones = zones, legend = legend,
+		w = w, card = card, allRow = allRow, all = all, cardTable = cardTable, allTable = allTable,
+	}
 	return pane
 end
 
 -- Перерисовать: выбор держится, пока гильдия в списке; иначе — своя гильдия, иначе первая.
+-- Поимённые списки запрашиваются только для того, что сейчас на экране.
 function CensusPane.Render()
 	if not pane then return end
 	local items = Views.CensusRows()
@@ -492,14 +729,24 @@ function CensusPane.Render()
 	for _, it in ipairs(items) do
 		if it.key == selected then pick = it end
 	end
-	if not pick then
+	local showAll = selected == ALL_KEY and #items > 0
+	if not pick and not showAll then
 		for _, it in ipairs(items) do
 			if it.s.mine then pick = it end
 		end
+		pick = pick or items[1]
 	end
-	pick = pick or items[1]
-	selected = pick and pick.key or nil
+	selected = showAll and ALL_KEY or (pick and pick.key or nil)
+	for _, it in ipairs(items) do
+		if it.s.fresh and (showAll or it == pick) then ns.Online.Want(it.s.guild) end
+	end
 	RenderList(items)
+	local row = Views.AllOnlineRow()
+	allRow.name:SetText(row.text)
+	allRow.right:SetText(row.right)
+	allRow.sel:SetShown(showAll)
+	allRow:SetShown(#items > 0)
+	RenderAll(showAll and Views.AllOnline() or nil)
 	RenderCard(pick and Views.GuildCard(pick.s) or nil)
 end
 
@@ -507,6 +754,7 @@ function CensusPane.Select(key)
 	if key == selected then return end
 	selected = key
 	if card then card:SetVerticalScroll(0) end
+	if all then all:SetVerticalScroll(0) end
 	CensusPane.Render()
 end
 
@@ -521,3 +769,12 @@ end
 function CensusPane.Hide()
 	if pane then pane:Hide() end
 end
+
+-- Пока вкладка на экране, списки обновляются сами. IsVisible учитывает и закрытое окно.
+local function RenderIfVisible()
+	if pane and pane:IsVisible() then CensusPane.Render() end
+end
+ns.On("ONLINE", RenderIfVisible)
+ns.On("LOGIN", function()
+	ns.Every(ONLINE_TICK, "census online", RenderIfVisible)
+end)

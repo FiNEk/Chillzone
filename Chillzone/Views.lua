@@ -130,6 +130,7 @@ function Views.GuildCard(s)
 	else
 		card.staleNote = L.CARD_STALE
 	end
+	card.onlineGroup = Views.OnlineGroup(s, L.ONLINE_HEAD)
 	return card
 end
 
@@ -490,6 +491,117 @@ function Views.People(channel, now)
 	return out, online
 end
 
+---------------------------------------------------------------------------
+-- Поимённый онлайн на «Переписи»: своя гильдия — из ростера, чужие — запросом (Online.lua)
+---------------------------------------------------------------------------
+local function OnlineNote(state)
+	if state.at then return L.TIP_UPDATED:format(Views.Ago(ns.Now() - state.at)) end
+	if state.loading then
+		return state.n and L.ONLINE_PROGRESS:format(state.got, state.n) or L.ONLINE_LOADING
+	end
+	return state.failed and L.ONLINE_NO_ANSWER or L.ONLINE_UNAVAILABLE
+end
+
+-- Кто в игре в гильдии s (строка Data.Summary): { title, people, mine, loading, missing };
+-- label — начало заголовка. loading — список ещё идёт, missing — его нет и никто его не несёт.
+-- known — результат AddonKnown: общему виду незачем собирать его заново для каждой гильдии.
+function Views.OnlineGroup(s, label, known)
+	local people, note, loading, missing
+	if s.mine then
+		people, note = GuildPeople("G"), L.TIP_FROM_ROSTER
+	else
+		local state = ns.Online.Get(s.guild)
+		people, note = {}, OnlineNote(state)
+		loading, missing = state.loading, not state.at and not state.loading
+		local roles = {}
+		local r = s.r or {}
+		if r.leader then roles[U.Key(r.leader)] = "leader" end
+		for _, o in ipairs(r.officers or {}) do roles[U.Key(o.name)] = "officer" end
+		known = known or AddonKnown(ns.Data.Summary())
+		for _, p in ipairs(state.people) do
+			local k = U.Key(p.name)
+			people[#people + 1] = {
+				name = p.name, class = p.class, level = p.level, online = true, days = 0,
+				role = roles[k] or "member", guild = s.guild, main = s.main,
+				addon = (p.addon or known[k]) and true or nil,
+			}
+		end
+	end
+	local count = #people > 0 and (" " .. GREY .. "(" .. U.Num(#people) .. ")|r") or ""
+	return {
+		people = people, title = label .. count .. "  " .. GREY .. note .. "|r",
+		mine = s.mine, loading = loading, missing = missing,
+	}
+end
+
+-- Все гильдии со свежим отчётом в одной таблице: { people, known — сколько в списке,
+-- online — по отчётам, status — чьих списков пока нет, "" если все пришли }.
+function Views.AllOnline(now)
+	local out = { people = {}, known = 0, online = 0 }
+	local loading, missing = {}, {}
+	local summary = ns.Data.Summary(now)
+	local known = AddonKnown(summary)
+	for _, s in ipairs(summary) do
+		if s.fresh then
+			local group = Views.OnlineGroup(s, "", known)
+			for _, p in ipairs(group.people) do out.people[#out.people + 1] = p end
+			out.online = out.online + (s.online or 0)
+			local absent = group.loading and loading or (group.missing and missing)
+			if absent then absent[#absent + 1] = Codec.Plain(s.guild) end
+		end
+	end
+	out.known = #out.people
+	local parts = {}
+	if #loading > 0 then parts[#parts + 1] = L.ONLINE_ALL_LOADING:format(table.concat(loading, ", ")) end
+	if #missing > 0 then parts[#parts + 1] = L.ONLINE_ALL_MISSING:format(table.concat(missing, ", ")) end
+	out.status = table.concat(parts, ". ")
+	return out
+end
+
+-- Чем сравнивать людей в таблице «кто в игре», по ключам колонок.
+local ONLINE_SORT = {
+	level = function(p) return p.level or 0 end,
+	class = function(p) return p.class and L.CLASS[p.class] or "" end,
+	name = function(p) return U.Key(p.name) or "" end,
+	guild = function(p) return U.GuildKey(p.guild) or "" end,
+	zone = function(p) return p.zone and U.Fold(p.zone) or "" end,
+	rank = function(p) return (ROLE_ORDER[p.role] or 9) * 100 + (p.rank or 99) end,
+	addon = function(p) return p.addon == true and 1 or 0 end,
+}
+
+-- Сортирует people на месте. При равенстве — по имени и всегда по возрастанию.
+-- Значения считаются один раз: свёртка регистра кириллицы в сравнении обошлась бы дорого.
+function Views.SortOnline(people, key, desc)
+	local value = ONLINE_SORT[key] or ONLINE_SORT.level
+	for _, p in ipairs(people) do
+		p.sortValue, p.sortName = value(p), U.Key(p.name) or ""
+	end
+	table.sort(people, function(a, b)
+		if a.sortValue ~= b.sortValue then
+			if desc then return a.sortValue > b.sortValue end
+			return a.sortValue < b.sortValue
+		end
+		return a.sortName < b.sortName
+	end)
+end
+
+-- Подписи ячеек таблицы по ключам колонок. Класс таблица рисует значком.
+function Views.OnlineCells(p)
+	local crown = p.role == "leader" and (" " .. ICON_KING) or (p.role == "officer" and (" " .. ICON_OFFICER) or "")
+	return {
+		level = (p.level and p.level > 0) and tostring(p.level) or "",
+		name = Views.Name(p.name, p.class) .. crown,
+		guild = Codec.Plain(p.guild or "?"),
+		zone = p.zone and Codec.Plain(p.zone) or "",
+		rank = Views.Role(p),
+	}
+end
+
+-- Строка «Все гильдии» над списком на «Переписи»: { text, right }.
+function Views.AllOnlineRow(now)
+	return { text = L.ONLINE_ALL, right = GREEN .. U.Num(Views.Status(now).online) .. "|r" }
+end
+
 -- Подпись роли человека в списке справа.
 function Views.Role(p)
 	if p.role == "active" then return L.ROLE_ACTIVE end
@@ -514,7 +626,7 @@ function Views.PersonTip(tt, p)
 	else
 		tt:AddLine(Views.AddonText(p), 0.6, 0.6, 0.6)
 	end
-	tt:AddLine(Views.CanInvite(p) and L.TIP_MENU_INVITE or L.TIP_MENU_WHISPER, 0.5, 0.83, 0.76)
+	tt:AddLine(L.TIP_MENU, 0.5, 0.83, 0.76)
 end
 
 -- Приглашать в группу можно того, кто сейчас в игре, и не себя.

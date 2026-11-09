@@ -832,7 +832,7 @@ T.test("окно: правый щелчок в списке людей откр�
 	Watch()
 	T.no(menu:IsShown(), "строка скрыта — меню закрыто")
 	vera:Show()
-	-- Подсказка предлагает приглашение только там, где оно сработает.
+	-- Подсказка одна при любом статусе: что сейчас недоступно, показывает само меню.
 	local lines = {}
 	local tt = setmetatable({ AddLine = function(_, t) lines[#lines + 1] = t end }, { __index = function() return function() end end })
 	local function tip(p)
@@ -840,10 +840,9 @@ T.test("окно: правый щелчок в списке людей откр�
 		B.ns.Views.PersonTip(tt, p)
 		return table.concat(lines, "\n")
 	end
-	T.ok(tip(vera.person):find(B.ns.L.TIP_MENU_INVITE, 1, true), "подсказка у Веры")
-	local own = tip(me.person)
-	T.no(own:find(B.ns.L.TIP_MENU_INVITE, 1, true), "у себя приглашения нет")
-	T.ok(own:find(B.ns.L.TIP_MENU_WHISPER, 1, true), "у себя только шёпот")
+	T.ok(tip(vera.person):find(B.ns.L.TIP_MENU, 1, true), "подсказка у Веры")
+	T.ok(tip(me.person):find(B.ns.L.TIP_MENU, 1, true), "у себя та же подсказка")
+	T.ok(tip({ name = "Кто Вышедший", online = false, days = 3, role = "member" }):find(B.ns.L.TIP_MENU, 1, true), "и у того, кто не в игре")
 	-- Новое API клиента важнее старого; без обоих приглашение не падает.
 	local used
 	B.env.C_PartyInfo = { InviteUnit = function(name) used = name end }
