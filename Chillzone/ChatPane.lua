@@ -472,7 +472,7 @@ function ChatPane.PersonMenu()
 		ns.SafeCall("menu invite", ChatPane.InviteToGroup, m.person)
 	end)
 	m.invite.text:SetText(L.MENU_INVITE)
-	m:SetScript("OnUpdate", WatchPersonMenu)
+	m:SetScript("OnUpdate", ns.Perf.Wrap("person menu", WatchPersonMenu))
 	m:Hide()
 	personMenu = m
 	return m
@@ -751,14 +751,14 @@ function ChatPane.Build(host)
 		if user then Drafts()[current] = self:GetText() end
 	end)
 
-	pane:SetScript("OnUpdate", function(_, dt)
+	pane:SetScript("OnUpdate", ns.Perf.Wrap("chat pane update", function(_, dt)
 		peopleElapsed = peopleElapsed + (dt or 0)
 		if peopleDirty and peopleElapsed >= 1 then
 			peopleElapsed = 0
 			ns.SafeCall("people", ChatPane.RenderPeople)
 			RenderHeader()
 		end
-	end)
+	end))
 	pane:Hide()
 	ChatPane.frames = { pane = pane, messages = messages, box = box, keyButton = EnsureKeyButton(), entries = entries, rows = rows, title = title, scope = scope, prompt = prompt, count = count, openTab = openTab }
 	return pane

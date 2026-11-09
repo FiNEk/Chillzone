@@ -19,6 +19,7 @@ Config.lua
 Locale.lua
 Util.lua
 Core.lua
+Perf.lua
 Activity.lua
 Codec.lua
 Comm.lua

@@ -171,12 +171,12 @@ local function Install()
 		if row:IsShown() then palette:SetShown(not palette:IsShown()) end
 	end)
 	row:SetScript("OnHide", function() palette:Hide() end)
-	watcher:SetScript("OnUpdate", function(_, dt)
+	watcher:SetScript("OnUpdate", ns.Perf.Wrap("chat config watcher", function(_, dt)
 		elapsed = elapsed + dt
 		if elapsed < 0.2 then return end
 		elapsed = 0
 		Update()
-	end)
+	end))
 	watcher:Show()
 	Update()
 end

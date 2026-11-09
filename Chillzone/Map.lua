@@ -238,7 +238,7 @@ local function HookWorldMap()
 	frame:HookScript("OnShow", Shown)
 	-- Только у видимой карты; меняем якорь круга лишь при изменении масштаба
 	-- или режима OpenMap. Перерегистрация меток при каждом зуме не нужна.
-	frame:HookScript("OnUpdate", UpdateOffsets)
+	frame:HookScript("OnUpdate", ns.Perf.Wrap("map offsets", UpdateOffsets))
 	if frame:IsShown() then Shown() end
 end
 

@@ -121,7 +121,7 @@ function ns.AddChatFilter(event, fn)
 		local CFU = rawget(_G, "ChatFrameUtil")
 		add = type(CFU) == "table" and rawget(CFU, "AddMessageEventFilter") or nil
 	end
-	if type(add) == "function" then pcall(add, event, fn) end
+	if type(add) == "function" then pcall(add, event, ns.Perf.Wrap("chat filter " .. event, fn)) end
 end
 
 ---------------------------------------------------------------------------
@@ -278,6 +278,11 @@ ns.Command("debug", function()
 	ns.Diagnostics.SetEnabled(not ns.Diagnostics.Enabled())
 	ns.UI.Toggle("journal")
 end, L.HELP_DEBUG)
+
+ns.Command("perf", function()
+	ns.Perf.Toggle()
+	ns.UI.Toggle("journal")
+end, L.HELP_PERF)
 
 ns.Command("log", function(arg)
 	local n = tonumber(arg) or 20

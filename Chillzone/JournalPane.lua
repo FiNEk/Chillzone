@@ -18,6 +18,7 @@ local function Render(force)
 	local f = Pane.frames
 	if not f.pane then return end
 	f.toggle:SetText(ns.Diagnostics.Enabled() and L.JOURNAL_STOP or L.JOURNAL_START)
+	f.perf:SetText(ns.Perf.Enabled() and L.PERF_STOP or L.PERF_START)
 	if copying then return end
 	if not force and revision == ns.logRevision then return end
 	-- Не сбрасываем место, если игрок прокрутил журнал к старым событиям.
@@ -69,6 +70,11 @@ function Pane.Build(parent)
 		Render(true)
 	end)
 	f.clear:SetPoint("LEFT", f.copy, "RIGHT", 8, 0)
+	f.perf = Button(pane, L.PERF_START, 150, function()
+		ns.Perf.Toggle()
+		Render(true)
+	end)
+	f.perf:SetPoint("LEFT", f.clear, "RIGHT", 8, 0)
 	f.hint = pane:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
 	f.hint:SetPoint("TOPLEFT", 12, -38)
 	f.hint:SetPoint("TOPRIGHT", -12, -38)
@@ -120,10 +126,10 @@ function Pane.Build(parent)
 	export:Hide()
 	f.back:Hide()
 	local elapsed = 0
-	pane:SetScript("OnUpdate", function(_, dt)
+	pane:SetScript("OnUpdate", ns.Perf.Wrap("journal update", function(_, dt)
 		elapsed = elapsed + dt
 		if elapsed >= 0.5 then elapsed = 0; Render(false) end
-	end)
+	end))
 	pane:Hide()
 end
 

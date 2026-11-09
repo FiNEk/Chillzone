@@ -88,7 +88,7 @@ end
 local function Job(fn, done)
     local accepted = Ed.Run(fn, function(ok, value)
         if not ok then ns.CaptureError("signature", value) end
-        done(ok and value or nil)
+        ns.SafeCall("signature done", done, ok and value or nil)
     end)
     if not accepted then S.stats.limited = S.stats.limited + 1 end
     return accepted
