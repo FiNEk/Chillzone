@@ -88,7 +88,7 @@ end
 local function Job(fn, done)
     local accepted = Ed.Run(fn, function(ok, value)
         if not ok then ns.CaptureError("signature", value) end
-        done(ok and value or nil)
+        ns.SafeCall("signature done", done, ok and value or nil)
     end)
     if not accepted then S.stats.limited = S.stats.limited + 1 end
     return accepted
@@ -262,6 +262,7 @@ local function Keep(c)
         s.delegations[gk] = s.delegations[gk] or {}
         s.delegations[gk][c.key], s.verified[gk]["@" .. c.key] = c.raw, c.approvedRoot
     end
+    if old ~= c.raw then ns.Fire("AUTH_CHANGED", c.guild) end
 end
 -- owner — чей это должен быть сертификат; from — кто его прислал (с него и лимит проверок).
 function S.CheckCertificate(raw, owner, done, from)

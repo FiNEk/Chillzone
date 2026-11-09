@@ -307,7 +307,7 @@ local function CreateInput()
 	box:SetScript("OnEnterPressed", function() ns.SafeCall("chat tab input", Submit) end)
 	box:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
 	-- Убираем своё поле сразу при смене вкладки или открытии штатного ввода.
-	box:SetScript("OnUpdate", function()
+	box:SetScript("OnUpdate", ns.Perf.Wrap("chat tab input", function()
 		local native = anchor and NativeInput(anchor, hostedAnchor)
 		local target = hostedAnchor == true and anchor or native or anchor
 		if not IsSelected(anchor, hostedAnchor) or target ~= layoutAnchor
@@ -315,7 +315,7 @@ local function CreateInput()
 			or NativeInputFocused(native) or not MuteNative(native) then
 			HideInput()
 		end
-	end)
+	end))
 	box:Hide()
 	return box
 end

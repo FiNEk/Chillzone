@@ -341,7 +341,7 @@ function UI.TagMenu()
 		ns.SafeCall("create chat window", ns.Chat.CreateWindow)
 	end)
 	m.create = b
-	m:SetScript("OnUpdate", WatchTagMenu)
+	m:SetScript("OnUpdate", ns.Perf.Wrap("tag menu", WatchTagMenu))
 	m:Hide()
 	tagMenu = m
 	return m
@@ -789,7 +789,7 @@ local function Create()
 	f:SetScript("OnShow", function() UI.Render() end)
 	f:SetScript("OnHide", function() ns.ChatPane.Hide(); ns.Recruit.Cancel(); ns.UnionPane.Hide(); ns.JournalPane.Hide() end)
 	local elapsed, debugElapsed, activityElapsed, pulse = 0, 0, 0, 0
-	f:SetScript("OnUpdate", function(_, dt)
+	f:SetScript("OnUpdate", ns.Perf.Wrap("window update", function(_, dt)
 		elapsed, debugElapsed = elapsed + (dt or 0), debugElapsed + (dt or 0)
 		activityElapsed, pulse = activityElapsed + (dt or 0), pulse + (dt or 0)
 		if activityElapsed >= ACTIVITY_EVERY then
@@ -811,7 +811,7 @@ local function Create()
 				UI.Render()
 			else UI.RenderStatus() end
 		end
-	end)
+	end))
 end
 
 -- Окно на вкладке tab (без tab — открыть или закрыть).

@@ -82,6 +82,14 @@ function Relay.IAmRelay()
 		and ns.Security.MyCertificate() ~= nil
 end
 
+-- Доверие по уже проверенному сертификату участника главной гильдии. Выше рядового поднимают
+-- только роли главы и офицера: для остальных Level лишь проверил бы сертификат ещё раз.
+local function CertTrust(c)
+	if not C.TRUST_ANY_MEMBER and c.role == "member" then return nil end
+	if c.role ~= "leader" and c.role ~= "officer" then return "member" end
+	return ns.Security.Level(c) > 1 and "officer" or "member"
+end
+
 -- Имена из ответов других реле — только подсказка, кого спросить. Реле делает лишь сертификат
 -- от подтверждённого корня главной гильдии.
 function Relay.TrustOf(name)
@@ -89,9 +97,7 @@ function Relay.TrustOf(name)
 	if not key then return nil end
 	if key == ns.myKey then return Relay.IAmRelay() and "self" or nil end
 	local c = ns.Security.Member(C.MAIN_GUILD, name)
-	if not c then return nil end
-	if not C.TRUST_ANY_MEMBER and c.role == "member" then return nil end
-	return ns.Security.Level(c) > 1 and "officer" or "member"
+	return c and CertTrust(c) or nil
 end
 
 -- Глава или офицер главной гильдии — по свежему сертификату, у всех одинаково: и в главной
@@ -111,9 +117,12 @@ local function Entry(key, name)
 	return e
 end
 
--- Кандидаты в реле, кроме меня, с доверием и приоритетом — один раз на тик (ns.Now()): Top,
--- Pick, Rank, статус и окно зовут их много раз подряд, а разбор и проверка сертификатов
--- не бесплатны. Состояние реле (verified, down) живёт в записях known и не кэшируется.
+-- Кандидаты в реле, кроме меня, с доверием и приоритетом. Сборка проверяет все сертификаты главной
+-- гильдии: при 440 штуках это кадр на 22-27 мс и 700 КБ мусора. Поэтому список живёт RELAY_POOL_TTL,
+-- а сразу его сбрасывают только события, меняющие доверие: сертификат, допуск или отзыв, корень,
+-- смена гильдии, свежий ростер. Сроки сертификатов отстают не больше чем на RELAY_POOL_TTL, а входящие
+-- пакеты реле сверяются через TrustOf без этого списка. Состояние реле (verified, down) живёт
+-- в записях known и не кэшируется.
 -- pool = { at, list = { записи known }, trust = { [Key] = роль }, officer = { [Key] = true } }
 local pool
 
@@ -123,12 +132,12 @@ end
 
 local function Pool()
 	local now = Now()
-	if pool and pool.at == now then return pool end
+	if pool and now - pool.at < C.RELAY_POOL_TTL then return pool end
 	local p = { at = now, list = {}, trust = {}, officer = {} }
-	local function add(name, probe)
+	local function add(name, probe, trust)
 		local k = U.Key(name)
 		if not k or k == ns.myKey or p.trust[k] ~= nil then return end
-		local trust = Relay.TrustOf(name)
+		if trust == nil then trust = Relay.TrustOf(name) end
 		if not trust and not probe then return end
 		p.trust[k] = trust or false
 		p.officer[k] = trust == "officer"
@@ -143,7 +152,7 @@ local function Pool()
 			if not ns.Security.Member(C.MAIN_GUILD, d.name) then add(d.name, true) end
 		end
 	end
-	for _, c in ipairs(ns.Security.Certificates(C.MAIN_GUILD)) do add(c.name) end
+	for _, c in ipairs(ns.Security.Certificates(C.MAIN_GUILD)) do add(c.name, false, CertTrust(c)) end
 	if ns.store then
 		for _, l in pairs(ns.store.relays) do add(l.name, true) end
 	end
@@ -817,8 +826,16 @@ ns.On("REPORTER", function(me)
 	if me then Relay.Register() else Relay.HandOver() end
 end)
 
+local function InvalidateMain(guild)
+	if U.IsMainGuild(guild) then Relay.Invalidate() end
+end
+
 ns.On("AUTH_ROOT", Relay.Invalidate)
 ns.On("GUILD_CHANGED", Relay.Invalidate)
+ns.On("ISSUER_REVOCATION", Relay.Invalidate)
+ns.On("AUTH_CHANGED", InvalidateMain)
+-- Роли своей гильдии сертификат сверяет с ростером, поэтому чужим гильдиям он список не сбрасывает.
+ns.On("ROSTER", function() InvalidateMain(ns.MyGuild()) end)
 
 -- Для тестов и окна.
 function Relay.Known() return known end

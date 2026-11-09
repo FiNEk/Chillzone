@@ -223,7 +223,7 @@ local function Harness(opts)
 		self:Click(button)
 		self.shift = false
 	end
-	T.load({ "Locale.lua", "Map.lua", "MapControls.lua" }, env, ns)
+	T.load({ "Locale.lua", "Perf.lua", "Map.lua", "MapControls.lua" }, env, ns)
 	if not opts.noLogin then ns.Fire("LOGIN") end
 	return h
 end

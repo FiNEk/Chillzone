@@ -942,6 +942,88 @@ T.test("relay: участник главной вне тройки реле пи
 	for n, cl in pairs(c) do T.eq(#cl.ns.db.errors, 0, n .. ": без ошибок") end
 end)
 
+-- Одна главная гильдия с выданными сертификатами и счётчик сборок списка реле у Новичка.
+local function PoolWorld()
+	local w = Wow.World()
+	w:Guild("Чиллзон")
+	w:Guild("Чиллзон Север")
+	local c = {}
+	c.A = w:Client({ first = "Арагорн", surname = "Светлый", guild = "Чиллзон", rank = 1 })
+	c.M = w:Client({ first = "Мира", surname = "Тихая", guild = "Чиллзон", rank = 3, class = "PRIEST" })
+	c.N = w:Client({ first = "Новичок", surname = "Главный", guild = "Чиллзон", rank = 3 })
+	c.V = w:Client({ first = "Вера", surname = "Верная", guild = "Чиллзон Север", rank = 0 })
+	w:Run(30)
+	w:Init(c.A)
+	w:Run(60)
+	local counter = { n = 0 }
+	for _, cl in ipairs({ c.N, c.V }) do
+		local certificates = cl.ns.Security.Certificates
+		cl.ns.Security.Certificates = function(guild)
+			counter.n = counter.n + 1
+			return certificates(guild)
+		end
+	end
+	return w, c, counter
+end
+
+T.test("relay: список реле не пересобирается каждый кадр и истекает по сроку", function()
+	local w, c, counter = PoolWorld()
+	local N = c.N.ns
+	N.Relay.Invalidate()
+	N.Relay.Candidates()
+	T.eq(counter.n, 1)
+	for _ = 1, 20 do
+		w.now = w.now + 0.016
+		N.Relay.Candidates()
+		N.Relay.Pick()
+	end
+	T.eq(counter.n, 1, "кадры не пересобирают список")
+	w.now = w.now + N.Config.RELAY_POOL_TTL
+	N.Relay.Candidates()
+	T.eq(counter.n, 2, "по истечении срока список собран заново")
+end)
+
+T.test("relay: список реле сбрасывают только события, меняющие доверие", function()
+	local _, c, counter = PoolWorld()
+	local N, V = c.N.ns, c.V.ns
+	local function Rebuilt(ns, fire, ...)
+		ns.Relay.Invalidate()
+		ns.Relay.Candidates()
+		local before = counter.n
+		ns.Fire(fire, ...)
+		ns.Relay.Candidates()
+		return counter.n > before
+	end
+	T.ok(Rebuilt(N, "AUTH_CHANGED", "Чиллзон"), "сертификат главной гильдии")
+	T.no(Rebuilt(N, "AUTH_CHANGED", "Чиллзон Север"), "сертификат другой гильдии")
+	T.ok(Rebuilt(N, "AUTH_ROOT", "Чиллзон"), "корень")
+	T.ok(Rebuilt(N, "ISSUER_REVOCATION", "KD~", "ключ"), "отзыв допуска")
+	T.ok(Rebuilt(N, "ROSTER", N.Roster.report), "свежий ростер главной гильдии")
+	T.no(Rebuilt(V, "ROSTER", V.Roster.report), "ростер другой гильдии на доверие не влияет")
+end)
+
+T.test("relay: сертификат, принятый после сборки, виден сразу", function()
+	local _, c = PoolWorld()
+	local N, S = c.N.ns, c.N.ns.Security
+	local gk, mira = N.Util.GuildKey("Чиллзон"), N.Util.Key(c.M:Name())
+	local certs = N.store.security.certs[gk]
+	local raw = certs[mira]
+	T.ok(raw, "у Новичка есть сертификат Миры")
+	local function Listed()
+		for _, e in ipairs(N.Relay.Candidates()) do
+			if e.key == mira then return true end
+		end
+		return false
+	end
+	T.ok(Listed(), "Мира в списке")
+	certs[mira] = nil
+	N.Relay.Invalidate()
+	T.no(Listed(), "без сертификата Миры нет")
+	T.ok(S.CheckCertificate(raw, nil, function() end))
+	T.ok(Listed(), "сертификат принят, часы не двигались")
+	T.eq(N.Relay.TrustOf(c.M:Name()), "member")
+end)
+
 -- Новичок главной гильдии, как в первые минуты после установки: из реле он слышал только
 -- рядовую Миру, а корень Арагорна ещё не спрашивал.
 local function Newcomer()
