@@ -439,6 +439,13 @@ local function Env(c)
 	env.ChatFrame1EditBox = NewFrame(c, "ChatFrame1EditBox")
 	env.ChatFrame2EditBox = NewFrame(c, "ChatFrame2EditBox")
 	env.DEFAULT_CHAT_FRAME = { editBox = env.ChatFrame1EditBox, AddMessage = function(_, text) c.printed[#c.printed + 1] = text end }
+	env.ChatFrameUtil.OpenChat = function(text, frame, cursor)
+		local box = (frame or env.DEFAULT_CHAT_FRAME).editBox
+		box:SetText(text or "")
+		box.cursor = cursor
+		box:Show()
+		box:SetFocus()
+	end
 	-- Вкладки чата: 1 — основное окно, 2 — журнал боя; ещё вкладки заводит Client:ChatWindow.
 	env.ChatFrame1 = env.DEFAULT_CHAT_FRAME
 	env.ChatFrame2 = NewFrame(c, "ChatFrame2")

@@ -497,42 +497,48 @@ T.test("chat tab: время видно в специальной вкладке
 	T.eq(#ns.db.errors, 0)
 end)
 
-T.test("chat tab: метка союза фокусирует ввод в штатной вкладке", function()
-	local h, ns = Build()
+T.test("chat tab: метка союза открывает игровой ввод при активном поле аддона", function()
+	local h, ns, env = Build()
+	ns.char.chatTagNative = true
+	local api = EnableFocusAPI(h, ns, env)
 	ns.ChatTab.Open()
 	h:Tick()
-	local box = h.box
+	local box, native = h.box, env.ChatFrame1EditBox
+	T.eq(api.GetChatFocusOverride(), box)
 	box:SetText("Черновик союза")
 	h.client:CallHooks("SetItemRef", ns.Chat.TAG_LINK .. "A", "[Чиллзон]", "RightButton", h.tab)
-	T.no(box:HasFocus())
+	T.no(native:HasFocus())
 	h.client:CallHooks("SetItemRef", ns.Chat.TAG_LINK .. "A", "[Чиллзон]", "LeftButton", h.tab)
-	T.ok(box:HasFocus())
+	T.ok(native:HasFocus())
+	T.eq(native:GetText(), "/cz1 ")
 	T.eq(box:GetText(), "Черновик союза")
-	T.no(ns.UI.Current(), "окно аддона не открывается поверх вкладки")
-
-	local tier, focused
-	ns.UI.OpenChat = function(channel, focus) tier, focused = channel, focus end
-	box:ClearFocus()
-	h.client:CallHooks("SetItemRef", ns.Chat.TAG_LINK .. "C", "[Чиллзон]", "LeftButton", h.tab)
-	T.eq(tier, "C", "закрытый канал открывается в своём окне")
-	T.ok(focused)
-	T.no(box:HasFocus())
+	T.no(ns.UI.Current(), "окно аддона закрыто")
 end)
 
-T.test("chat tab: метка союза фокусирует ввод в Chattynator", function()
-	local h, ns = BuildChattynator()
+T.test("chat tab: метка союза в Chattynator открывает выбранный ввод", function()
+	local h, ns, env = BuildChattynator()
+	ns.char.chatTagNative = true
 	h:Mount(1)
 	h:Tick()
-	local box, messages = h.box, h.messages
+	local box, messages, native = h.box, h.messages, env.ChatFrame1EditBox
 	local click = messages.scripts.OnHyperlinkClick
 	box:SetText("Черновик союза")
 	click(messages, ns.Chat.TAG_LINK .. "A", "[Чиллзон]", "RightButton")
 	click(messages, ns.Chat.TAG_LINK .. "AA", "[Чиллзон]", "LeftButton")
-	T.no(box:HasFocus())
+	T.no(native:HasFocus())
 	click(messages, ns.Chat.TAG_LINK .. "A", "[Чиллзон]", "LeftButton")
-	T.ok(box:HasFocus())
+	T.ok(native:HasFocus())
+	T.eq(native:GetText(), "/cz1 ")
 	T.eq(box:GetText(), "Черновик союза")
-	T.no(ns.UI.Current(), "окно аддона не открывается поверх вкладки")
+	T.no(ns.UI.Current(), "окно аддона закрыто")
+
+	ns.char.chatTagNative = false
+	native:ClearFocus()
+	click(messages, ns.Chat.TAG_LINK .. "A", "[Чиллзон]", "LeftButton")
+	T.eq(ns.UI.Current(), "chat")
+	T.eq(ns.ChatPane.Current(), "A")
+	T.ok(ns.ChatPane.frames.box:HasFocus())
+	T.no(native:HasFocus())
 end)
 
 T.test("chat tab: специальная вкладка Chattynator показывает историю и новые строки со смайлами", function()

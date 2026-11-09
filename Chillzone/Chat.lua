@@ -4,7 +4,7 @@
 -- Скрытого канала нет: его мог открыть /join любой, кто знает название, и писать от имени
 -- любой гильдии. Из каналов прежних версий аддон выходит при входе.
 -- Строки хранятся в истории и уходят событием CHAT в окно Chillzone (ChatPane.lua); копия —
--- в чат игры, с меткой канала-ссылкой: клик по ней открывает окно на этом канале.
+-- в чат игры, с меткой канала-ссылкой: клик открывает чат игры или окно Chillzone.
 -- Формат вывода и окно вывода — по образцу Olympus Channels.lua.
 local ADDON, ns = ...
 
@@ -611,38 +611,36 @@ end
 ---------------------------------------------------------------------------
 -- Клик по метке канала в чате игры. Ссылки addon: игра на Forever отдаёт своему
 -- обработчику, который ничего не делает (проверено Olympus, Channels.lua 1.2.1); мы
--- ловим клик пост-хуком SetItemRef. Фокус получает только поле Chillzone.
+-- ловим клик пост-хуком SetItemRef.
 ---------------------------------------------------------------------------
-function Chat.TagTier(link, button)
+local function TagTier(link)
 	if type(link) ~= "string" or link:sub(1, #Chat.TAG_LINK) ~= Chat.TAG_LINK then return end
-	if button and button ~= "LeftButton" then return end
 	local tier = link:sub(#Chat.TAG_LINK + 1)
 	if Chat.TIER_LEVEL[tier] then return tier end
 end
 
-function Chat.TagClick(link, _, button, frame)
-	local tier = Chat.TagTier(link)
+function Chat.TagClick(link, _, button)
+	local tier = TagTier(link)
 	if not tier then return false end
 	if button == "RightButton" then return ns.UI.OpenTagMenu(tier) end
 	if button and button ~= "LeftButton" then return false end
 	ns.UI.HideTagMenu()
-	if tier == "A" and frame and ns.ChatTab and frame == ns.ChatTab.OutputFrame() then
-		local box = ns.ChatTab.InputFor(frame)
-		if box then
-			box:SetFocus()
-			return true
-		end
+	local open = ChatFrameUtil and ChatFrameUtil.OpenChat or ChatFrame_OpenChat
+	if ns.char.chatTagNative and type(open) == "function" then
+		local text = "/cz" .. Chat.TIER_LEVEL[tier] .. " "
+		-- Явное окно направляет ввод в чат WoW при активном поле аддона.
+		open(text, DEFAULT_CHAT_FRAME, #text)
+	else
+		ns.UI.OpenChat(tier, true)
 	end
-	if not (ns.UI and ns.UI.OpenChat) then return false end
-	ns.UI.OpenChat(tier, true)
 	return true
 end
 
 ns.On("LOGIN", function()
 	local hook = rawget(_G, "hooksecurefunc")
 	if type(hook) ~= "function" then return end
-	pcall(hook, "SetItemRef", function(link, text, button, frame)
-		ns.SafeCall("tag click", Chat.TagClick, link, text, button, frame)
+	pcall(hook, "SetItemRef", function(link, text, button)
+		ns.SafeCall("tag click", Chat.TagClick, link, text, button)
 	end)
 end)
 

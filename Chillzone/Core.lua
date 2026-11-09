@@ -151,7 +151,7 @@ local DB_DEFAULTS = {
 
 local CHAR_DEFAULTS = {
 	shareZones = true, chatOn = true, chatWindow = false, warned = false,
-	chatGuildTagsUpper = false,
+	chatGuildTagsUpper = false, chatTagNative = false,
 	chatMirror = true, chatTime = false, chatChannel = false, history = { G = {}, O = {} }, historyGuild = false, drafts = {},
 }
 local STORE_DEFAULTS = { guilds = {}, relays = {}, manual = {}, ignore = {}, chat = { A = {}, C = {}, L = {} } }

@@ -433,6 +433,9 @@ local function BuildSettings(parent)
 		ns.Fire("CHAT_WINDOWS")
 		ns.Print(on and L.CHAT_ON or L.CHAT_OFF)
 	end)
+	UI.chatTagNative = Check("chatTagNative", L.CHECK_CHAT_TAG_NATIVE, L.CHECK_CHAT_TAG_NATIVE_TIP,
+		function() return ns.char.chatTagNative end, function(on) ns.char.chatTagNative = on end, 260)
+
 	Check("mirror", L.CHECK_MIRROR, L.CHECK_MIRROR_TIP, function() return ns.char.chatMirror end, function(on)
 		ns.char.chatMirror = on
 		ns.Fire("CHAT_WINDOWS")
