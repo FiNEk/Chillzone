@@ -363,6 +363,62 @@ T.test("online: передача большого списка не задерж
 end)
 
 ---------------------------------------------------------------------------
+-- Строка операций
+---------------------------------------------------------------------------
+local function ActivityRow(cl)
+	local prefix = cl.ns.L.ACT_ONLINE:gsub("%%s", "")
+	for _, row in ipairs(cl.ns.Activity.List()) do
+		if row.text:sub(1, #prefix) == prefix then return row end
+	end
+end
+
+T.test("online: первый запрос виден в строке операций и заканчивается с ответом", function()
+	local w, c = Build()
+	local guild = "Чиллзон Север"
+	T.eq(ActivityRow(c.K), nil, "пока не просили, строки нет")
+	c.K.ns.Online.Want(guild)
+	local row = ActivityRow(c.K)
+	T.ok(row, "игрок ждёт список")
+	T.eq(row.kind, "wait", "ждём других")
+	T.eq(row.text, c.K.ns.L.ACT_ONLINE:format(1), "одна гильдия")
+	T.eq(row.detail, c.K.ns.L.ACT_ONLINE_TIP, "подсказка объясняет ожидание")
+	w:Run(30)
+	T.ok(c.K.ns.Online.Get(guild).at, "список пришёл")
+	T.eq(ActivityRow(c.K), nil, "ожидание закончилось")
+end)
+
+T.test("online: строка операций закрывается, когда никто не ответил", function()
+	local w, c = Build()
+	local guild = "Чиллзон Север"
+	c.V.ns.Comm.On("OQ", nil)
+	c.B.ns.Comm.On("OQ", nil)
+	c.K.ns.Online.Want(guild)
+	T.ok(ActivityRow(c.K), "игрок ждёт список")
+	w:Run(c.K.ns.Config.ONLINE_WAIT * c.K.ns.Config.ONLINE_TRIES + 10)
+	T.ok(c.K.ns.Online.Get(guild).failed, "никто не ответил")
+	T.eq(ActivityRow(c.K), nil, "больше ждать нечего")
+end)
+
+T.test("online: плановое обновление показанного списка не занимает строку операций", function()
+	local w, c = Build()
+	local guild = "Чиллзон Север"
+	local Config = c.K.ns.Config
+	c.K.ns.Online.Want(guild)
+	w:Run(30)
+	T.ok(c.K.ns.Online.Get(guild).at, "список получен")
+	w:Run(Config.ONLINE_REFRESH)
+	local from = #w.log + 1
+	c.K.ns.Online.Want(guild)
+	T.ok(c.K.ns.Online.Get(guild).at, "на экране прежний список")
+	T.eq(ActivityRow(c.K), nil, "обновление идёт фоном")
+	w:Run(30)
+	T.eq(#Sent(w, "OQ", from), 1, "запрос при этом действительно ушёл")
+	w:Run(Config.ONLINE_KEEP + 5)
+	c.K.ns.Online.Want(guild)
+	T.ok(ActivityRow(c.K), "устаревший список уже не показан, и игрок снова ждёт")
+end)
+
+---------------------------------------------------------------------------
 -- Окно
 ---------------------------------------------------------------------------
 T.test("online: вкладка показывает список и запрашивает только выбранное", function()

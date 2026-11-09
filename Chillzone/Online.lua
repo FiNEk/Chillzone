@@ -103,17 +103,32 @@ function Online.Want(guild)
 	ns.Fire("ONLINE", gk)
 end
 
--- Что показать про гильдию: { people, at — когда получен список, loading, got, n, failed }.
-function Online.Get(guild)
-	local gk = U.GuildKey(guild)
-	local list, ask = lists[gk], asks[gk]
+-- Последний полученный список, пока он не устарел настолько, что показывать его нельзя.
+local function Kept(gk)
+	local list = lists[gk]
 	if list and ns.Now() - list.at > C.ONLINE_KEEP then
 		lists[gk], list = nil, nil
 	end
+	return list
+end
+
+-- Что показать про гильдию: { people, at — когда получен список, loading, got, n, failed }.
+function Online.Get(guild)
+	local gk = U.GuildKey(guild)
+	local list, ask = Kept(gk), asks[gk]
 	if list then return { people = list.people, at = list.at } end
 	if ask then return { people = Merge(ask.pages, ask.n), loading = true, got = ask.got, n = ask.n } end
 	return { people = {}, failed = failed[gk] ~= nil }
 end
+
+-- Плановое обновление идёт фоном: прежний список остаётся на экране, игрок ничего не ждёт.
+ns.Activity.Probe(function()
+	local n = 0
+	for gk in pairs(asks) do
+		if not Kept(gk) then n = n + 1 end
+	end
+	if n > 0 then return { kind = "wait", text = ns.L.ACT_ONLINE:format(n), detail = ns.L.ACT_ONLINE_TIP } end
+end)
 
 local function Take(ask, page)
 	if page.st ~= ask.st or page.n ~= ask.n then
