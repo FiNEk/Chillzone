@@ -79,6 +79,9 @@ function A.Reset()
     if not ns.store or not ns.store.security then return false end
     local s = Store()
     s.owner, s.ownerReset, s.ownerResetFromGuild = nil, true, not S.CanAdmin()
+    -- Разрешения связи, сделанной до сброса, иначе действуют ещё три минуты: участник
+    -- без сброса успел бы вернуть старую цепочку, и поколение 1 уже не прошло бы.
+    allowed = {}
     s.policies = {}
     for _, entry in pairs(s.union) do
         entry.generation, entry.revision, entry.issued = nil, 0, 0
