@@ -1,4 +1,7 @@
 -- Отдельная вкладка общего чата. У неактивной штатной строки временно меняем только прозрачность.
+-- Перехватываем только клавишу Enter и только пока поле вкладки на экране (ChatPane.SyncKeys).
+-- ChatFrameUtil.SetChatFocusOverride не годится: он забирает любой OpenChat без вкладки,
+-- включая шёпот Battle.net, клавиши ответа и ссылки из интерфейса.
 local ADDON, ns = ...
 
 local Chat, L, U = ns.Chat, ns.L, ns.Util
@@ -10,19 +13,12 @@ local mutedNative, nativeAlpha
 local inputInset, smileButton, smileTarget, hookedPicker
 local selectionHooks = {}
 local stopped = false
+local wantsEnter = false
 
--- OpenChat сам направляет Enter в это поле, а команды со слэшем оставляет игре.
-local function FocusAPI()
-	local api = rawget(_G, "ChatFrameUtil")
-	if type(api) == "table" and type(api.SetChatFocusOverride) == "function"
-		and type(api.GetChatFocusOverride) == "function" and type(api.ClearChatFocusOverride) == "function" then
-		return api
-	end
-end
-
-local function ReleaseFocusOverride()
-	local api = FocusAPI()
-	if api and input and api.GetChatFocusOverride() == input then api.ClearChatFocusOverride() end
+local function SetWantsEnter(value)
+	if wantsEnter == value then return end
+	wantsEnter = value
+	if ns.ChatPane then ns.ChatPane.SyncKeys() end
 end
 
 local function FindWindow(name)
@@ -67,9 +63,7 @@ local function ChattynatorLoaded()
 end
 
 local function HostedWindow()
-	if not ns.ChattynatorTab then return end
-	if FocusAPI() then return ns.ChattynatorTab.InputHost() end
-	return ns.ChattynatorTab.ActiveHost(), true
+	if ns.ChattynatorTab then return ns.ChattynatorTab.ActiveHost(), true end
 end
 
 local function IsSelected(frame, hosted)
@@ -121,31 +115,32 @@ local function MuteNative(native)
 	return ok
 end
 
--- Открытая вкладка союза принимает строки и в фоне, независимо от дополнительных копий.
-function ChatTab.OutputFrame()
+-- Поле ввода есть только у вкладки «Чиллзон», отмеченной в настройке копий.
+-- Остальные отмеченные вкладки только получают строки, их ввод остаётся у игры.
+function ChatTab.InputFrame()
 	local char = ns.char
-	if ChattynatorLoaded() or not char or type(char.chatTab) ~= "string"
-		or not char.chatOn or not ns.IsMember() then return end
-	local window = FindWindow(char.chatTab)
+	if ChattynatorLoaded() or not char or not char.chatOn or char.chatMirror == false
+		or not ns.IsMember() or not Chat.WindowSelected(L.CHAT_TAB_NAME) then return end
+	local window = FindWindow(L.CHAT_TAB_NAME)
 	return window and window.frame
+end
+
+-- Прежние версии хранили вкладку отдельно от настройки копий. Переносим её в список один раз:
+-- старое поле удаляем до записи, иначе снятая игроком галочка вернётся при следующем обновлении.
+-- Закрытую вкладку ждём: при входе окна чата могут быть ещё не готовы.
+local function AdoptSavedTab()
+	local name = ns.char and ns.char.chatTab
+	if type(name) ~= "string" or ChattynatorLoaded() or not FindWindow(name) then return end
+	ns.char.chatTab = nil
+	Chat.ActivateWindow(name)
 end
 
 local function SelectedWindow()
 	local char = ns.char
 	if not char or not char.chatOn or not ns.IsMember() then return end
 	local host, hosted = HostedWindow()
-	local frame = host or ChatTab.OutputFrame()
+	local frame = host or ChatTab.InputFrame()
 	if not host then hosted = false end
-	if not host and FocusAPI() and not ChattynatorLoaded() and char.chatMirror ~= false then
-		local selected = SelectedInDock(rawget(_G, "GENERAL_CHAT_DOCK"))
-		for _, window in ipairs(Chat.Windows()) do
-			if window.frame == selected and (Chat.WindowSelected(window.name)
-				or (selected == DEFAULT_CHAT_FRAME and Chat.WindowSelected(""))) then
-				frame = selected
-				break
-			end
-		end
-	end
 	if not IsSelected(frame, hosted) then return end
 	-- Штатный ввод с фокусом остаётся доступным для команд игры.
 	local native = NativeInput(frame, hosted)
@@ -161,6 +156,17 @@ end
 function ChatTab.FocusedInput()
 	local box = ChatTab.InputFor()
 	if box and box:HasFocus() then return box end
+end
+
+function ChatTab.WantsEnter()
+	return wantsEnter
+end
+
+function ChatTab.FocusInput()
+	local box = ChatTab.InputFor()
+	if not box then return false end
+	box:SetFocus()
+	return true
 end
 
 -- Hepega 0.9.0 уже рисует свои смайлы в строках Chillzone. Его окно выбора
@@ -237,7 +243,7 @@ local function AddSmileButton()
 end
 
 local function HideInput()
-	ReleaseFocusOverride()
+	SetWantsEnter(false)
 	ReleaseSmilePicker(true)
 	if input and input:IsShown() then
 		input:ClearFocus()
@@ -282,7 +288,6 @@ end
 
 local function CreateInput()
 	local box = CreateFrame("EditBox", nil, UIParent, "InputBoxTemplate")
-	box.supportsSlashCommands = false
 	box:SetAutoFocus(false)
 	box:EnableMouse(true)
 	box:SetHeight(24)
@@ -316,6 +321,7 @@ local function CreateInput()
 end
 
 local function Refresh()
+	AdoptSavedTab()
 	local frame, native, hosted = SelectedWindow()
 	if not frame then HideInput(); return end
 	if not input then input = CreateInput() end
@@ -339,11 +345,7 @@ local function Refresh()
 	if not MuteNative(native) then HideInput(); return end
 	anchor, layoutAnchor, hostedAnchor = frame, target, hosted
 	if not input:IsShown() then input:Show() end
-	local api = FocusAPI()
-	if api then
-		local current = api.GetChatFocusOverride()
-		if not current or current == input then api.SetChatFocusOverride(input) end
-	end
+	SetWantsEnter(true)
 end
 
 local function Track(defer)
@@ -358,7 +360,8 @@ local function Track(defer)
 			end
 		end
 	end
-	if not ticker and ns.char and (FocusAPI() or type(ns.char.chatTab) == "string" or HostedWindow()) then
+	if not ticker and ns.char and (type(ns.char.chatTab) == "string" or HostedWindow()
+		or Chat.WindowSelected(L.CHAT_TAB_NAME)) then
 		ticker = ns.Every(0.15, "chat tab", Refresh, true)
 	end
 	if ticker and not defer then Refresh() end
@@ -402,7 +405,7 @@ function ChatTab.Open()
 	if SelectedInDock(dock) ~= window.frame or not window.frame:IsVisible() then
 		return Failed(L.CHAT_TAB_UNAVAILABLE)
 	end
-	ns.char.chatTab = window.name
+	if not Chat.ActivateWindow(window.name) then return Failed(L.CHAT_TAB_UNAVAILABLE) end
 	ns.Fire("SETTINGS")
 	return true
 end

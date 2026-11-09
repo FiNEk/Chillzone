@@ -8,8 +8,8 @@
 -- - не трогает поле ввода и окна чата игры: не вызывает ChatFrame_OpenChat, ChatFrame_SendTell,
 --   ChatFrameUtil.*, ChatEdit_*, SetItemRef, HandleModifiedItemClick и не меняет их скрипты;
 -- - своё поле ввода само фокус не берёт: только щелчок, клик по метке или Enter, пока окно открыто;
--- - Enter («Открыть чат») перехватывается своей кнопкой только при открытом окне и не в бою,
---   в режиме геймпада — никогда.
+-- - Enter («Открыть чат») перехватывается своей кнопкой только при открытом окне или на экране
+--   поля вкладки «Чиллзон» и не в бою, в режиме геймпада — никогда.
 local ADDON, ns = ...
 
 local U = ns.Util
@@ -510,14 +510,19 @@ function ChatPane.Insert(text)
 end
 
 ---------------------------------------------------------------------------
--- Enter при открытом окне — в наше поле (как в Olympus ChatWindow.lua:2721-2766)
+-- Enter при открытом окне и во вкладке «Чиллзон» — в наше поле (как в Olympus
+-- ChatWindow.lua:2721-2766). Владелец привязки один, чтобы окно и вкладка не спорили за клавишу.
 ---------------------------------------------------------------------------
 local boundKeys, syncing = {}, false
+
+local function KeysWanted()
+	return shown or (ns.ChatTab and ns.ChatTab.WantsEnter())
+end
 
 local function WantedKeys()
 	local keys = rawget(_G, "GetBindingKey")
 	local out = {}
-	if not shown or ChatPane.Gamepad() or type(keys) ~= "function" then return out end
+	if not KeysWanted() or ChatPane.Gamepad() or type(keys) ~= "function" then return out end
 	for _, key in ipairs({ keys("OPENCHAT") }) do
 		if type(key) == "string" and key ~= "" then out[#out + 1] = key end
 	end
@@ -532,10 +537,31 @@ local function SameKeys(a, b)
 	return true
 end
 
--- Привязка Enter к своей кнопке, пока окно открыто; снимается при закрытии. В бою — после боя.
+local function KeyPressed()
+	if shown and box then
+		box:SetFocus()
+	elseif ns.ChatTab and ns.ChatTab.FocusInput() then
+		return
+	elseif InCombat() and not keysCombatSaid then
+		-- Поле закрыли в бою: привязку снимем после боя, а пока подскажем один раз.
+		keysCombatSaid = true
+		ns.Print(L.CHAT_KEY_COMBAT)
+	end
+end
+
+-- Вкладка «Чиллзон» работает и до первого открытия окна, поэтому кнопка не зависит от Build.
+local function EnsureKeyButton()
+	if keyButton then return keyButton end
+	keyButton = CreateFrame("Button", "ChillzoneChatKey", UIParent)
+	keyButton:RegisterForClicks("AnyDown")
+	keyButton:SetScript("OnClick", function() ns.SafeCall("chat key", KeyPressed) end)
+	return keyButton
+end
+
+-- Привязка Enter к своей кнопке, пока поле на экране; снимается при закрытии. В бою — после боя.
 -- Своя же смена привязки шлёт UPDATE_BINDINGS: повтор отсекают SameKeys и флаг syncing.
 function ChatPane.SyncKeys()
-	if not keyButton or syncing then return end
+	if syncing then return end
 	local wanted = WantedKeys()
 	if SameKeys(wanted, boundKeys) then
 		keysPending = false
@@ -547,24 +573,15 @@ function ChatPane.SyncKeys()
 	end
 	local clear, set = rawget(_G, "ClearOverrideBindings"), rawget(_G, "SetOverrideBindingClick")
 	if type(clear) ~= "function" or type(set) ~= "function" then return end
+	local owner = EnsureKeyButton()
 	syncing = true
 	local ok, err = pcall(function()
-		clear(keyButton)
-		for _, key in ipairs(wanted) do set(keyButton, false, key, "ChillzoneChatKey", "LeftButton") end
+		clear(owner)
+		for _, key in ipairs(wanted) do set(owner, false, key, "ChillzoneChatKey", "LeftButton") end
 	end)
 	boundKeys = wanted
 	syncing, keysPending = false, false
 	if not ok then error(err, 0) end
-end
-
-local function KeyPressed()
-	if shown and box then
-		box:SetFocus()
-	elseif not keysCombatSaid then
-		-- Окно закрыли в бою: привязку снимем после боя, а пока подскажем один раз.
-		keysCombatSaid = true
-		ns.Print(L.CHAT_KEY_COMBAT)
-	end
 end
 
 ---------------------------------------------------------------------------
@@ -733,10 +750,6 @@ function ChatPane.Build(host)
 		if user then Drafts()[current] = self:GetText() end
 	end)
 
-	keyButton = CreateFrame("Button", "ChillzoneChatKey", UIParent)
-	keyButton:RegisterForClicks("AnyDown")
-	keyButton:SetScript("OnClick", function() ns.SafeCall("chat key", KeyPressed) end)
-
 	pane:SetScript("OnUpdate", function(_, dt)
 		peopleElapsed = peopleElapsed + (dt or 0)
 		if peopleDirty and peopleElapsed >= 1 then
@@ -746,7 +759,7 @@ function ChatPane.Build(host)
 		end
 	end)
 	pane:Hide()
-	ChatPane.frames = { pane = pane, messages = messages, box = box, keyButton = keyButton, entries = entries, rows = rows, title = title, scope = scope, prompt = prompt, count = count, openTab = openTab }
+	ChatPane.frames = { pane = pane, messages = messages, box = box, keyButton = EnsureKeyButton(), entries = entries, rows = rows, title = title, scope = scope, prompt = prompt, count = count, openTab = openTab }
 	return pane
 end
 
@@ -833,5 +846,5 @@ ns.RegisterEvent("PLAYER_REGEN_ENABLED", function()
 	if keysPending then ChatPane.SyncKeys() end
 end)
 ns.RegisterEvent("UPDATE_BINDINGS", function()
-	if keyButton and (shown or #boundKeys > 0) then ChatPane.SyncKeys() end
+	if KeysWanted() or #boundKeys > 0 then ChatPane.SyncKeys() end
 end)
