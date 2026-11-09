@@ -245,7 +245,17 @@ local function Env(c)
 			return h
 		end,
 	}
-	env.CreateFrame = function(_, name) return NewFrame(c, name) end
+	env.CreateFrame = function(_, name, _, template)
+		local frame = NewFrame(c, name)
+		if template == "ChatConfigCheckboxWithSwatchTemplate" then
+			frame.CheckButton = NewFrame(c)
+			frame.CheckButton.Text = NewFrame(c)
+			frame.ColorSwatch = NewFrame(c)
+			local texture = NewFrame(c)
+			frame.ColorSwatch.GetNormalTexture = function() return texture end
+		end
+		return frame
+	end
 	env.GameTooltip = NewFrame(c, "GameTooltip")
 	env.UnitFullName = function(unit) if unit == "player" then return c.first, c.surname end end
 	env.GetNormalizedRealmName = function() return c.realm end
