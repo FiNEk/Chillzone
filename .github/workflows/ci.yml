@@ -24,6 +24,8 @@ jobs:
       - uses: actions/checkout@v7
       # Настройки — в .luacheckrc; libs/ не проверяются.
       - uses: lunarmodules/luacheck@v1.2.0
+        with:
+          args: Chillzone tests
 
   test:
     name: Tests (${{ matrix.interpreter }})
@@ -42,4 +44,6 @@ jobs:
       - name: Run functional, cryptographic and adversarial tests
         env:
           CZ_TEST_PROGRESS: '1'
-        run: ${{ matrix.interpreter }} tests/run.lua
+        run: |
+          bash tests/test_parallel_runner.sh
+          bash tests/run-parallel.sh ${{ matrix.interpreter }}

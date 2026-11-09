@@ -330,12 +330,15 @@ reference/          Olympus 1.5.0 для справки (не в git)
 
 ```bash
 luajit tests/run.lua
-luacheck .
+bash tests/run-parallel.sh lua5.1
+luacheck Chillzone tests
 ```
 
-CI ([`.github/workflows/ci.yml`](../.github/workflows/ci.yml)) запускает и то и другое на каждый PR и пуш в `main`.
+Параллельный запуск требует Bash в Linux или WSL: по умолчанию это четыре процесса Lua 5.1. Можно выбрать интерпретатор и число процессов от 1 до 64, например `bash tests/run-parallel.sh luajit 4`. Тесты распределяются без повторов и пропусков; ошибка хотя бы одной части делает весь прогон неуспешным. Обычный `tests/run.lua` остаётся последовательным, `CZ_TEST_FILTER` работает в обоих режимах.
 
-luacheck следит за глобалами: аддон может писать только в перечисленные в `globals` из `.luacheckrc`, а читать — только Lua 5.1 и API игры из `read_globals`. Понадобилась новая функция игры — добавьте её в `read_globals`. Папка `Chillzone/libs` не проверяется.
+CI ([`.github/workflows/ci.yml`](../.github/workflows/ci.yml)) запускает линтер, проверку запуска процессов и полный набор в четырёх процессах отдельно для Lua 5.1 и LuaJIT на каждый PR и пуш в `main`. Обязательные проверки сохраняют имена `Luacheck`, `Tests (lua5.1)` и `Tests (luajit)`.
+
+luacheck следит за глобалами: аддон может писать только в перечисленные в `globals` из `.luacheckrc`, а читать — только Lua 5.1 и API игры из `read_globals`. Понадобилась новая функция игры — добавьте её в `read_globals`. Проверяются только `Chillzone` и `tests`, без `Chillzone/libs`: локальные копии проекта в других каталогах в прогон не попадают.
 
 Тесты проверяют:
 

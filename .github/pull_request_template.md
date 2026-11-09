@@ -4,6 +4,6 @@
 
 ## Проверка
 
-- [ ] `luajit tests/run.lua` и `luacheck .` проходят (их же запускает CI)
+- [ ] `bash tests/run-parallel.sh lua5.1`, `bash tests/run-parallel.sh luajit` и `luacheck Chillzone tests` проходят (их же запускает CI)
 - [ ] Если менялось то, чего тесты не видят (окно, карта, миникарта), — проверено в игре по чек-листу из [docs/DETAILS.md](https://github.com/FiNEk/Chillzone/blob/main/docs/DETAILS.md#проверка-в-игре)
 - [ ] Если менялся формат сообщений аддона — в описании сказано, понимают ли друг друга старая и новая версии

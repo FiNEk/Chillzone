@@ -59,22 +59,41 @@ end
 
 -- Загружает перечисленные файлы аддона в окружение env (по умолчанию — пустое поверх _G)
 -- с общей таблицей ns, как это делает игра: chunk("Chillzone", ns).
+-- Кэш живёт только в этом процессе: компиляция общая, выполнение и состояние — отдельные.
+local chunks = {}
+
 function T.load(files, env, ns)
 	ns = ns or {}
 	env = env or setmetatable({}, { __index = _G })
 	for _, f in ipairs(files) do
-		local chunk, err = loadfile(T.ROOT .. "/Chillzone/" .. f)
-		if not chunk then error(err, 2) end
+		local path = T.ROOT .. "/Chillzone/" .. f
+		local chunk = chunks[path]
+		if not chunk then
+			local err
+			chunk, err = loadfile(path)
+			if not chunk then error(err, 2) end
+			chunks[path] = chunk
+		end
+		local previous = getfenv(chunk)
 		setfenv(chunk, env)
-		chunk("Chillzone", ns)
+		local ok, err = pcall(chunk, "Chillzone", ns)
+		-- Не удерживаем последнего клиента; вложенный вызов возвращается в своё окружение.
+		setfenv(chunk, previous)
+		if not ok then error(err, 2) end
 	end
 	return ns, env
 end
 
 function T.run()
-	for _, t in ipairs(T.tests) do
-		local filter = os.getenv("CZ_TEST_FILTER")
-		if not filter or t.name:find(filter, 1, true) then
+	local indexText, countText = os.getenv("CZ_TEST_SHARD_INDEX"), os.getenv("CZ_TEST_SHARD_COUNT")
+	local index, count = tonumber(indexText or "1"), tonumber(countText or "1")
+	if (indexText == nil) ~= (countText == nil) or not index or not count
+		or index < 1 or count < 1 or index % 1 ~= 0 or count % 1 ~= 0 or index > count then
+		error("CZ_TEST_SHARD_INDEX и CZ_TEST_SHARD_COUNT должны задавать целую часть от 1 до числа частей", 2)
+	end
+	local filter = os.getenv("CZ_TEST_FILTER")
+	for i, t in ipairs(T.tests) do
+		if (i - 1) % count == index - 1 and (not filter or t.name:find(filter, 1, true)) then
 		local ok, err = xpcall(t.fn, debug.traceback)
 		if ok then
 			T.passed = T.passed + 1
