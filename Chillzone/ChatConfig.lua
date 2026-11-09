@@ -41,11 +41,19 @@ local function Refresh()
 		return
 	end
 	row:ClearAllPoints()
-	row:SetPoint("TOPLEFT", anchor, "BOTTOMLEFT", 0, -6)
-	row:SetSize(width, 26)
+	row:SetPoint("TOPLEFT", anchor, "BOTTOMLEFT", 4, -6)
+	row:SetSize(width - 8, 26)
+	-- В Forever колонка цвета сдвинута относительно обычного Classic.
+	-- Читаем положение соседнего образца, не меняя игровые кадры.
+	local native = rawget(_G, "ChatConfigChannelSettingsLeftCheckbox1ColorSwatch")
+	local left, ownLeft = native and native:GetLeft(), row:GetLeft()
+	if type(left) == "number" and type(ownLeft) == "number" then
+		Config.color:ClearAllPoints()
+		Config.color:SetPoint("LEFT", row, "LEFT", left - ownLeft, 0)
+	end
 	Config.check:SetChecked(ns.char.chatMirror ~= false and Chat.WindowSelected(name))
 	Config.color.hex = Chat.TextColor()
-	Config.color.fill:SetColorTexture(Chat.HexToRGB(Config.color.hex))
+	Config.color:GetNormalTexture():SetVertexColor(Chat.HexToRGB(Config.color.hex))
 	for _, s in ipairs(Config.swatches) do s.ring:SetShown(s.hex == Config.color.hex) end
 	row:Show()
 end
@@ -114,24 +122,18 @@ local function Install()
 	watcher:SetSize(1, 1)
 	watcher:SetPoint("TOPLEFT")
 	Config.watcher = watcher
-	local row = CreateFrame("Frame", nil, watcher)
+	-- Штатный шаблон даёт ту же рамку, фон, флажок и образец цвета, что у каналов.
+	-- Берём вариант без перетаскивания и выхода из канала; обработчики только свои.
+	local row = CreateFrame("Frame", nil, watcher, "ChatConfigCheckboxWithSwatchTemplate")
 	Config.row = row
 	row:Hide()
-	local check = CreateFrame("CheckButton", nil, row)
+	local check = row.CheckButton
 	Config.check = check
-	check:SetSize(24, 24)
-	check:SetPoint("LEFT", 3, 0)
-	check:SetNormalTexture("Interface\\Buttons\\UI-CheckBox-Up")
-	check:SetPushedTexture("Interface\\Buttons\\UI-CheckBox-Down")
-	check:SetCheckedTexture("Interface\\Buttons\\UI-CheckBox-Check")
 	check:SetScript("OnClick", function(self) ns.SafeCall("chat config toggle", Toggle, self) end)
 	Tooltip(check, L.TIER_A, L.CHAT_CONFIG_TIP)
-	local label = row:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-	label:SetPoint("LEFT", check, "RIGHT", 2, 0)
-	label:SetText(L.TIER_A)
-	local color = ColorButton(row, 16)
+	check.Text:SetText(L.TIER_A)
+	local color = row.ColorSwatch
 	Config.color = color
-	color:SetPoint("LEFT", row, "LEFT", 344, 0)
 	Tooltip(color, L.CHAT_COLOR, L.CHAT_COLOR_TIP)
 	local palette = CreateFrame("Frame", nil, row)
 	Config.palette = palette
