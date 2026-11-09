@@ -130,6 +130,7 @@ function Views.GuildCard(s)
 	else
 		card.staleNote = L.CARD_STALE
 	end
+	card.onlineGroup = Views.OnlineGroup(s, L.ONLINE_HEAD)
 	return card
 end
 
@@ -490,6 +491,60 @@ function Views.People(channel, now)
 	return out, online
 end
 
+---------------------------------------------------------------------------
+-- Поимённый онлайн на «Переписи»: своя гильдия — из ростера, чужие — запросом (Online.lua)
+---------------------------------------------------------------------------
+local function OnlineNote(state)
+	if state.at then return L.TIP_UPDATED:format(Views.Ago(ns.Now() - state.at)) end
+	if state.loading then
+		return state.n and L.ONLINE_PROGRESS:format(state.got, state.n) or L.ONLINE_LOADING
+	end
+	return state.failed and L.ONLINE_NO_ANSWER or L.ONLINE_UNAVAILABLE
+end
+
+-- Кто в игре в гильдии s (строка Data.Summary): { title, people }; label — начало заголовка.
+function Views.OnlineGroup(s, label)
+	local people, note
+	if s.mine then
+		people, note = GuildPeople("G"), L.TIP_FROM_ROSTER
+	else
+		local state = ns.Online.Get(s.guild)
+		people, note = {}, OnlineNote(state)
+		local roles = {}
+		local r = s.r or {}
+		if r.leader then roles[U.Key(r.leader)] = "leader" end
+		for _, o in ipairs(r.officers or {}) do roles[U.Key(o.name)] = "officer" end
+		for _, p in ipairs(state.people) do
+			people[#people + 1] = {
+				name = p.name, class = p.class, level = p.level, online = true, days = 0,
+				role = roles[U.Key(p.name)] or "member", guild = s.guild, main = s.main,
+			}
+		end
+		table.sort(people, ByRole)
+	end
+	local count = #people > 0 and (" " .. GREY .. "(" .. U.Num(#people) .. ")|r") or ""
+	return { people = people, title = label .. count .. "  " .. GREY .. note .. "|r" }
+end
+
+-- Все гильдии со свежим отчётом: { groups, known — сколько в списках, online — по отчётам }.
+function Views.AllOnline(now)
+	local out = { groups = {}, known = 0, online = 0 }
+	for _, s in ipairs(ns.Data.Summary(now)) do
+		if s.fresh then
+			local group = Views.OnlineGroup(s, GuildLabel(s))
+			out.groups[#out.groups + 1] = group
+			out.known = out.known + #group.people
+			out.online = out.online + (s.online or 0)
+		end
+	end
+	return out
+end
+
+-- Строка «Все гильдии» над списком на «Переписи»: { text, right }.
+function Views.AllOnlineRow(now)
+	return { text = L.ONLINE_ALL, right = GREEN .. U.Num(Views.Status(now).online) .. "|r" }
+end
+
 -- Подпись роли человека в списке справа.
 function Views.Role(p)
 	if p.role == "active" then return L.ROLE_ACTIVE end
@@ -514,7 +569,7 @@ function Views.PersonTip(tt, p)
 	else
 		tt:AddLine(Views.AddonText(p), 0.6, 0.6, 0.6)
 	end
-	tt:AddLine(Views.CanInvite(p) and L.TIP_MENU_INVITE or L.TIP_MENU_WHISPER, 0.5, 0.83, 0.76)
+	tt:AddLine(L.TIP_MENU, 0.5, 0.83, 0.76)
 end
 
 -- Приглашать в группу можно того, кто сейчас в игре, и не себя.

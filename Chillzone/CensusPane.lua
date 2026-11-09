@@ -22,12 +22,17 @@ local COL_L_W, COL_R_X = 200, 220
 local COL_R_W = CARD_W - COL_R_X
 local LEVEL_BAR_H, PERSON_H, ZONE_H = 40, 16, 16
 local ZONE_NAME_W = 170
+-- Строка «Все гильдии» над списком и сетка людей в игре.
+local ALL_KEY, ALL_H, ALL_TOP = "*", 26, 28
+local GRID_COLS, GRID_W, GRID_HEAD_H = 3, math.floor(CARD_W / 3), 18
+local ONLINE_TICK = 15 -- как часто открытая вкладка проверяет, не устарел ли список
 
 local pane, list, listChild, empty, card, cardChild
+local allRow, all, allChild, cardGrid, allGrid
 local rows, people, segments, levels, zones, legend = {}, {}, {}, {}, {}, {}
 local LEGEND_COLS, LEGEND_H = 2, 14
 local w = {} -- надписи карточки
-local selected -- U.GuildKey выбранной гильдии
+local selected -- U.GuildKey выбранной гильдии или ALL_KEY
 
 local function FS(parent, font, justify)
 	local fs = parent:CreateFontString(nil, "OVERLAY", font)
@@ -122,11 +127,9 @@ end
 ---------------------------------------------------------------------------
 -- Карточка
 ---------------------------------------------------------------------------
-local function Person(i)
-	local p = people[i]
-	if p then return p end
-	p = CreateFrame("Button", nil, cardChild)
-	p:SetSize(COL_L_W, PERSON_H)
+local function NewPerson(parent, width)
+	local p = CreateFrame("Button", nil, parent)
+	p:SetSize(width, PERSON_H)
 	local hl = p:CreateTexture(nil, "HIGHLIGHT")
 	hl:SetAllPoints()
 	hl:SetColorTexture(1, 1, 1, 0.07)
@@ -151,8 +154,12 @@ local function Person(i)
 			ns.SafeCall("census menu", ns.ChatPane.OpenPersonMenu, self, self.person, Whisper)
 		end
 	end)
-	people[i] = p
 	return p
+end
+
+local function Person(i)
+	people[i] = people[i] or NewPerson(cardChild, COL_L_W)
+	return people[i]
 end
 
 local function Segment(i)
@@ -350,6 +357,58 @@ local function RenderZones(c, y)
 	return h
 end
 
+-- Сетка людей в игре: заголовок группы во всю ширину, под ним имена в три колонки.
+-- Возвращает высоту. Свои пулы: карточка и вид «Все гильдии» прокручиваются отдельно.
+local function NewGrid(parent)
+	return { parent = parent, heads = {}, cells = {} }
+end
+
+local function RenderGrid(g, groups, y)
+	local function At(region, x, top)
+		region:ClearAllPoints()
+		region:SetPoint("TOPLEFT", g.parent, "TOPLEFT", x, -top)
+	end
+	local h, used = 0, 0
+	for i, group in ipairs(groups) do
+		local head = g.heads[i]
+		if not head then
+			head = FS(g.parent, "GameFontNormal")
+			head:SetWidth(CARD_W)
+			if head.SetWordWrap then head:SetWordWrap(false) end
+			g.heads[i] = head
+		end
+		head:SetText(group.title)
+		At(head, 0, y + h)
+		head:Show()
+		h = h + GRID_HEAD_H
+		for j, person in ipairs(group.people) do
+			used = used + 1
+			local cell = g.cells[used]
+			if not cell then
+				cell = NewPerson(g.parent, GRID_W)
+				g.cells[used] = cell
+			end
+			At(cell, (j - 1) % GRID_COLS * GRID_W, y + h + math.floor((j - 1) / GRID_COLS) * PERSON_H)
+			cell.person = person
+			cell.icon:SetTexture(ROLE_ICON[person.role])
+			cell.name:SetText(Views.Name(person.name, person.class))
+			cell.level:SetText(person.level and person.level > 0 and tostring(person.level) or "")
+			cell:Show()
+		end
+		h = h + math.ceil(#group.people / GRID_COLS) * PERSON_H + 8
+	end
+	for i = #groups + 1, #g.heads do g.heads[i]:Hide() end
+	for i = used + 1, #g.cells do g.cells[i]:Hide() end
+	return h
+end
+
+local function RenderAll(c)
+	all:SetShown(c ~= nil)
+	if not c then return end
+	w.allCount:SetText(L.ONLINE_ALL_COUNT:format(ns.Util.Num(c.known), ns.Util.Num(c.online)))
+	allChild:SetHeight(ALL_TOP + RenderGrid(allGrid, c.groups, ALL_TOP) + 8)
+end
+
 local function RenderCard(c)
 	card:SetShown(c ~= nil)
 	if not c then return end
@@ -377,7 +436,8 @@ local function RenderCard(c)
 	local left = RenderPeople(c, y)
 	local right = RenderMix(c, y)
 	y = y + math.max(left, right) + 12
-	y = y + RenderZones(c, y)
+	y = y + RenderZones(c, y) + 8
+	y = y + RenderGrid(cardGrid, { c.onlineGroup }, y)
 	cardChild:SetHeight(y + 8)
 end
 
@@ -388,8 +448,29 @@ function CensusPane.Build(parent)
 	pane = CreateFrame("Frame", nil, parent)
 	pane:SetAllPoints(parent)
 
+	-- Строка «Все гильдии» — вне прокрутки: общий список доступен при любой длине списка гильдий.
+	allRow = CreateFrame("Button", nil, pane)
+	allRow:SetSize(LIST_W, ALL_H)
+	allRow:SetPoint("TOPLEFT", 8, -8)
+	allRow.bg = allRow:CreateTexture(nil, "BACKGROUND")
+	allRow.bg:SetAllPoints()
+	allRow.bg:SetColorTexture(1, 1, 1, 0.03)
+	allRow.sel = allRow:CreateTexture(nil, "BORDER")
+	allRow.sel:SetAllPoints()
+	allRow.sel:SetColorTexture(1, 0.82, 0, 0.14)
+	allRow.sel:Hide()
+	local allHighlight = allRow:CreateTexture(nil, "HIGHLIGHT")
+	allHighlight:SetAllPoints()
+	allHighlight:SetColorTexture(1, 1, 1, 0.07)
+	allRow.right = FS(allRow, "GameFontHighlightSmall", "RIGHT")
+	allRow.right:SetPoint("RIGHT", -6, 0)
+	allRow.name = FS(allRow, "GameFontHighlight")
+	allRow.name:SetPoint("LEFT", 6, 0)
+	allRow.name:SetPoint("RIGHT", allRow.right, "LEFT", -6, 0)
+	allRow:SetScript("OnClick", function() ns.SafeCall("census select", CensusPane.Select, ALL_KEY) end)
+
 	list = CreateFrame("ScrollFrame", nil, pane, "UIPanelScrollFrameTemplate")
-	list:SetPoint("TOPLEFT", 8, -8)
+	list:SetPoint("TOPLEFT", 8, -(8 + ALL_H + 4))
 	list:SetPoint("BOTTOMLEFT", 8, 8)
 	list:SetWidth(LIST_W)
 	listChild = CreateFrame("Frame", nil, list)
@@ -414,6 +495,22 @@ function CensusPane.Build(parent)
 	cardChild = CreateFrame("Frame", nil, card)
 	cardChild:SetSize(CARD_W, 10)
 	card:SetScrollChild(cardChild)
+	cardGrid = NewGrid(cardChild)
+
+	-- Вид «Все гильдии» стоит на месте карточки и показывается вместо неё.
+	all = CreateFrame("ScrollFrame", nil, pane, "UIPanelScrollFrameTemplate")
+	all:SetPoint("TOPLEFT", CARD_X, -10)
+	all:SetPoint("BOTTOMRIGHT", -30, 8)
+	allChild = CreateFrame("Frame", nil, all)
+	allChild:SetSize(CARD_W, 10)
+	all:SetScrollChild(allChild)
+	all:Hide()
+	allGrid = NewGrid(allChild)
+	w.allTitle = FS(allChild, "GameFontNormalLarge")
+	w.allTitle:SetPoint("TOPLEFT", 0, 0)
+	w.allTitle:SetText(L.ONLINE_ALL_TITLE)
+	w.allCount = FS(allChild, "GameFontDisableSmall", "RIGHT")
+	w.allCount:SetPoint("TOPRIGHT", 0, -5)
 
 	w.title = FS(cardChild, "GameFontNormalLarge")
 	w.title:SetPoint("TOPLEFT", 0, 0)
@@ -480,11 +577,15 @@ function CensusPane.Build(parent)
 	w.zonesNote:SetWidth(CARD_W)
 
 	pane:Hide()
-	CensusPane.frames = { pane = pane, rows = rows, people = people, segments = segments, levels = levels, zones = zones, legend = legend, w = w, card = card }
+	CensusPane.frames = {
+		pane = pane, rows = rows, people = people, segments = segments, levels = levels, zones = zones, legend = legend,
+		w = w, card = card, allRow = allRow, all = all, cardGrid = cardGrid, allGrid = allGrid,
+	}
 	return pane
 end
 
 -- Перерисовать: выбор держится, пока гильдия в списке; иначе — своя гильдия, иначе первая.
+-- Поимённые списки запрашиваются только для того, что сейчас на экране.
 function CensusPane.Render()
 	if not pane then return end
 	local items = Views.CensusRows()
@@ -492,14 +593,24 @@ function CensusPane.Render()
 	for _, it in ipairs(items) do
 		if it.key == selected then pick = it end
 	end
-	if not pick then
+	local showAll = selected == ALL_KEY and #items > 0
+	if not pick and not showAll then
 		for _, it in ipairs(items) do
 			if it.s.mine then pick = it end
 		end
+		pick = pick or items[1]
 	end
-	pick = pick or items[1]
-	selected = pick and pick.key or nil
+	selected = showAll and ALL_KEY or (pick and pick.key or nil)
+	for _, it in ipairs(items) do
+		if it.s.fresh and (showAll or it == pick) then ns.Online.Want(it.s.guild) end
+	end
 	RenderList(items)
+	local row = Views.AllOnlineRow()
+	allRow.name:SetText(row.text)
+	allRow.right:SetText(row.right)
+	allRow.sel:SetShown(showAll)
+	allRow:SetShown(#items > 0)
+	RenderAll(showAll and Views.AllOnline() or nil)
 	RenderCard(pick and Views.GuildCard(pick.s) or nil)
 end
 
@@ -507,6 +618,7 @@ function CensusPane.Select(key)
 	if key == selected then return end
 	selected = key
 	if card then card:SetVerticalScroll(0) end
+	if all then all:SetVerticalScroll(0) end
 	CensusPane.Render()
 end
 
@@ -521,3 +633,12 @@ end
 function CensusPane.Hide()
 	if pane then pane:Hide() end
 end
+
+-- Пока вкладка на экране, списки обновляются сами. IsVisible учитывает и закрытое окно.
+local function RenderIfVisible()
+	if pane and pane:IsVisible() then CensusPane.Render() end
+end
+ns.On("ONLINE", RenderIfVisible)
+ns.On("LOGIN", function()
+	ns.Every(ONLINE_TICK, "census online", RenderIfVisible)
+end)

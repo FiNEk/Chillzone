@@ -33,6 +33,7 @@ local SUITES = {
 	"test_activity",
 	"test_map",
 	"test_minimap",
+	"test_online",
 }
 
 for _, name in ipairs(SUITES) do

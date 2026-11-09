@@ -34,6 +34,7 @@ Data.lua
 Update.lua
 Census.lua
 Relay.lua
+Online.lua
 Chat.lua
 ChatConfig.lua
 ChatLinks.lua
