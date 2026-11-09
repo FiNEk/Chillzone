@@ -1,4 +1,4 @@
--- luacheck: проверка Chillzone и тестов. Запуск из корня: luacheck .
+-- luacheck: проверка Chillzone и тестов. Запуск из корня: luacheck Chillzone tests
 -- Игра — Lua 5.1; тесты гоняются в LuaJIT.
 std = "lua51"
 max_line_length = false

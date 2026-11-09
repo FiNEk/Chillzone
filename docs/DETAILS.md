@@ -330,12 +330,12 @@ reference/          Olympus 1.5.0 для справки (не в git)
 
 ```bash
 luajit tests/run.lua
-luacheck .
+luacheck Chillzone tests
 ```
 
 CI ([`.github/workflows/ci.yml`](../.github/workflows/ci.yml)) запускает и то и другое на каждый PR и пуш в `main`.
 
-luacheck следит за глобалами: аддон может писать только в перечисленные в `globals` из `.luacheckrc`, а читать — только Lua 5.1 и API игры из `read_globals`. Понадобилась новая функция игры — добавьте её в `read_globals`. Папка `Chillzone/libs` не проверяется.
+luacheck следит за глобалами: аддон может писать только в перечисленные в `globals` из `.luacheckrc`, а читать — только Lua 5.1 и API игры из `read_globals`. Понадобилась новая функция игры — добавьте её в `read_globals`. Проверяются только `Chillzone` и `tests`, без `Chillzone/libs`: локальные копии проекта в других каталогах в прогон не попадают.
 
 Тесты проверяют:
 

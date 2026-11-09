@@ -24,6 +24,8 @@ jobs:
       - uses: actions/checkout@v7
       # Настройки — в .luacheckrc; libs/ не проверяются.
       - uses: lunarmodules/luacheck@v1.2.0
+        with:
+          args: Chillzone tests
 
   test:
     name: Tests (${{ matrix.interpreter }})
