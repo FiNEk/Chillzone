@@ -630,7 +630,8 @@ end
 ---------------------------------------------------------------------------
 -- Клик по метке канала в чате игры. Ссылки addon: игра на Forever отдаёт своему
 -- обработчику, который ничего не делает (проверено Olympus, Channels.lua 1.2.1); мы
--- ловим клик пост-хуком SetItemRef. Фокус получает только поле Chillzone.
+-- ловим клик пост-хуком SetItemRef. Фокус получает только поле Chillzone: разовое поле
+-- канала в той же вкладке (ChatTab.OpenChannel) или, если это невозможно, окно аддона.
 ---------------------------------------------------------------------------
 function Chat.TagTier(link, button)
 	if type(link) ~= "string" or link:sub(1, #Chat.TAG_LINK) ~= Chat.TAG_LINK then return end
@@ -645,13 +646,7 @@ function Chat.TagClick(link, _, button, frame)
 	if button == "RightButton" then return ns.UI.OpenTagMenu(tier) end
 	if button and button ~= "LeftButton" then return false end
 	ns.UI.HideTagMenu()
-	if tier == "A" and frame and ns.ChatTab and frame == ns.ChatTab.InputFrame() then
-		local box = ns.ChatTab.InputFor(frame)
-		if box then
-			box:SetFocus()
-			return true
-		end
-	end
+	if ns.ChatTab and ns.ChatTab.OpenChannel(frame, tier) then return true end
 	if not (ns.UI and ns.UI.OpenChat) then return false end
 	ns.UI.OpenChat(tier, true)
 	return true
