@@ -285,6 +285,18 @@ T.test("relay: перепись сходится у всех", function()
 	T.eq(Wow.CertRank(c.B.ns, "Орден Чиллзона", "Глеб Гордый-CAMWOWUS2Realm7PvE"), 0, "ранг главы")
 end)
 
+T.test("relay: карта учитывает три гильдии в одной зоне у репортёров и читателей", function()
+	local _, clients = Build()
+	for name, cl in pairs(clients) do
+		local key = cl.ns.Zones.KeyForName("Штормград")
+		local zone = cl.ns.Data.ZoneCounts()[key]
+		T.ok(zone, name .. ": зона есть в сводке карты")
+		T.eq(zone.total, 5, name .. ": участники трёх гильдий учтены")
+		T.same(zone.guilds, { ["Чиллзон"] = 3, ["Чиллзон Север"] = 1, ["Орден Чиллзона"] = 1 },
+			name .. ": третья гильдия не исчезает из сводки")
+	end
+end)
+
 T.test("relay: реле выучено из ответа доверенного реле", function()
 	local _, c = Build({ config = RANKS })
 	local learned = c.B.ns.store.relays[Key(c.B, "Карл Великий")]

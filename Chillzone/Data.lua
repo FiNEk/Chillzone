@@ -198,10 +198,14 @@ function Data.ZoneCounts(now)
 	for _, s in ipairs(Data.Summary(now)) do
 		if s.fresh then
 			for zk, n in pairs(s.r.zones or {}) do
-				local z = out[zk]
+				-- У репортёра карта могла не найтись: текстовый ключ пробуем разрешить
+				-- у получателя, чтобы одна зона не распалась на видимую и скрытую части.
+				local key = zk
+				if key:sub(1, 1) == "t" then key = ns.Zones.KeyForName(key:sub(2)) or key end
+				local z = out[key]
 				if not z then
 					z = { total = 0, guilds = {} }
-					out[zk] = z
+					out[key] = z
 				end
 				z.total = z.total + n
 				z.guilds[s.guild] = (z.guilds[s.guild] or 0) + n
