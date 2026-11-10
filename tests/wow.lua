@@ -206,8 +206,18 @@ local function NewFrame(c, name)
 	function methods.GetStringHeight(self) return 14 * (1 + select(2, self.text:gsub("\n", ""))) end
 	function methods.Click(self) if self.scripts.OnClick then self.scripts.OnClick(self) end end
 	function methods.Insert(self, t) self.text = self.text .. (t or "") end
-	function methods.SetFocus(self) c.focus = self end
-	function methods.ClearFocus(self) if c.focus == self then c.focus = nil end end
+	function methods.SetFocus(self)
+		local previous = c.focus
+		c.focus = self
+		if previous and previous ~= self and previous.scripts.OnEditFocusLost then
+			previous.scripts.OnEditFocusLost(previous)
+		end
+	end
+	function methods.ClearFocus(self)
+		if c.focus ~= self then return end
+		c.focus = nil
+		if self.scripts.OnEditFocusLost then self.scripts.OnEditFocusLost(self) end
+	end
 	function methods.HasFocus(self) return c.focus == self end
 	function methods.SetChecked(self, on) self.checked = on and true or false end
 	function methods.GetChecked(self) return self.checked end

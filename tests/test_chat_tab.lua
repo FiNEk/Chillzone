@@ -38,6 +38,7 @@ local function Build()
 			function f:CreateFontString()
 				local label = create("FontString")
 				function label.GetStringWidth() return 50 end
+				h.prompt = label
 				return label
 			end
 		elseif kind == "Button" and parent and parent == h.box then
@@ -811,14 +812,191 @@ T.test("chat tab: метка союза фокусирует ввод в шта�
 	T.ok(box:HasFocus())
 	T.eq(box:GetText(), "Черновик союза")
 	T.no(ns.UI.Current(), "окно аддона не открывается поверх вкладки")
+end)
+
+local function ClickTag(h, ns, tier, frame)
+	h.client:CallHooks("SetItemRef", ns.Chat.TAG_LINK .. tier, "[Чиллзон]", "LeftButton", frame)
+end
+
+-- Вкладка, которую игрок завёл сам: Chillzone о ней ничего не знает.
+local function OwnTab(h)
+	h.client:ChatWindow(3, "123")
+	h.tab:Show()
+	return h.tab
+end
+
+local function RecordSends(ns)
+	local sent = {}
+	ns.Chat.Send = function(tier, text)
+		sent[#sent + 1] = tier .. " " .. text
+		return true
+	end
+	return sent
+end
+
+T.test("chat tab: метка в общей и своей вкладке открывает поле канала, а не окно", function()
+	local h, ns, env = Build()
+	EnableNativeChat(h, ns, env)
+	local sent = RecordSends(ns)
+	for _, frame in ipairs({ env.ChatFrame1, OwnTab(h) }) do
+		h:Select(frame)
+		ClickTag(h, ns, "A", frame)
+		local box = h.box
+		T.ok(box:IsShown())
+		T.ok(box:HasFocus(), "курсор в поле канала")
+		T.no(ns.UI.Current(), "окно аддона не открывается")
+		T.eq(h.prompt:GetText(), "Чиллзон:")
+		T.eq(h.client.bindings.ENTER, nil, "клавиша чата остаётся у игры")
+		box:SetText("Привет")
+		box.scripts.OnEnterPressed(box)
+		T.no(box:IsShown(), "после отправки поле закрыто")
+		T.eq(box:GetText(), "")
+		h:Tick()
+		T.no(box:IsShown(), "таймер не возвращает поле")
+		h:PressEnter()
+		T.ok(env.ChatFrame1EditBox:HasFocus(), "следующий Enter открывает обычный чат")
+		h:CloseNative()
+	end
+	T.same(sent, { "A Привет", "A Привет" })
+	T.eq(#ns.db.errors, 0, ns.db.errors[1])
+end)
+
+T.test("chat tab: поле канала уступает строку игре при отмене и смене вкладки", function()
+	local h, ns, env = Build()
+	EnableNativeChat(h, ns, env)
+	local sent = RecordSends(ns)
+	local own = OwnTab(h)
+	local native = own.editBox
+	native:Show()
+	ClickTag(h, ns, "A", own)
+	local box = h.box
+	T.eq(box.covered, native, "поле на месте штатной строки")
+	T.eq(native:GetAlpha(), 0, "вторая строка не рисуется")
+	box:SetText("Передумал")
+	box.scripts.OnEscapePressed(box)
+	T.no(box:IsShown(), "Escape закрывает поле")
+	T.eq(native:GetAlpha(), 0.35, "штатная строка возвращена")
+	T.eq(box:GetText(), "", "отменённый текст не всплывает при следующем щелчке")
+
+	ClickTag(h, ns, "A", own)
+	box:SetText("Не туда")
+	own:Hide() -- В игре выбор другой вкладки прячет окно прежней.
+	box.scripts.OnUpdate(box)
+	T.no(box:IsShown(), "смена вкладки закрывает поле")
+	T.eq(native:GetAlpha(), 0.35)
+	own:Show()
+
+	ClickTag(h, ns, "A", own)
+	native:SetFocus()
+	T.no(box:IsShown(), "фокус у штатного поля закрывает разовое")
+	native:ClearFocus()
 
 	local tier, focused
 	ns.UI.OpenChat = function(channel, focus) tier, focused = channel, focus end
-	box:ClearFocus()
-	h.client:CallHooks("SetItemRef", ns.Chat.TAG_LINK .. "C", "[Чиллзон]", "LeftButton", h.tab)
-	T.eq(tier, "C", "закрытый канал открывается в своём окне")
+	native:SetFocus()
+	ClickTag(h, ns, "A", own)
+	T.eq(tier, "A", "при наборе в штатной строке остаётся окно аддона")
 	T.ok(focused)
+	T.no(box:IsShown())
+	T.ok(native:HasFocus(), "разовое поле не отбирает фокус у набора")
+	T.eq(#sent, 0, "ничего не отправлено")
+	T.eq(#ns.db.errors, 0, ns.db.errors[1])
+end)
+
+T.test("chat tab: повторный щелчок и другая метка сохраняют набранный текст", function()
+	local h, ns, env = Build()
+	EnableNativeChat(h, ns, env)
+	local sent = RecordSends(ns)
+	local own = OwnTab(h)
+	ClickTag(h, ns, "A", own)
+	local box = h.box
+	box:SetText("Набранное")
+	ClickTag(h, ns, "A", own)
+	T.eq(box:GetText(), "Набранное", "двойной щелчок не стирает текст")
+	ClickTag(h, ns, "C", own)
+	T.eq(box:GetText(), "Набранное")
+	T.eq(h.prompt:GetText(), "Офицеры:")
+	box.scripts.OnEnterPressed(box)
+	T.same(sent, { "C Набранное" }, "строка уходит в канал последней метки")
+	T.eq(h.prompt:GetText(), "Чиллзон:", "подпись возвращена")
+
+	-- Щелчок в другом окне закрывает прежнее поле и открывает новое.
+	ClickTag(h, ns, "L", own)
+	box:SetText("Брошено")
+	ClickTag(h, ns, "A", env.ChatFrame1)
+	T.ok(box:HasFocus())
+	T.eq(box:GetText(), "")
+	T.eq(h.prompt:GetText(), "Чиллзон:")
+	T.eq(#ns.db.errors, 0, ns.db.errors[1])
+end)
+
+T.test("chat tab: закрытый канал во вкладке союза не теряет её черновик", function()
+	local h, ns, env = Build()
+	T.ok(ns.ChatTab.Open())
+	EnableNativeChat(h, ns, env)
+	local sent = RecordSends(ns)
+	h:Tick()
+	local box = h.box
+	box:SetText("Черновик союза")
+	ClickTag(h, ns, "C", h.tab)
+	T.no(ns.UI.Current(), "окно аддона не открывается")
+	T.ok(box:HasFocus())
+	T.eq(box:GetText(), "", "черновик союза не уходит офицерам")
+	T.eq(h.prompt:GetText(), "Офицеры:")
+	box:SetText("Офицерам")
+	box.scripts.OnEnterPressed(box)
+	T.same(sent, { "C Офицерам" })
+	T.ok(box:IsShown(), "постоянное поле вкладки вернулось сразу")
 	T.no(box:HasFocus())
+	T.eq(box:GetText(), "Черновик союза")
+	T.eq(h.prompt:GetText(), "Чиллзон:")
+	T.ok(h.client.bindings.ENTER, "Enter вкладки снова пишет в союз")
+
+	ClickTag(h, ns, "L", h.tab)
+	TypeInUnion(box, "/g привет")
+	T.ok(env.ChatFrame1EditBox:HasFocus(), "слэш уходит штатному полю")
+	T.eq(env.ChatFrame1EditBox:GetText(), "/g привет")
+	h:CloseNative()
+	h:Tick()
+	T.ok(box:IsShown())
+	T.eq(box:GetText(), "Черновик союза", "команда не затирает черновик")
+	T.eq(h.prompt:GetText(), "Чиллзон:")
+	T.eq(#sent, 1)
+	T.eq(#ns.db.errors, 0, ns.db.errors[1])
+end)
+
+T.test("chat tab: отстыкованная вкладка держит поле у себя", function()
+	local h, ns, env = Build()
+	EnableNativeChat(h, ns, env)
+	local own = OwnTab(h)
+	local docked = env.ChatFrame1EditBox
+	docked:Show()
+	docked.chatFrame = env.ChatFrame1
+	env.ChatFrame1.isDocked = 1
+	env.LAST_ACTIVE_CHAT_EDIT_BOX = docked
+	h.selected = env.ChatFrame1 -- Выбор в ряду отстыкованного окна не касается.
+	ClickTag(h, ns, "A", own)
+	T.ok(h.box:HasFocus())
+	T.eq(h.box.below, own, "поле под своим окном, а не поверх строки ряда")
+	T.eq(#ns.db.errors, 0, ns.db.errors[1])
+end)
+
+T.test("chat tab: без окна чата игры метка открывает окно аддона", function()
+	local h, ns, env = BuildChattynator()
+	local tier
+	ns.UI.OpenChat = function(channel) tier = channel end
+	ClickTag(h, ns, "A", env.ChatFrame1)
+	T.eq(tier, "A", "у Chattynator нет штатной вкладки под полем")
+	T.no(h.box and h.box:HasFocus())
+
+	local plain, plainNs, plainEnv = Build()
+	EnableNativeChat(plain, plainNs, plainEnv)
+	tier = nil
+	plainNs.UI.OpenChat = function(channel) tier = channel end
+	ClickTag(plain, plainNs, "C", nil)
+	T.eq(tier, "C", "клиент не сообщил окно щелчка")
+	plainNs.Chat.Show("A", "Чиллзон", "Автор Чата", "MAGE", "после щелчка")
+	T.eq(#plainNs.db.errors, 0, plainNs.db.errors[1])
 end)
 
 T.test("chat tab: метка союза фокусирует ввод в Chattynator", function()

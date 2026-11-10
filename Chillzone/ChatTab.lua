@@ -2,6 +2,7 @@
 -- Перехватываем только клавишу Enter и только пока поле вкладки на экране (ChatPane.SyncKeys).
 -- ChatFrameUtil.SetChatFocusOverride не годится: он забирает любой OpenChat без вкладки,
 -- включая шёпот Battle.net, клавиши ответа и ссылки из интерфейса.
+-- Щелчок по метке канала открывает то же поле на одно сообщение в любой вкладке (OpenChannel).
 local ADDON, ns = ...
 
 local Chat, L, U = ns.Chat, ns.L, ns.Util
@@ -10,7 +11,10 @@ ns.ChatTab = ChatTab
 
 local input, anchor, layoutAnchor, hostedAnchor, ticker
 local mutedNative, nativeAlpha
-local inputInset, smileButton, smileTarget, hookedPicker
+local inputPrompt, inputInset, smileButton, smileTarget, hookedPicker
+-- Разовое поле: окно, где щёлкнули, его канал и отложенный черновик постоянного поля.
+local quickFrame, quickTier, quickDraft
+local Refresh
 local selectionHooks = {}
 local stopped = false
 local wantsEnter = false
@@ -69,6 +73,8 @@ end
 local function IsSelected(frame, hosted)
 	if not frame or not frame:IsVisible() then return false end
 	if hosted then return HostedWindow() == frame end
+	-- Невыбранную вкладку игра прячет, а у отстыкованного окна выбора в ряду нет.
+	if frame == quickFrame then return true end
 	return SelectedInDock(rawget(_G, "GENERAL_CHAT_DOCK")) == frame
 end
 
@@ -88,7 +94,7 @@ local function NativeInput(frame, hosted)
 	-- В режиме постоянной строки её может держать последняя активная вкладка этого ряда.
 	local last = rawget(_G, "LAST_ACTIVE_CHAT_EDIT_BOX")
 	local owner = last and rawget(last, "chatFrame")
-	if owner and rawget(owner, "isDocked") and last:IsVisible() then return last end
+	if owner and rawget(owner, "isDocked") and rawget(frame, "isDocked") and last:IsVisible() then return last end
 end
 
 local function RestoreNative()
@@ -115,7 +121,7 @@ local function MuteNative(native)
 	return ok
 end
 
--- Поле ввода есть только у вкладки «Чиллзон», отмеченной в настройке копий.
+-- Постоянное поле ввода есть только у вкладки «Чиллзон», отмеченной в настройке копий.
 -- Остальные отмеченные вкладки только получают строки, их ввод остаётся у игры.
 function ChatTab.InputFrame()
 	local char = ns.char
@@ -138,8 +144,9 @@ end
 local function SelectedWindow()
 	local char = ns.char
 	if not char or not char.chatOn or not ns.IsMember() then return end
-	local host, hosted = HostedWindow()
-	local frame = host or ChatTab.InputFrame()
+	local host, hosted
+	if not quickFrame then host, hosted = HostedWindow() end
+	local frame = quickFrame or host or ChatTab.InputFrame()
 	if not host then hosted = false end
 	if not IsSelected(frame, hosted) then return end
 	-- Штатный ввод с фокусом остаётся доступным для команд игры.
@@ -242,7 +249,23 @@ local function AddSmileButton()
 	smileButton = button
 end
 
+local function SetPrompt(tier)
+	inputPrompt:SetText(L.CHAT_TAB_PROMPT:format(L["TIER_" .. tier]))
+	inputPrompt:SetTextColor(Chat.Color(tier))
+	inputInset = inputPrompt:GetStringWidth() + 14
+	input:SetTextInsets(inputInset, smileButton and 28 or 6, 0, 0)
+end
+
+local function EndQuick()
+	if not quickFrame then return end
+	quickFrame, quickTier = nil, nil
+	input:SetText(quickDraft or "")
+	quickDraft = nil
+	SetPrompt("A")
+end
+
 local function HideInput()
+	EndQuick()
 	SetWantsEnter(false)
 	ReleaseSmilePicker(true)
 	if input and input:IsShown() then
@@ -265,9 +288,10 @@ local function OpenNativeCommand()
 	local cursor = type(input.GetCursorPosition) == "function" and input:GetCursorPosition() or nil
 	-- Контейнер Chattynator не является штатным ChatFrame.
 	local frame = hostedAnchor and DEFAULT_CHAT_FRAME or anchor
+	-- Очищаем до HideInput: разовое поле вернёт в него черновик постоянного.
+	input:SetText("")
 	HideInput()
 	open(text, frame, cursor)
-	input:SetText("")
 	return true
 end
 
@@ -279,11 +303,17 @@ local function Submit()
 	if OpenNativeCommand() then return end
 	local text = input:GetText() or ""
 	if U.Trim(text) == "" then input:ClearFocus(); return end
-	if Chat.Submit("A", text) then
+	if Chat.Submit(quickTier or "A", text) then
 		input:SetText("")
 		input:ClearFocus()
 		ReleaseSmilePicker(true)
 	end
+end
+
+local function CloseQuick()
+	if not quickFrame then return end
+	HideInput()
+	Refresh()
 end
 
 local function CreateInput()
@@ -295,17 +325,15 @@ local function CreateInput()
 	box:SetFrameStrata("DIALOG")
 	box:SetFontObject(ChatFontNormal)
 	box:SetMaxBytes(ns.Config.CHAT_PART * ns.Config.CHAT_PARTS)
-	local prompt = box:CreateFontString(nil, "OVERLAY", "ChatFontNormal")
-	prompt:SetPoint("LEFT", 7, 0)
-	prompt:SetText(L.CHAT_TAB_PROMPT)
-	prompt:SetTextColor(Chat.Color("A"))
-	inputInset = prompt:GetStringWidth() + 14
-	box:SetTextInsets(inputInset, 6, 0, 0)
+	inputPrompt = box:CreateFontString(nil, "OVERLAY", "ChatFontNormal")
+	inputPrompt:SetPoint("LEFT", 7, 0)
 	box:SetScript("OnTextChanged", function(_, user)
 		if user then ns.SafeCall("chat tab command", OpenNativeCommand) end
 	end)
 	box:SetScript("OnEnterPressed", function() ns.SafeCall("chat tab input", Submit) end)
 	box:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
+	-- HookScript: у InputBoxTemplate на потерю фокуса свой обработчик.
+	box:HookScript("OnEditFocusLost", function() ns.SafeCall("chat tab quick", CloseQuick) end)
 	-- Убираем своё поле сразу при смене вкладки или открытии штатного ввода.
 	box:SetScript("OnUpdate", ns.Perf.Wrap("chat tab input", function()
 		local native = anchor and NativeInput(anchor, hostedAnchor)
@@ -317,15 +345,16 @@ local function CreateInput()
 		end
 	end))
 	box:Hide()
-	return box
+	input = box
+	SetPrompt("A")
 end
 
-local function Refresh()
+function Refresh()
 	AdoptSavedTab()
 	if ns.ChattynatorTab then ns.ChattynatorTab.WatchWindows() end
 	local frame, native, hosted = SelectedWindow()
 	if not frame then HideInput(); return end
-	if not input then input = CreateInput() end
+	if not input then CreateInput() end
 	AddSmileButton()
 	local target = hosted == true and frame or native or frame
 	if layoutAnchor ~= target or not input:IsShown() then
@@ -346,7 +375,8 @@ local function Refresh()
 	if not MuteNative(native) then HideInput(); return end
 	anchor, layoutAnchor, hostedAnchor = frame, target, hosted
 	if not input:IsShown() then input:Show() end
-	SetWantsEnter(true)
+	-- Разовое поле уже с фокусом, клавишу чата у игры оно не забирает.
+	if not quickFrame then SetWantsEnter(true) end
 end
 
 local function Track(defer)
@@ -408,6 +438,34 @@ function ChatTab.Open()
 	end
 	if not Chat.ActivateWindow(window.name) then return Failed(L.CHAT_TAB_UNAVAILABLE) end
 	ns.Fire("SETTINGS")
+	return true
+end
+
+-- Щелчок по метке канала: поле этого канала на месте штатной строки, как у [Гильдия].
+-- Своё поле, а не OpenChat("/cz "): запись в ввод игры из аддона блокирует следующий /cast.
+-- false — поле открыть нельзя, вызывающий откроет окно аддона.
+function ChatTab.OpenChannel(frame, tier)
+	if not frame or ChattynatorLoaded() then return false end
+	if quickFrame == frame then
+		-- Повторный щелчок или другая метка: набранный текст остаётся.
+		quickTier = tier
+		SetPrompt(tier)
+		input:SetFocus()
+		return true
+	end
+	CloseQuick()
+	if tier == "A" and frame == ChatTab.InputFrame() then
+		local box = ChatTab.InputFor(frame)
+		if box then box:SetFocus() end
+		return box ~= nil
+	end
+	if not input then CreateInput() end
+	quickFrame, quickTier, quickDraft = frame, tier, input:GetText()
+	input:SetText("")
+	SetPrompt(tier)
+	Refresh()
+	if quickFrame ~= frame then return false end
+	input:SetFocus()
 	return true
 end
 
