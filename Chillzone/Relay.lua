@@ -19,7 +19,7 @@ local L = ns.L
 local Relay = {}
 ns.Relay = Relay
 
-local known = {} -- [Key] = { key, name, verified, asked, down }: реле, о которых я знаю
+local known = {} -- [Key] = { key, name, verified, asked, probe, down }: реле, о которых я знаю
 -- (я реле) [guildKey] = { name, key, t, next = { key, untilAt } }: аренда репортёра гильдии;
 -- next — преемник, которого назвал сам держатель (RU).
 local reporters = {}
@@ -228,9 +228,9 @@ end
 ---------------------------------------------------------------------------
 local Out, FlushHold -- вперёд
 
-local function MarkDown(e, why)
+local function MarkDown(e, why, retryAfter)
 	local now = Now()
-	e.down, e.asked, e.verified = now + C.RELAY_DOWN, nil, nil
+	e.down, e.asked, e.probe, e.verified = now + (retryAfter or C.RELAY_DOWN), nil, nil, nil
 	ns.Log("реле %s недоступно: %s", e.name or e.key, why)
 	-- Что ему недавно ушло, уходит через другое реле.
 	local list = recent[e.key]
@@ -244,8 +244,9 @@ local function MarkDown(e, why)
 end
 
 local function Ask(e, payload, renews)
+	if ns.Comm.InLockdown() then return end
 	local now = Now()
-	if e.asked and now - e.asked < C.RELAY_TIMEOUT then return end
+	if e.asked and (e.probe or now - e.asked < C.RELAY_TIMEOUT) then return end
 	-- Реле промолчало бы, и живое реле попало бы в офлайн на RELAY_DOWN, поэтому ответа не ждём.
 	-- Регистрация (renews) уходит всё равно: RR продлевает аренду и без ответа, а verified
 	-- обновляют ещё и сертификаты реле, так что пропуски могли идти подряд дольше REG_TTL.
@@ -253,13 +254,31 @@ local function Ask(e, payload, renews)
 	if silent and not renews then return end
 	if ns.Issuers then ns.Issuers.ShareRevocations(e.name, true) end
 	ns.Security.Introduce(e.name) -- в RP и RR только отпечаток моего сертификата
-	ns.Comm.Send("WHISPER", payload, { target = e.name, prio = true, key = "ask:" .. e.key })
-	if silent then return end
-	e.asked = now
-	local asked = now
-	ns.After(C.RELAY_TIMEOUT + 1, "relay timeout", function()
-		if e.asked == asked then MarkDown(e, "нет ответа") end
-	end)
+	-- Очередь и блокировка клиента не означают молчание реле. Отсчёт ответа начинается
+	-- после отправки всех кусков; отдельный маркер защищает новый опрос от старого колбэка.
+	local probe = not silent and {} or nil
+	if probe then e.asked, e.probe = now, probe end
+	local function Cancel()
+		if e.probe ~= probe then return end
+		e.asked, e.probe = nil, nil
+		ns.Fire("RELAYS")
+	end
+	local queued, why = ns.Comm.Send("WHISPER", payload, { target = e.name, prio = true, key = "ask:" .. e.key,
+		done = probe and function(ok)
+			if e.probe ~= probe then return end
+			if not ok then Cancel(); return end
+			e.asked = Now()
+			ns.After(C.RELAY_TIMEOUT + 1, "relay timeout", function()
+				if e.probe ~= probe then return end
+				if ns.Comm.InLockdown() then Cancel(); return end
+				MarkDown(e, "нет ответа", C.RELAY_RETRY)
+			end)
+		end or nil,
+	})
+	if not queued then
+		if why == "offline" then MarkDown(e, "адресат недоступен")
+		elseif probe then Cancel() end
+	end
 end
 
 function Relay.PingAll()
@@ -665,7 +684,7 @@ ns.Comm.On("RY", function(msg, sender, dist)
 		return
 	end
 	local e = Entry(U.Key(sender), sender)
-	e.verified, e.asked, e.down = Now(), nil, nil
+	e.verified, e.asked, e.probe, e.down = Now(), nil, nil, nil
 	-- Выучить реле из ответа.
 	local store = ns.store
 	local changed = false
@@ -702,7 +721,7 @@ end
 ns.On("AUTH_PEER", function(c, sender)
 	if not U.IsMainGuild(c.guild) or not Relay.TrustOf(sender) or ns.IsMe(sender) then return end
 	local e = Entry(U.Key(sender), sender)
-	e.verified, e.asked, e.down = Now(), nil, nil
+	e.verified, e.asked, e.probe, e.down = Now(), nil, nil, nil
 	ShareRelayCertificate(e, c)
 	FlushHold()
 end)
@@ -880,7 +899,7 @@ ns.Command("relay", function(arg)
 		ns.Print(L.RELAY_REMOVED, name)
 		return
 	elseif cmd == "ping" then
-		for _, e in pairs(known) do e.down, e.asked = nil, nil end
+		for _, e in pairs(known) do e.down, e.asked, e.probe = nil, nil, nil end
 		Relay.PingAll()
 		ns.Print(L.RELAY_PINGING)
 		return

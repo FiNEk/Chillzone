@@ -194,7 +194,7 @@ function Comm.Send(dist, payload, opts)
 	opts = opts or {}
 	if type(payload) ~= "string" or payload == "" then return false end
 	if dist == "WHISPER" and not opts.target then return false end
-	if dist == "WHISPER" and Unavailable(opts.target) then return false end
+	if dist == "WHISPER" and Unavailable(opts.target) then return false, "offline" end
 	local kind = payload:sub(1, 2)
 	local source = dist == "WHISPER" and ns.Diagnostics.Callsite() or nil
 	local prefix = opts.prefix or ((kind == "KA" or kind == "UQ" or kind == "UO") and ns.Config.UNION_PREFIX) or ns.PREFIX
