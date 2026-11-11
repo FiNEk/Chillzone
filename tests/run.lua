@@ -18,6 +18,7 @@ local SUITES = {
 	"test_data",
 	"test_relay",
 	"test_chat",
+	"test_channel",
 	"test_chat_config",
 	"test_chat_tab",
 	"test_guildmirror",

@@ -285,7 +285,7 @@ function ChatPane.RenderPeople()
 			r.addon:Hide()
 			r.text:SetPoint("RIGHT", TEXT_RIGHT, 0)
 			r.text:SetFontObject("GameFontNormalSmall")
-			r.text:SetText(Codec.Plain(p.guild or "?"))
+			r.text:SetText(p.unconfirmed and L.CHAT_UNCONFIRMED_GROUP or Codec.Plain(p.guild or "?"))
 			r.right:SetText(tostring(p.count or ""))
 			r:EnableMouse(false)
 		else

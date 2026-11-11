@@ -438,11 +438,17 @@ local function BuildSettings(parent)
 		ns.Print(on and L.ZONES_ON or L.ZONES_OFF)
 		ns.Census.SendHello()
 	end)
+	-- Настройки канала игры — справа на строках «Общий чат» и «Дублировать»: по высоте окна
+	-- отдельные строки не помещаются.
+	UI.channelCheck = Check("channel", L.CHECK_CHANNEL, L.CHECK_CHANNEL_TIP,
+		function() return ns.char.chatViaChannel ~= false end, function(on) if ns.Channel then ns.Channel.SetEnabled(on) end end, 260)
 	Check("chat", L.CHECK_CHAT, L.CHECK_CHAT_TIP, function() return ns.char.chatOn end, function(on)
 		ns.char.chatOn = on
 		ns.Fire("CHAT_WINDOWS")
 		ns.Print(on and L.CHAT_ON or L.CHAT_OFF)
 	end)
+	UI.hideUnconfirmedCheck = Check("hideUnconfirmed", L.CHECK_HIDE_UNCONFIRMED, L.CHECK_HIDE_UNCONFIRMED_TIP,
+		function() return ns.char.chatHideUnconfirmed == true end, function(on) ns.char.chatHideUnconfirmed = on end, 260)
 	Check("mirror", L.CHECK_MIRROR, L.CHECK_MIRROR_TIP, function() return ns.char.chatMirror end, function(on)
 		ns.char.chatMirror = on
 		ns.Fire("CHAT_WINDOWS")
