@@ -417,8 +417,9 @@ local function Authority()
     local mine = delegations[ns.myKey] and Certificate(delegations[ns.myKey])
     if mine and ns.Issuers.LegacyAllowed(mine) and Current(mine) and mine.public == identity.public and mine.issuer == root.public then return root, mine.raw end
 end
-local function Issue(name, public)
-    local root, delegation = Authority()
+-- Выбор издателя общий для синхронного прохода Tick; перед записью результата
+-- асинхронной подписи полномочия снова проверяются через Authority.
+local function Issue(name, public, root, delegation)
     local signingIdentity = identity
     local role, rank = NativeRole(name)
     local key, now = U.Key(name), ns.ServerTime()
@@ -1408,12 +1409,13 @@ local function Tick()
         ns.Comm.Send("WHISPER", "RP~" .. mine.fp, { target = mainRoot.name,
             prio = true, key = "legacy-union-probe" })
     end
-    if Authority() then
+    local issuerRoot, delegation = Authority()
+    if issuerRoot then
         local room = IssueRoom()
-        if room > 0 and Issue(ns.me, identity.public) then room = room - 1 end
+        if room > 0 and Issue(ns.me, identity.public, issuerRoot, delegation) then room = room - 1 end
         for _, row in pairs(keys) do
             if room <= 0 then break end
-            if Issue(row.name, row.public) then room = room - 1 end
+            if Issue(row.name, row.public, issuerRoot, delegation) then room = room - 1 end
         end
     end
     BuildPolicies()

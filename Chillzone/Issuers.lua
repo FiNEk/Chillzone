@@ -4,6 +4,10 @@ local S, U, C, Ed = ns.Security, ns.Util, ns.Config, ns.Ed25519
 local Pack, Unpack = S.Control.Pack, S.Control.Unpack
 local I, pending = {}, {}
 local shared = {}
+-- Только разбор неизменных байтов, без кэша полномочий: Current каждый раз проверяет
+-- корень, сроки, отзывы и свежий ростер. Число записей ограничено и для чужих допусков.
+local parsed, parseOrder, parseNext = {}, {}, 1
+local PARSE_MAX = 128
 ns.Issuers = I
 
 local function Store()
@@ -24,6 +28,8 @@ end
 function I.IsGrant(raw) return type(raw) == "string" and raw:sub(1, 6) == "GRANT:" end
 function I.Read(raw)
     if not I.IsGrant(raw) then return end
+    local cached = parsed[raw]
+    if cached and cached.group == ns.group and cached.faction == ns.faction then return cached end
     local f = Unpack(raw, "GRANT", 2, 1200)
     local p = f and (Unpack(f[1], "ISSUER", 11, 700) or Unpack(f[1], "ISSUER", 10, 700))
     local issued, expires, revision = p and tonumber(p[6]), p and tonumber(p[7]), p and tonumber(p[9])
@@ -36,9 +42,14 @@ function I.Read(raw)
         or not revision or revision % 1 ~= 0 or revision < 1 or revision > 9007199254740991
         or (p[8] ~= "0" and p[8] ~= "1") or not Ed.FromB64(p[10])
         or (p[11] and p[11] ~= "issuer" and p[11] ~= "leader") then return end
-    return { raw = raw, body = f[1], sig = sig, guild = p[3], name = p[4], key = U.Key(p[4]),
+    local d = { raw = raw, body = f[1], sig = sig, guild = p[3], name = p[4], key = U.Key(p[4]),
         public = p[5], issued = issued, expires = expires, active = p[8] == "1", revision = revision, root = p[10],
-        scope = p[11] or "issuer" }
+        scope = p[11] or "issuer", group = p[1], faction = p[2] }
+    local oldest = parseOrder[parseNext]
+    if oldest then parsed[oldest] = nil end
+    parsed[raw], parseOrder[parseNext] = d, raw
+    parseNext = parseNext % PARSE_MAX + 1
+    return d
 end
 local function Latest(d)
     local list = Store()[U.GuildKey(d.guild)]

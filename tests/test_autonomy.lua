@@ -27,6 +27,47 @@ local function Errors(w)
     for _, c in ipairs(w.clients) do T.eq(#c.ns.db.errors, 0, c:Name() .. ": без ошибок") end
 end
 
+T.test("autonomy: повторная проверка членства не декодирует тот же допуск заново", function()
+    local w, k, _, v, q = Build()
+    k:Logout(); v:Logout()
+    for _, c in ipairs({ k, v }) do w:AddOffline(c.guild, c:Name() .. "-" .. c.realm, c.rank) end
+    Skip(w, 8)
+    local ns = q.ns
+    local cert = ns.Security.MyCertificate()
+    T.ok(cert and ns.Issuers.IsGrant(cert.delegation), "сертификат выдан запасным издателем")
+    local decode, calls = ns.Ed25519.FromB64, 0
+    ns.Ed25519.FromB64 = function(...)
+        calls = calls + 1
+        return decode(...)
+    end
+    for _ = 1, 20 do T.ok(ns.Security.MyCertificate(), "членство действует") end
+    ns.Ed25519.FromB64 = decode
+    T.eq(calls, 0, "неизменный допуск уже разобран")
+    Errors(w)
+end)
+
+T.test("autonomy: обслуживание выбирает издателя один раз для всей очереди участников", function()
+    local w, k = Build()
+    local ns, tick = k.ns, nil
+    local safe = k.ns.SafeCall
+    ns.SafeCall = function(where, fn, ...)
+        if where == "security maintenance" then tick = fn end
+        return safe(where, fn, ...)
+    end
+    w:Run(5)
+    ns.SafeCall = safe
+    T.ok(tick, "периодическое обслуживание запущено")
+    local scans = 0
+    k.env.ipairs = function(list)
+        if list == ns.Roster.members then scans = scans + 1 end
+        return ipairs(list)
+    end
+    tick()
+    k.env.ipairs = nil
+    T.eq(scans, 1, "не нужен новый обход ростера для каждого действующего сертификата")
+    Errors(w)
+end)
+
 T.test("autonomy: полгода без обоих корней, новые клиенты и перезаход офицера", function()
     local w, k, o, v, q = Build()
     k:Logout(); v:Logout()
