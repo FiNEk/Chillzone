@@ -2,7 +2,9 @@
 -- (setfenv) и своей копией аддона; гильдии, ростер, GUILD/WHISPER аддон-сообщения,
 -- обычный текст в канале, системное «нет такого игрока», таймеры и общие часы.
 -- Текст в канал сервер принимает только из нажатия клавиши: Client:Slash и Client:Press
--- ставят признак, SendChatMessage в CHANNEL без него строку не доставляет (c.blocked).
+-- ставят признак, SendChatMessage в CHANNEL без него строку не доставляет (c.blocked) и
+-- игра шлёт ADDON_ACTION_BLOCKED. Сервер пропускает channelLimit строк игрока за скользящие
+-- channelWindow секунд, лишние не раздаёт и отвечает автору THROTTLED (как в игре 2026-11-11).
 local T = ...
 
 local Wow = {}
@@ -14,9 +16,10 @@ local World = {}
 World.__index = World
 
 -- channelClosed — сервер не доставляет строки каналов никому; guidClass — классы игроков
--- без аддона по GUID (World:ChannelSay).
+-- без аддона по GUID (World:ChannelSay); channelLimit и channelWindow — лимит строк игрока в канал.
 function Wow.World()
-	local w = setmetatable({ now = 0, timers = {}, seq = 0, clients = {}, guilds = {}, channels = {}, log = {}, guidClass = {}, lineId = 0 }, World)
+	local w = setmetatable({ now = 0, timers = {}, seq = 0, clients = {}, guilds = {}, channels = {}, log = {}, guidClass = {}, lineId = 0,
+		channelLimit = 3, channelWindow = 30 }, World)
 	return w
 end
 
@@ -127,29 +130,62 @@ function World:Deliver(from, dist, prefix, msg, target, logged)
 	return 4
 end
 
+-- Фильтр брани клиента: слова из c.profanity заменяются знаками прямо в тексте события, как
+-- в игре (у владельца вернулось «#$%^&*!@а»). Длина замены другая, чем у слова.
+local function Profane(c, msg)
+	for _, word in ipairs(c.profanity or {}) do
+		msg = msg:gsub(word:gsub("%p", "%%%0"), "#$%%^&*!@")
+	end
+	return msg
+end
+
 -- Строка в канал всем, кто в нём: (текст, автор, язык, «5. Название», …, номер, название,
--- язык, номер строки, GUID), как CHAT_MSG_CHANNEL в игре.
+-- язык, номер строки, GUID), как CHAT_MSG_CHANNEL в игре. channelDeaf — сервер держит
+-- клиента вне канала, а клиент об этом не знает (бан без уведомления): строк он не получает.
 function World:ChannelDeliver(stamp, guid, chan, msg)
 	if self.channelClosed then return end
 	self.lineId = self.lineId + 1
 	local line = self.lineId
 	for _, c in ipairs(self.clients) do
-		if c.online and c.joined and c.joined[chan] then
-			local cid = c.joined[chan]
-			self:Schedule(self.now + 0.05, function() c:Fire("CHAT_MSG_CHANNEL", msg, stamp, "", cid .. ". " .. chan, "", "", 0, cid, chan, 0, line, guid) end, c)
+		if c.online and c.joined and c.joined[chan] and not c.channelDeaf then
+			local cid, text = c.joined[chan], Profane(c, msg)
+			self:Schedule(self.now + 0.05, function() c:Fire("CHAT_MSG_CHANNEL", text, stamp, "", cid .. ". " .. chan, "", "", 0, cid, chan, 0, line, guid) end, c)
 		end
 	end
 end
 
--- Текст клиента в канал. Без нажатия клавиши (таймер, обратный вызов) сервер его не принимает;
--- channelRefused — сервер не принимает строки этого игрока (мут, бан).
+-- Уведомление канала одному клиенту, как CHAT_MSG_CHANNEL_NOTICE в игре.
+function World:NoticeTo(c, chan, notice)
+	local cid = c.joined[chan] or 0
+	self:Schedule(self.now + 0.05, function() c:Fire("CHAT_MSG_CHANNEL_NOTICE", notice, "", "", cid .. ". " .. chan, "", "", 0, cid, chan) end, c)
+end
+
+-- Текст клиента в канал. Без нажатия клавиши (таймер, обратный вызов) сервер его не принимает,
+-- а игра шлёт ADDON_ACTION_BLOCKED. channelRefused — сервер молча не раздаёт строки этого
+-- игрока («призрачное» членство); "throttled" — отвечает на каждую THROTTLED (так отвечают
+-- забаненному). Сверх channelLimit строк за channelWindow — THROTTLED, в счёт не идёт.
 function World:Say(from, msg, id)
 	local chan = from.joinedById[id]
 	if not chan then return end
 	if not from.hardware then
 		from.blocked = (from.blocked or 0) + 1
+		from:Fire("ADDON_ACTION_BLOCKED", "Chillzone", "UNKNOWN()")
 		return
 	end
+	if from.channelRefused == "throttled" then
+		from.throttled = (from.throttled or 0) + 1
+		self:NoticeTo(from, chan, "THROTTLED")
+		return
+	end
+	local said = from.channelSaid or {}
+	from.channelSaid = said
+	while said[1] and self.now - said[1] >= self.channelWindow do table.remove(said, 1) end
+	if #said >= self.channelLimit then
+		from.throttled = (from.throttled or 0) + 1
+		self:NoticeTo(from, chan, "THROTTLED")
+		return
+	end
+	said[#said + 1] = self.now
 	self.log[#self.log + 1] = { t = self.now, from = from.first .. " " .. from.surname, dist = "CHANNEL", msg = msg, chan = chan }
 	if from.channelRefused then return end
 	self:ChannelDeliver(Stamp(from), from:Guid(), chan, msg)
@@ -435,6 +471,12 @@ local function Env(c)
 		return c.joined[id] or 0, id
 	end
 	env.JoinChannelByName = function(name)
+		-- Сервер держит игрока в канале, а клиент его потерял: вход отклоняется.
+		if c.channelNotAllowed then
+			w:Schedule(w.now + 0.1, function() c:Fire("CHAT_MSG_CHANNEL_NOTICE", "NOT_ALLOWED_IN_CHANNEL", "", "", "0. " .. name, "", "", 0, 0, name) end, c)
+			return
+		end
+		c.joins = (c.joins or 0) + 1
 		c.nextChan = (c.nextChan or 4) + 1
 		local id = c.nextChan
 		c.joined[name], c.joinedById[id] = id, name
@@ -446,7 +488,7 @@ local function Env(c)
 		table.sort(out, function(a, b) return a[1] < b[1] end)
 		local flat = {}
 		for _, e in ipairs(out) do
-			flat[#flat + 1], flat[#flat + 2], flat[#flat + 3] = e[1], e[2], false
+			flat[#flat + 1], flat[#flat + 2], flat[#flat + 3] = e[1], e[2], c.channelDisabled == e[2]
 		end
 		return unpack(flat)
 	end
@@ -558,7 +600,8 @@ local function Env(c)
 end
 
 -- opts: first, surname, realm, faction, guild, rank, class, level, zone, config (поля Config
--- поверх Config.lua), chatFilterAPI ("modern" — только ChatFrameUtil, иначе старый API)
+-- поверх Config.lua), chatFilterAPI ("modern" — только ChatFrameUtil, иначе старый API),
+-- db (сохранения прежнего клиента), reload (перезагрузка интерфейса, а не вход персонажа)
 function World:Client(opts)
 	local c = setmetatable({
 		world = self, first = opts.first, surname = opts.surname, realm = opts.realm or "CAMWOWUS2Realm7PvE",
@@ -588,6 +631,8 @@ function World:Client(opts)
 	self.clients[#self.clients + 1] = c
 	c:Fire("ADDON_LOADED", "Chillzone")
 	c:Fire("PLAYER_LOGIN")
+	-- Вход персонажа или перезагрузка интерфейса (opts.reload).
+	c:Fire("PLAYER_ENTERING_WORLD", not opts.reload, opts.reload == true)
 	return c
 end
 
