@@ -146,7 +146,12 @@ T.test("guildmirror: офицеры, главы и отказ подписи н�
 		w:Run(5)
 	end
 	a.ns.Security.Seal = function() return false, "busy" end
+	a.ns.char.chatViaChannel = false
 	T.no(a.ns.Chat.Send("A", "не подписано"))
+	w:Run(5)
+	-- С каналом игры строка уходит туда, но копии в /g без подписи всё равно нет.
+	a.ns.char.chatViaChannel = true
+	T.ok(a.ns.Chat.Send("A", "только в канал"))
 	w:Run(5)
 	T.eq(#plain.lines, 0, "никакой публикации в общий чат гильдии")
 end)

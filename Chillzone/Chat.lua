@@ -1,8 +1,11 @@
 -- Chillzone: общий чат гильдий «Чиллзон». /cz1 — все, /cz2 — офицеры, /cz3 — главы
--- гильдий и офицеры главной гильдии. Строка уходит двумя путями (M1 по GUILD — своей
--- гильдии, через реле — остальным), на приёме оба сходятся в Chat.Receive с дедупликацией.
--- Скрытого канала нет: его мог открыть /join любой, кто знает название, и писать от имени
--- любой гильдии. Из каналов прежних версий аддон выходит при входе.
+-- гильдий и офицеры главной гильдии. Подписанная строка уходит двумя путями (M1 по GUILD —
+-- своей гильдии, через реле — остальным), на приёме оба сходятся в Chat.Receive с
+-- дедупликацией. Строка /cz1 ещё и уходит читаемым текстом в канал игры (Channel.lua) и
+-- приходит в Chat.ReceivePlain. Гильдия автора такой строки — только по его имени
+-- (Chat.Attribute), не по тексту: канал открыт любому, кто знает название. Копии двух путей
+-- сводятся по автору и тексту, номера у строки из канала нет.
+-- Из скрытых каналов прежних версий (M1~ текстом) аддон выходит при входе.
 -- Строки хранятся в истории и уходят событием CHAT в окно Chillzone (ChatPane.lua); копия —
 -- в чат игры, с меткой канала-ссылкой: клик по ней открывает окно на этом канале.
 -- Формат вывода и окно вывода — по образцу Olympus Channels.lua.
@@ -26,12 +29,26 @@ local RGB = { G = { 0.25, 1, 0.25 }, O = { 0.25, 0.75, 0.25 } }
 -- Цвета текста общего чата на выбор в настройках. Первый — по умолчанию, как у метки [Чиллзон].
 Chat.COLORS = { "7fd4c1", "ffffff", "ffe066", "ffb347", "ff8080", "ff8fd0", "c79bff", "6fa8ff", "6fe0ff", "8fe36f" }
 Chat.stats = { sent = 0, shown = 0, dupes = 0, refused = 0, limited = 0 }
+-- Чужие строки /cz1 по путям: channel — пришли из канала игры, signed — подписанным путём
+-- (реле или GUILD), both — пришли обоими (вторая копия погашена), hidden — скрыты как
+-- неподтверждённые. Только каналом = channel - both, только подписью = signed - both.
+-- deaf — подписанная копия пришла, а из канала за CHAT_DEDUPE нет, хотя автора канал в этой
+-- сессии уже слышал: возможно, канал у меня глухой (забаненному не приходит ничего).
+-- Только счёт и журнал, для решения об этапе 2.
+Chat.paths = { channel = 0, signed = 0, both = 0, hidden = 0, deaf = 0 }
 -- Почему своя строка не подписана (Security.Seal): что сказать игроку.
 local SEAL_FAILED = {
 	busy = L.CHAT_SEAL_BUSY, failed = L.CHAT_SEAL_FAILED, long = L.CHAT_SEAL_LONG,
 }
+local CHANNEL_ONLY_TELL = 600 -- одна и та же причина «только в канал» — не чаще
+local toldReason, toldAt = nil, -1e9
 
 local seen = {} -- [Key#id#text] = время
+-- Сведение копий /cz1 из канала и подписанного пути: [Key автора] = список показанных копий
+-- { t, text, path, e, deaf }, старые первыми. Показанная копия ждёт копию другого пути, та её
+-- гасит. Список по автору, а не ключ «имя + текст»: фильтр брани меняет текст строки канала.
+local credits = {}
+local heard = {} -- [Key] = true: строки автора приходили из канала в этой сессии
 local buckets = {} -- [Key] = { n, t }
 local tierMinute = {} -- [tier] = { n, t0 }
 local lastSend = -1e9
@@ -365,7 +382,8 @@ function Chat.Scope(channel, long)
 	return L.SCOPE_ALL
 end
 
--- Строки канала, старые первыми: { t, s (имя), g (гильдия), c (класс), x (текст) }.
+-- Строки канала, старые первыми: { t, s (имя), g (гильдия), c (класс), x (текст),
+-- u (гильдия не подтверждена, g пусто), ch (показана копия из канала игры, подписанной не было) }.
 function Chat.History(channel)
 	if Chat.GUILD_CHANNELS[channel] then
 		local h = ns.char and ns.char.history
@@ -375,16 +393,19 @@ function Chat.History(channel)
 end
 
 -- Добавить строку в историю канала (не больше CHAT_HISTORY) и сообщить окну.
-function Chat.Remember(channel, guild, sender, class, text)
+-- flags — { u, ch } для строк из канала игры.
+function Chat.Remember(channel, guild, sender, class, text, flags)
 	local list = Chat.History(channel)
 	local e = { t = ns.ServerTime(), s = U.Display(sender), g = guild, c = class, x = text }
+	if flags then e.u, e.ch = flags.u or nil, flags.ch or nil end
 	list[#list + 1] = e
 	while #list > C.CHAT_HISTORY do table.remove(list, 1) end
 	ns.Fire("CHAT", channel, e)
 	return e
 end
 
-function Chat.Show(tier, guild, sender, class, text)
+-- guild nil — гильдия автора не подтверждена: вместо тега серое <?>.
+function Chat.Show(tier, guild, sender, class, text, flags)
 	Chat.stats.shown = Chat.stats.shown + 1
 	local frames = (not ns.char or ns.char.chatMirror ~= false) and Chat.Frames() or {}
 	if #frames > 0 then
@@ -392,7 +413,133 @@ function Chat.Show(tier, guild, sender, class, text)
 		local line = stamp .. Chat.Format(tier, guild, sender, class, text)
 		WriteToFrames(frames, line, Chat.Color(tier))
 	end
-	Chat.Remember(tier, guild, sender, class, text)
+	return Chat.Remember(tier, guild, sender, class, text, flags)
+end
+
+---------------------------------------------------------------------------
+-- Гильдия автора строки из канала игры
+---------------------------------------------------------------------------
+local function InReport(r, key)
+	if U.Key(r.leader) == key then return true end
+	for _, list in ipairs({ r.officers or {}, r.veterans or {} }) do
+		for _, p in ipairs(list) do
+			if U.Key(p.name) == key then return true end
+		end
+	end
+	return false
+end
+
+-- Гильдия по имени автора; текст строки не используется. Источники по порядку: свой ростер,
+-- сертификат, руководство из свежих отчётов переписи, поимённый онлайн. nil — подтвердить
+-- нечем. Второе значение — источник: me, roster, cert, report, online.
+function Chat.Attribute(name)
+	local key = U.Key(name)
+	if not key then return nil end
+	local mine = ns.MyGuild()
+	if ns.IsMe(name) then return mine, "me" end
+	if mine and ns.Roster.RankOf(name) ~= nil then return mine, "roster" end
+	-- Свою гильдию подтверждает только свой ростер: кого в нём нет, тот не из неё.
+	local myKey = mine and ns.Roster.scannedAt and U.GuildKey(mine) or nil
+	local guilds = ns.Security.UnionGuilds and ns.Security.UnionGuilds() or {}
+	local best
+	for _, u in ipairs(guilds) do
+		if U.GuildKey(u.guild) ~= myKey then
+			local c = ns.Security.Member(u.guild, name)
+			if c and (not best or (c.issued or 0) > (best.issued or 0)) then best = c end
+		end
+	end
+	if best then return best.guild, "cert" end
+	local now = ns.ServerTime()
+	for _, u in ipairs(guilds) do
+		local row = U.GuildKey(u.guild) ~= myKey and ns.Data.Row(u.guild)
+		-- Отчёты, расходящиеся в составе руководства, ничего не подтверждают.
+		if row and row.r and not row.conflict and now - (row.st or 0) <= C.TOTAL_KEEP and InReport(row.r, key) then
+			return row.guild or u.guild, "report"
+		end
+	end
+	if ns.Online then
+		for _, u in ipairs(guilds) do
+			if U.GuildKey(u.guild) ~= myKey then
+				for _, p in ipairs(ns.Online.Get(u.guild).people or {}) do
+					if U.Key(p.name) == key then return u.guild, "online" end
+				end
+			end
+		end
+	end
+	return nil
+end
+
+local function IsSecret(value)
+	return type(issecretvalue) == "function" and issecretvalue(value)
+end
+
+-- Класс автора: по GUID из события, иначе по ростеру.
+function Chat.ClassOf(sender, guid)
+	local byGuid = rawget(_G, "GetPlayerInfoByGUID")
+	if not IsSecret(guid) and type(guid) == "string" and guid ~= "" and type(byGuid) == "function" then
+		local ok, _, class = pcall(byGuid, guid)
+		if ok and type(class) == "string" and class ~= "" then return class end
+	end
+	local key = U.Key(sender)
+	for _, m in ipairs(ns.Roster.members or {}) do
+		if m.key == key then return m.class end
+	end
+	return nil
+end
+
+---------------------------------------------------------------------------
+-- Сведение копий /cz1: канал игры и подписанный путь
+---------------------------------------------------------------------------
+-- Текст копии для сравнения. Края строки сервер может обрезать, поэтому без пробелов по краям.
+local function CopyText(text)
+	return U.Trim(Codec.SanitizeChat(text))
+end
+
+-- Совпадают ли копии: сначала точно, иначе по маске фильтра брани (U.MaskMatch). Маска может
+-- быть только в копии из канала: подписанный текст фильтр игры не трогает.
+local function SameCopy(c, text, path, exact)
+	if c.text == text then return true end
+	if exact then return false end
+	if path == "channel" then return U.MaskMatch(c.text, text) end
+	return U.MaskMatch(text, c.text)
+end
+
+-- Копия пришла путём path, а другой путь её уже показал: гасит ту копию, возвращает её запись.
+local function Merged(key, text, path, now)
+	local list = credits[key]
+	if not list then return nil end
+	for pass = 1, 2 do
+		for i, c in ipairs(list) do
+			if c.path ~= path and now - c.t <= C.CHAT_DEDUPE and SameCopy(c, text, path, pass == 1) then
+				table.remove(list, i)
+				return c
+			end
+		end
+	end
+	return nil
+end
+
+-- Копия пути path показана: ждёт копию другого пути. deaf — считать, если та не придёт.
+local function Credit(key, text, path, now, e, deaf)
+	local list = credits[key]
+	if not list then
+		list = {}
+		credits[key] = list
+	end
+	list[#list + 1] = { t = now, text = text, path = path, e = e, deaf = deaf or nil }
+end
+
+-- Подписанной копии ждать копию из канала, только если автора канал уже слышал, а я в канале.
+local function WaitsChannel(key)
+	return heard[key] == true and ns.Channel ~= nil and ns.Channel.Index() > 0
+end
+
+-- Подписанная копия пришла после строки из канала: её гильдия подтверждена сертификатом.
+local function Confirm(c, guild, class)
+	local e = c and c.e
+	if type(e) ~= "table" or not e.ch then return end
+	e.g, e.u, e.ch = guild, nil, nil
+	if not e.c then e.c = class end
 end
 
 -- Каналы, доступные мне сейчас, в порядке окна.
@@ -462,14 +609,64 @@ function Chat.Receive(msg, sender, dist, ctx)
 		return
 	end
 	if not ns.char.chatOn then return end
+	local ck = d.tier == "A" and CopyText(d.text) or nil
+	if ck then
+		Chat.paths.signed = Chat.paths.signed + 1
+		local c = Merged(key, ck, "signed", now)
+		if c then
+			Chat.paths.both = Chat.paths.both + 1
+			Confirm(c, d.guild, d.class)
+			return
+		end
+	end
 	if not Bucket(key, now) or not TierOk(d.tier, now) then
 		Chat.stats.limited = Chat.stats.limited + 1
 		return
 	end
-	Chat.Show(d.tier, d.guild, sender, d.class, d.text)
+	local e = Chat.Show(d.tier, d.guild, sender, d.class, d.text)
+	if ck then Credit(key, ck, "signed", now, e, WaitsChannel(key)) end
 end
 
 ns.Comm.On("M1", Chat.Receive)
+
+-- Строка /cz1 из канала игры (Channel.lua): читаемый текст, имя автора поставил сервер.
+-- Гильдия — только по имени; неподтверждённый автор показывается с <?> или скрывается
+-- настройкой. Своя строка (эхо) показывается, если подписанная копия ещё не показана.
+local UNCONFIRMED, PLAIN = { u = true, ch = true }, { ch = true }
+
+function Chat.ReceivePlain(text, sender, guid)
+	if IsSecret(text) or IsSecret(sender) then return end
+	if type(text) ~= "string" or type(sender) ~= "string" or not ns.char or not ns.IsMember() then return end
+	local key = U.Key(sender)
+	local body = U.Trim(Codec.SanitizeChat(text))
+	if not key or body == "" then return end
+	local now = ns.Now()
+	if ns.IsMe(sender) then
+		if Merged(key, body, "channel", now) then return end
+		local _, class = UnitClass("player")
+		Credit(key, body, "channel", now, Chat.Show("A", ns.MyGuild(), ns.me, class, body, PLAIN))
+		return
+	end
+	heard[key] = true
+	if ns.store and ns.store.ignore[key] then return end
+	if not ns.char.chatOn then return end
+	Chat.paths.channel = Chat.paths.channel + 1
+	if Merged(key, body, "channel", now) then
+		Chat.paths.both = Chat.paths.both + 1
+		return
+	end
+	local guild = Chat.Attribute(sender)
+	if not guild and ns.char.chatHideUnconfirmed then
+		Chat.paths.hidden = Chat.paths.hidden + 1
+		return
+	end
+	if not Bucket(key, now) or not TierOk("A", now) then
+		Chat.stats.limited = Chat.stats.limited + 1
+		return
+	end
+	local e = Chat.Show("A", guild, sender, Chat.ClassOf(sender, guid), body, guild and PLAIN or UNCONFIRMED)
+	Credit(key, body, "channel", now, e)
+end
 
 ---------------------------------------------------------------------------
 -- Отправка (из слэш-команды или Enter в окне). true — строка ушла.
@@ -494,11 +691,14 @@ function Chat.Send(tier, text)
 		return false
 	end
 	local mine = ns.Security.MyCertificate()
-	if not mine then ns.Print("%s", ns.Security.NotReadyReason()); return false end
+	-- Канал игры — только для /cz1 и не в блокировке сообщений (Channel.Ready).
+	local channel = tier == "A" and ns.Channel ~= nil and ns.Channel.Ready()
+	-- Без сертификата строка /cz1 уходит только в канал и показывается по его эху.
+	if not mine and not channel then ns.Print("%s", ns.Security.NotReadyReason()); return false end
 	-- Получатели проверяют уровень по сертификату (Security.Level), а не по званию в ростере:
 	-- роль в сертификате подтверждена лишь AUTH_ROLE_TTL после выдачи. Строку с устаревшей
 	-- ролью они отклонили бы молча — лучше сказать об этом здесь.
-	if ns.Security.Level(mine) < need then
+	if mine and ns.Security.Level(mine) < need then
 		ns.Print(L.CHAT_ROLE_STALE, L["TIER_" .. tier])
 		return false
 	end
@@ -512,28 +712,78 @@ function Chat.Send(tier, text)
 		ns.Print(L.CHAT_TOO_FAST)
 		return false
 	end
+	local _, class = UnitClass("player")
+	local budget = math.min(C.CHAT_PART, Codec.ChatBudget(guild, Codec.CLASS_CODE[class or ""] or ""))
+	local parts, cut = Codec.SplitChat(text, budget, C.CHAT_PARTS)
+	-- Строка идёт в канал целиком или не идёт: сервер пропускает Channel.Budget() строк игрока
+	-- за окно, лишние молча теряет. Не хватает бюджета на все части — строка уходит только
+	-- подписанным путём, а без сертификата — отказ до отправки: текст остаётся в поле ввода.
+	if channel and ns.Channel.Free() < #parts then
+		channel = false
+		ns.Channel.stats.over = ns.Channel.stats.over + 1
+		if not mine then
+			local wait = ns.Channel.WaitFor(#parts)
+			if wait then
+				ns.Print(L.CHAT_CHANNEL_WAIT, ns.Channel.Budget(), ns.Channel.Window(), wait)
+			else
+				ns.Print(L.CHAT_CHANNEL_TOO_LONG, ns.Channel.Budget())
+			end
+			return false
+		end
+	end
 	lastSend = now
 	if not ns.char.warned then
 		ns.char.warned = true
 		ns.Print(L.CHAT_WARNING)
 	end
-	local _, class = UnitClass("player")
-	local budget = math.min(C.CHAT_PART, Codec.ChatBudget(guild, Codec.CLASS_CODE[class or ""] or ""))
-	local parts, cut = Codec.SplitChat(text, budget, C.CHAT_PARTS)
+	-- Канал — синхронно, пока идёт нажатие клавиши: обратный вызов подписи выполняется из
+	-- таймера, оттуда сервер строку в канал не пропустит. Части те же, что у подписанной
+	-- копии, чтобы получатель свёл их по тексту.
+	local inChannel, viaChannel = {}, 0
+	if channel then
+		for i, part in ipairs(parts) do
+			if ns.Channel.Send(part, not mine) then
+				inChannel[i], viaChannel = true, viaChannel + 1
+				Chat.stats.sent = Chat.stats.sent + 1
+			end
+		end
+	end
+	if not mine then
+		local reason = ns.Security.NotReadyReason()
+		if viaChannel == 0 then
+			ns.Print("%s", reason)
+			lastSend = -1e9
+			return false
+		end
+		-- Строку увидят только те, кто в канале с аддоном или без: почему нет подписанной копии,
+		-- игрок узнаёт при смене причины и не чаще раза в CHANNEL_ONLY_TELL.
+		if reason ~= toldReason or now - toldAt >= CHANNEL_ONLY_TELL then
+			toldReason, toldAt = reason, now
+			ns.Print(L.CHAT_CHANNEL_ONLY, reason)
+		end
+		-- Другого пути у строки нет: если канал её не вернёт, Channel скажет игроку (CHAT_NO_ECHO).
+		if cut then ns.Print(L.CHAT_CUT) end
+		return true
+	end
 	-- Подпись идёт асинхронно и может не получиться и в очереди, и позже. Причину игрок
-	-- видит один раз на строку.
+	-- видит один раз на строку; если строка ушла в канал, причина — только в журнал.
 	local told = false
 	local function Failed(why)
 		if told then return end
 		told = true
-		ns.Print("%s", why == "nocert" and ns.Security.NotReadyReason() or SEAL_FAILED[why] or L.CHAT_SEAL_FAILED)
+		local reason = why == "nocert" and ns.Security.NotReadyReason() or SEAL_FAILED[why] or L.CHAT_SEAL_FAILED
+		if viaChannel > 0 then
+			ns.Log("строка ушла только в канал игры: %s", reason)
+		else
+			ns.Print("%s", reason)
+		end
 	end
 	local queued = 0
-	for _, part in ipairs(parts) do
+	for i, part in ipairs(parts) do
 		nextId = (nextId + 1) % 10000
 		local msg = Codec.EncodeChat(tier, guild, nextId, class, part)
 		if msg then
-			local id, textPart = nextId, part
+			local id, textPart, alsoChannel = nextId, part, inChannel[i]
 			sealing, sealingAt = sealing + 1, now
 			local ok, why = ns.Security.Seal(msg, function(wire, failed)
 				sealing = math.max(0, sealing - 1)
@@ -541,8 +791,17 @@ function Chat.Send(tier, text)
 				ns.Comm.Send("GUILD", wire, { prio = true, logged = true })
 				ns.Relay.Out("P", wire)
 				seen[ns.myKey .. "#" .. id .. "#" .. textPart] = now
-				Chat.Show(tier, guild, ns.me, class, textPart)
-				Chat.stats.sent = Chat.stats.sent + 1
+				-- Своя строка показывается один раз: после подписи или по эху канала.
+				local at = ns.Now()
+				local ck = tier == "A" and CopyText(textPart) or nil
+				local echo = ck and Merged(ns.myKey, ck, "signed", at)
+				if echo then
+					Confirm(echo, guild, class)
+				else
+					local e = Chat.Show(tier, guild, ns.me, class, textPart)
+					if ck then Credit(ns.myKey, ck, "signed", at, e) end
+				end
+				if not alsoChannel then Chat.stats.sent = Chat.stats.sent + 1 end
 				ns.SafeCall("guild mirror", ns.GuildChat.Mirror, tier, textPart)
 			end)
 			if not ok then
@@ -553,12 +812,12 @@ function Chat.Send(tier, text)
 			queued = queued + 1
 		end
 	end
-	if queued == 0 then
+	if queued == 0 and viaChannel == 0 then
 		if not told then Failed("failed") end
 		lastSend = -1e9 -- ничего не ушло: повтор не считается частым
 		return false
 	end
-	ns.Comm.Flush(2)
+	if queued > 0 then ns.Comm.Flush(2) end
 	if cut then ns.Print(L.CHAT_CUT) end
 	return true
 end
@@ -767,12 +1026,37 @@ ns.Every(60, "chat gc", function()
 	for k, t in pairs(seen) do
 		if now - t > C.CHAT_DEDUPE then seen[k] = nil end
 	end
+	for k, list in pairs(credits) do
+		for i = #list, 1, -1 do
+			local c = list[i]
+			if now - c.t > C.CHAT_DEDUPE then
+				table.remove(list, i)
+				if c.deaf then
+					Chat.paths.deaf = Chat.paths.deaf + 1
+					ns.Log("строка %s пришла подписью, а из канала игры нет, хотя канал этого автора слышал", (c.e and c.e.s) or k)
+				end
+			end
+		end
+		if #list == 0 then credits[k] = nil end
+	end
 	for k, b in pairs(buckets) do
 		if now - b.t > 60 then buckets[k] = nil end
 	end
 end)
 
+-- Сравнение путей /cz1: только каналом, только подписью, обоими; эхо своих строк в канале;
+-- подписью без канала от слышанных авторов; свои строки сверх бюджета канала.
+function Chat.PathsLine(fmt)
+	local p = Chat.paths
+	local ch = ns.Channel and ns.Channel.stats or { sent = 0, echoed = 0, over = 0 }
+	return fmt:format(p.channel - p.both, p.signed - p.both, p.both, ch.echoed, ch.sent, p.hidden, p.deaf, ch.over)
+end
+
 ns.Status(function()
 	local s = Chat.stats
 	return L.STATUS_CHAT:format(Chat.MyLevel(), s.sent, s.shown, s.dupes, s.refused, s.limited)
+end)
+
+ns.Status(function()
+	return Chat.PathsLine(L.STATUS_CHAT_PATHS)
 end)

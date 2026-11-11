@@ -57,6 +57,45 @@ function U.Cut(s, n)
 	return s:sub(1, n)
 end
 
+-- Фильтр брани игры меняет текст строки канала прямо в событии: слово заменяется знаками
+-- !@#$%^&* (у владельца вернулось «#$%^&*!@а»). true — masked могла получиться из plain такой
+-- заменой. Участок маски — не меньше двух разных знаков подряд, чтобы обычные «!!!» и «!»
+-- остались буквами; он совпадает с любым текстом, длину замены не считаем постоянной.
+-- Остальное — байт в байт. Без шаблонов Lua: длинная строка с масками не тормозит.
+local MASK_RUN = "[!@#%$%%%^&%*]+"
+function U.MaskMatch(plain, masked)
+	if type(plain) ~= "string" or type(masked) ~= "string" then return false end
+	if plain == masked then return true end
+	local parts, literal, pos = {}, "", 1
+	while true do
+		local s, e = masked:find(MASK_RUN, pos)
+		if not s then break end
+		local run = masked:sub(s, e)
+		literal = literal .. masked:sub(pos, s - 1)
+		if run:find("[^" .. run:sub(1, 1):gsub("%p", "%%%0") .. "]") then
+			parts[#parts + 1] = literal
+			literal = ""
+		else
+			literal = literal .. run
+		end
+		pos = e + 1
+	end
+	if #parts == 0 then return false end
+	local last = literal .. masked:sub(pos)
+	local first = parts[1]
+	if plain:sub(1, #first) ~= first then return false end
+	-- Каждая маска закрывает хотя бы один байт: at — первый возможный байт после неё.
+	local at = #first + 2
+	for i = 2, #parts do
+		local s, e = plain:find(parts[i], at, true)
+		if not s then return false end
+		at = e + 2
+	end
+	if last == "" then return at <= #plain + 1 end
+	local from = #plain - #last + 1
+	return from >= at and plain:sub(from) == last
+end
+
 -- Разбивка по разделителю (простой символ), пустые поля сохраняются.
 function U.Split(s, sep)
 	local out, i = {}, 1

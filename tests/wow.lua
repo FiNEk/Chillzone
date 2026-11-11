@@ -1,6 +1,10 @@
 -- Симулятор мира WoW: Forever для тестов. Несколько клиентов, каждый со своим окружением
 -- (setfenv) и своей копией аддона; гильдии, ростер, GUILD/WHISPER аддон-сообщения,
 -- обычный текст в канале, системное «нет такого игрока», таймеры и общие часы.
+-- Текст в канал сервер принимает только из нажатия клавиши: Client:Slash и Client:Press
+-- ставят признак, SendChatMessage в CHANNEL без него строку не доставляет (c.blocked) и
+-- игра шлёт ADDON_ACTION_BLOCKED. Сервер пропускает channelLimit строк игрока за скользящие
+-- channelWindow секунд, лишние не раздаёт и отвечает автору THROTTLED (как в игре 2026-11-11).
 local T = ...
 
 local Wow = {}
@@ -11,8 +15,11 @@ local NOT_FOUND = "No player named '%s' is currently playing."
 local World = {}
 World.__index = World
 
+-- channelClosed — сервер не доставляет строки каналов никому; guidClass — классы игроков
+-- без аддона по GUID (World:ChannelSay); channelLimit и channelWindow — лимит строк игрока в канал.
 function Wow.World()
-	local w = setmetatable({ now = 0, timers = {}, seq = 0, clients = {}, guilds = {}, channels = {}, log = {} }, World)
+	local w = setmetatable({ now = 0, timers = {}, seq = 0, clients = {}, guilds = {}, channels = {}, log = {}, guidClass = {}, lineId = 0,
+		channelLimit = 3, channelWindow = 30 }, World)
 	return w
 end
 
@@ -123,15 +130,81 @@ function World:Deliver(from, dist, prefix, msg, target, logged)
 	return 4
 end
 
+-- Фильтр брани клиента: слова из c.profanity заменяются знаками прямо в тексте события, как
+-- в игре (у владельца вернулось «#$%^&*!@а»). Длина замены другая, чем у слова.
+local function Profane(c, msg)
+	for _, word in ipairs(c.profanity or {}) do
+		msg = msg:gsub(word:gsub("%p", "%%%0"), "#$%%^&*!@")
+	end
+	return msg
+end
+
+-- Строка в канал всем, кто в нём: (текст, автор, язык, «5. Название», …, номер, название,
+-- язык, номер строки, GUID), как CHAT_MSG_CHANNEL в игре. channelDeaf — сервер держит
+-- клиента вне канала, а клиент об этом не знает (бан без уведомления): строк он не получает.
+function World:ChannelDeliver(stamp, guid, chan, msg)
+	if self.channelClosed then return end
+	self.lineId = self.lineId + 1
+	local line = self.lineId
+	for _, c in ipairs(self.clients) do
+		if c.online and c.joined and c.joined[chan] and not c.channelDeaf then
+			local cid, text = c.joined[chan], Profane(c, msg)
+			self:Schedule(self.now + 0.05, function() c:Fire("CHAT_MSG_CHANNEL", text, stamp, "", cid .. ". " .. chan, "", "", 0, cid, chan, 0, line, guid) end, c)
+		end
+	end
+end
+
+-- Уведомление канала одному клиенту, как CHAT_MSG_CHANNEL_NOTICE в игре.
+function World:NoticeTo(c, chan, notice)
+	local cid = c.joined[chan] or 0
+	self:Schedule(self.now + 0.05, function() c:Fire("CHAT_MSG_CHANNEL_NOTICE", notice, "", "", cid .. ". " .. chan, "", "", 0, cid, chan) end, c)
+end
+
+-- Текст клиента в канал. Без нажатия клавиши (таймер, обратный вызов) сервер его не принимает,
+-- а игра шлёт ADDON_ACTION_BLOCKED. channelRefused — сервер молча не раздаёт строки этого
+-- игрока («призрачное» членство); "throttled" — отвечает на каждую THROTTLED (так отвечают
+-- забаненному). Сверх channelLimit строк за channelWindow — THROTTLED, в счёт не идёт.
 function World:Say(from, msg, id)
 	local chan = from.joinedById[id]
 	if not chan then return end
-	self.log[#self.log + 1] = { t = self.now, from = from.first .. " " .. from.surname, dist = "CHANNEL", msg = msg }
+	if not from.hardware then
+		from.blocked = (from.blocked or 0) + 1
+		from:Fire("ADDON_ACTION_BLOCKED", "Chillzone", "UNKNOWN()")
+		return
+	end
+	if from.channelRefused == "throttled" then
+		from.throttled = (from.throttled or 0) + 1
+		self:NoticeTo(from, chan, "THROTTLED")
+		return
+	end
+	local said = from.channelSaid or {}
+	from.channelSaid = said
+	while said[1] and self.now - said[1] >= self.channelWindow do table.remove(said, 1) end
+	if #said >= self.channelLimit then
+		from.throttled = (from.throttled or 0) + 1
+		self:NoticeTo(from, chan, "THROTTLED")
+		return
+	end
+	said[#said + 1] = self.now
+	self.log[#self.log + 1] = { t = self.now, from = from.first .. " " .. from.surname, dist = "CHANNEL", msg = msg, chan = chan }
+	if from.channelRefused then return end
+	self:ChannelDeliver(Stamp(from), from:Guid(), chan, msg)
+end
+
+-- Игрок без аддона пишет в канал сам: full — «Имя Фамилия-Реалм».
+function World:ChannelSay(full, chan, msg, class)
+	local guid = "Player-" .. full:gsub("[%s%-]", "")
+	self.guidClass[guid] = class or "WARRIOR"
+	self.log[#self.log + 1] = { t = self.now, from = full, dist = "CHANNEL", msg = msg, chan = chan }
+	self:ChannelDeliver(full, guid, chan, msg)
+end
+
+-- Уведомление канала всем, кто в нём: (вид, игрок, язык, «5. Название», второй игрок, …).
+function World:ChannelNotice(chan, notice, player, player2)
 	for _, c in ipairs(self.clients) do
-		if c.online and c.joined[chan] then
-			local stamp = Stamp(from)
+		if c.online and c.joined and c.joined[chan] then
 			local cid = c.joined[chan]
-			self:Schedule(self.now + 0.05, function() c:Fire("CHAT_MSG_CHANNEL", msg, stamp, "", cid .. ". " .. chan, "", "", 0, cid, chan) end, c)
+			self:Schedule(self.now + 0.05, function() c:Fire("CHAT_MSG_CHANNEL_NOTICE_USER", notice, player or "", "", cid .. ". " .. chan, player2 or "", "", 0, cid, chan) end, c)
 		end
 	end
 end
@@ -398,8 +471,26 @@ local function Env(c)
 		return c.joined[id] or 0, id
 	end
 	env.JoinChannelByName = function(name)
+		-- Сервер держит игрока в канале, а клиент его потерял: вход отклоняется.
+		if c.channelNotAllowed then
+			w:Schedule(w.now + 0.1, function() c:Fire("CHAT_MSG_CHANNEL_NOTICE", "NOT_ALLOWED_IN_CHANNEL", "", "", "0. " .. name, "", "", 0, 0, name) end, c)
+			return
+		end
+		c.joins = (c.joins or 0) + 1
 		c.nextChan = (c.nextChan or 4) + 1
-		c.joined[name], c.joinedById[c.nextChan] = c.nextChan, name
+		local id = c.nextChan
+		c.joined[name], c.joinedById[id] = id, name
+		w:Schedule(w.now + 0.1, function() c:Fire("CHAT_MSG_CHANNEL_NOTICE", "YOU_JOINED", "", "", id .. ". " .. name, "", "", 0, id, name) end, c)
+	end
+	env.GetChannelList = function()
+		local out = {}
+		for id, name in pairs(c.joinedById) do out[#out + 1] = { id, name } end
+		table.sort(out, function(a, b) return a[1] < b[1] end)
+		local flat = {}
+		for _, e in ipairs(out) do
+			flat[#flat + 1], flat[#flat + 2], flat[#flat + 3] = e[1], e[2], c.channelDisabled == e[2]
+		end
+		return unpack(flat)
 	end
 	env.LeaveChannelByName = function(name)
 		local id = c.joined[name]
@@ -417,6 +508,8 @@ local function Env(c)
 		for _, o in ipairs(w.clients) do
 			if o:Guid() == guid then return CLASS_LOCAL[o.class], o.class end
 		end
+		local class = w.guidClass[guid]
+		if class then return CLASS_LOCAL[class], class end
 	end
 	env.hooksecurefunc = function(name, fn, callback)
 		if type(name) == "table" then
@@ -507,7 +600,8 @@ local function Env(c)
 end
 
 -- opts: first, surname, realm, faction, guild, rank, class, level, zone, config (поля Config
--- поверх Config.lua), chatFilterAPI ("modern" — только ChatFrameUtil, иначе старый API)
+-- поверх Config.lua), chatFilterAPI ("modern" — только ChatFrameUtil, иначе старый API),
+-- db (сохранения прежнего клиента), reload (перезагрузка интерфейса, а не вход персонажа)
 function World:Client(opts)
 	local c = setmetatable({
 		world = self, first = opts.first, surname = opts.surname, realm = opts.realm or "CAMWOWUS2Realm7PvE",
@@ -522,7 +616,7 @@ function World:Client(opts)
 	c.ns = {}
 	for _, f in ipairs(T.tocFiles()) do
 		if (not f:find("^libs/") or f == "libs/Ed25519.lua")
-			and not (opts.legacy and (f == "Issuers.lua" or f == "IssuerRevocations.lua" or f == "UnionAuthority.lua" or f == "Online.lua")) then
+			and not (opts.legacy and (f == "Issuers.lua" or f == "IssuerRevocations.lua" or f == "UnionAuthority.lua" or f == "Online.lua" or f == "Channel.lua")) then
 			if opts.legacy and (f == "Config.lua" or f == "Util.lua" or f == "Security.lua" or f == "Relay.lua" or f == "Census.lua") then
 				local chunk = assert(loadfile(T.ROOT .. "/tests/legacy/0.9/" .. f))
 				setfenv(chunk, c.env)("Chillzone", c.ns)
@@ -537,6 +631,8 @@ function World:Client(opts)
 	self.clients[#self.clients + 1] = c
 	c:Fire("ADDON_LOADED", "Chillzone")
 	c:Fire("PLAYER_LOGIN")
+	-- Вход персонажа или перезагрузка интерфейса (opts.reload).
+	c:Fire("PLAYER_ENTERING_WORLD", not opts.reload, opts.reload == true)
 	return c
 end
 
@@ -560,16 +656,32 @@ function Client:CallHooks(name, ...)
 	for _, fn in ipairs(self.hooks[name] or {}) do fn(...) end
 end
 
+-- Нажатие клавиши: пока fn выполняется, сервер принимает текст в канал.
+function Client:Hardware(fn, ...)
+	local was = self.hardware
+	self.hardware = true
+	local ok, res = pcall(fn, ...)
+	self.hardware = was
+	if not ok then error(res, 0) end
+	return res
+end
+
 -- Слэш-команда ищется, как в игре: по глобалам SLASH_<ключ><n>, которые завёл аддон.
+-- Её выполняет Enter в игровом чате — это нажатие клавиши.
 function Client:Slash(cmd, text)
 	for key, fn in pairs(self.env.SlashCmdList) do
 		local i = 1
 		while rawget(self.env, "SLASH_" .. key .. i) do
-			if rawget(self.env, "SLASH_" .. key .. i) == cmd then return fn(text or "") end
+			if rawget(self.env, "SLASH_" .. key .. i) == cmd then return self:Hardware(fn, text or "") end
 			i = i + 1
 		end
 	end
 	error("нет слэш-команды " .. cmd)
+end
+
+-- Enter в поле ввода (окно Chillzone, вкладка чата): нажатие клавиши.
+function Client:Press(box)
+	return self:Hardware(box.scripts.OnEnterPressed, box)
 end
 
 function Client:Logout()

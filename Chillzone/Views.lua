@@ -344,10 +344,11 @@ local ACTIVE_WINDOW = 3600 -- «писал за последний час»
 local ROLE_ORDER = { leader = 0, officer = 1, member = 2, active = 3 }
 
 -- Строка канала для окна: [время] [Имя] <Гильдия>: текст. Имя — ссылка player.
+-- Гильдия автора строки из канала игры может быть не подтверждена (e.g пусто): серое <?>.
 function Views.ChatLine(e, channel, showTime)
 	local link = "|Hplayer:" .. (U.TellName(e.s) or "?") .. "|h[" .. Views.Name(e.s, e.c) .. "]|h"
 	local guild = ""
-	if not ns.Chat.GUILD_CHANNELS[channel] and e.g then guild = " " .. GREY .. "<" .. ns.Chat.GuildTag(e.g) .. ">|r" end
+	if not ns.Chat.GUILD_CHANNELS[channel] then guild = " " .. GREY .. "<" .. (e.g and ns.Chat.GuildTag(e.g) or "?") .. ">|r" end
 	local stamp = (showTime and date) and (GREY .. date("%H:%M", e.t or 0) .. "|r ") or ""
 	return stamp .. link .. guild .. ": " .. Codec.SanitizeChat(e.x)
 end
@@ -368,13 +369,14 @@ local function GuildAddon(key, online)
 	return has, version
 end
 
--- Кто из других гильдий точно с аддоном: писал в общие каналы или прислал отчёт переписи.
+-- Кто из других гильдий точно с аддоном: писал в общие каналы подписанной строкой или прислал
+-- отчёт переписи. Строку из канала игры (e.ch) может написать и игрок без аддона.
 -- Остальных не знаем: приветы H1 ходят только внутри гильдии.
 local function AddonKnown(summary)
 	local known = {}
 	for tier in pairs(ns.Chat.TIER_LEVEL) do
 		for _, e in ipairs(ns.Chat.History(tier)) do
-			local k = U.Key(e.s)
+			local k = not e.ch and U.Key(e.s)
 			if k then known[k] = true end
 		end
 	end
@@ -413,7 +415,8 @@ end
 -- { name, class, level, online, days, role, guild, wrote, addon, version }. Второе значение —
 -- сколько в сети. addon: true — аддон есть, false — нет, nil — неизвестно.
 -- Уровни «Чиллзон»: главы и офицеры гильдий из переписи (в «Главах» — только главы и офицеры
--- главной гильдии) плюс те, кто писал в канал за последний час.
+-- главной гильдии) плюс те, кто писал в канал за последний час. Авторы строк из канала игры,
+-- чья гильдия не подтверждена, — последней группой { unconfirmed = true }.
 function Views.People(channel, now)
 	now = now or ns.ServerTime()
 	local out, online = {}, 0
@@ -440,6 +443,7 @@ function Views.People(channel, now)
 		end
 		return groups[gk]
 	end
+	local unconfirmed = { unconfirmed = true, people = {} }
 	local summary = ns.Data.Summary(now)
 	local known, mine = AddonKnown(summary), U.GuildKey(ns.MyGuild())
 	local function addon(k, guild, inGame)
@@ -474,17 +478,19 @@ function Views.People(channel, now)
 	for k, e in pairs(active) do
 		if not seen[k] then
 			seen[k] = true
-			local g = group(e.g or "?", U.IsMainGuild(e.g or ""))
+			local g = e.g and group(e.g, U.IsMainGuild(e.g)) or unconfirmed
 			local on = now - (e.t or 0) <= C.FRESH
 			local has, version = addon(k, e.g, on)
 			g.people[#g.people + 1] = { name = e.s, class = e.c, online = on, role = "active", guild = e.g, wrote = e.t, addon = has, version = version }
 		end
 	end
+	order[#order + 1] = "?unconfirmed"
+	groups["?unconfirmed"] = unconfirmed
 	for _, gk in ipairs(order) do
 		local g = groups[gk]
 		if #g.people > 0 then
 			table.sort(g.people, ByRole)
-			out[#out + 1] = { header = true, guild = g.guild, main = g.main, count = #g.people }
+			out[#out + 1] = { header = true, guild = g.guild, main = g.main, unconfirmed = g.unconfirmed, count = #g.people }
 			for _, p in ipairs(g.people) do add(p) end
 		end
 	end
@@ -614,7 +620,8 @@ end
 function Views.PersonTip(tt, p)
 	tt:AddLine(Views.Name(p.name, p.class))
 	local role = Views.Role(p)
-	tt:AddLine((role ~= "" and (role .. ", ") or "") .. Codec.Plain(p.guild or "?"), 0.8, 0.8, 0.8)
+	local guild = p.guild and Codec.Plain(p.guild) or L.CHAT_UNCONFIRMED_GROUP
+	tt:AddLine((role ~= "" and (role .. ", ") or "") .. guild, 0.8, 0.8, 0.8)
 	if p.level and p.level > 0 then
 		tt:AddLine(L.TIP_LEVEL:format(p.level) .. (p.class and L.CLASS[p.class] and (", " .. L.CLASS[p.class]) or ""), 0.8, 0.8, 0.8)
 	end

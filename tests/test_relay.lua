@@ -3,6 +3,8 @@ local T = ...
 local Wow = assert(loadfile(T.ROOT .. "/tests/wow.lua"))(T)
 
 -- Доверие по званию (как до TRUST_ANY_MEMBER): только глава, офицеры и «Ветеран».
+-- Канал игры для /cz1 в этих сценариях выключен (Config.CHANNEL_CHAT): строки должны доходить
+-- через реле, а не по параллельному пути. Вместе их проверяет tests/test_channel.lua.
 local RANKS = { TRUST_ANY_MEMBER = false }
 local LINK = "|cffa335ee|Hitem:19019::::::::60:::::|h[Громосвёрт, Благословенный клинок Искателя Ветра]|h|r"
 
@@ -18,7 +20,8 @@ local function Build(opts)
 	for i = 1, (opts.officers or 0) do
 		w:AddOffline("Орден Чиллзона", ("Офицерскийперсонаж%02d Длиннофамильный-CAMWOWUS2Realm3PvE"):format(i), 1, 60, "PRIEST", i)
 	end
-	local cfg = opts.config
+	local cfg = { CHANNEL_CHAT = false }
+	for k, v in pairs(opts.config or {}) do cfg[k] = v end
 	local c = {}
 	c.A = w:Client({ first = "Арагорн", surname = "Светлый", guild = "Чиллзон", rank = 1, zone = "Штормград", config = cfg })
 	c.K = w:Client({ first = "Карл", surname = "Великий", guild = "Чиллзон", rank = 0, realm = "CAMWOWUS2Realm3PvE", class = "PALADIN", config = cfg })

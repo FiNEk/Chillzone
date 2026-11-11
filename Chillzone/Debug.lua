@@ -276,6 +276,7 @@ local function Counters(lines)
 	})
 	local c = ns.Chat.stats
 	Add(lines, { text = L.DBG_CHAT_LINE:format(c.sent, c.shown, c.dupes, c.refused, c.limited) })
+	Add(lines, { text = ns.Chat.PathsLine(L.DBG_CHAT_PATHS) })
 end
 
 local function Errors(lines)

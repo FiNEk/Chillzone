@@ -29,25 +29,12 @@ local function IsSecret(value)
 	return type(issecretvalue) == "function" and issecretvalue(value)
 end
 
--- Класс автора: по доступному GUID из события, иначе по ростеру.
-local function ClassOf(sender, guid)
-	local byGuid = rawget(_G, "GetPlayerInfoByGUID")
-	if not IsSecret(guid) and guid and guid ~= "" and type(byGuid) == "function" then
-		local ok, _, class = pcall(byGuid, guid)
-		if ok and class then return class end
-	end
-	local key = U.Key(sender)
-	for _, m in ipairs(ns.Roster.members or {}) do
-		if m.key == key then return m.class end
-	end
-	return nil
-end
-
 function GuildChat.Receive(channel, text, sender, guid)
 	if IsSecret(text) or IsSecret(sender) then return end
 	if not ns.char or type(text) ~= "string" or type(sender) ~= "string" then return end
 	if channel == "G" and GuildChat.IsMirror(text) then return end
-	ns.Chat.Remember(channel, ns.MyGuild(), sender, ClassOf(sender, guid), text)
+	-- Класс автора: по доступному GUID из события, иначе по ростеру.
+	ns.Chat.Remember(channel, ns.MyGuild(), sender, ns.Chat.ClassOf(sender, guid), text)
 end
 
 -- Читаемая копия общего канала для согильдийцев без аддона. Метка позволяет убрать
