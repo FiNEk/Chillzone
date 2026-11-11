@@ -3,6 +3,12 @@ local T = ...
 
 local files = T.tocFiles()
 
+-- Проверочный аддон tools/ChillzoneProbe в релиз не входит, но его строки игрок тоже видит:
+-- те же правила синтаксиса и шрифта. Пути — относительно папки Chillzone/, как у остальных.
+for line in T.read(T.ROOT .. "/tools/ChillzoneProbe/ChillzoneProbe.toc"):gmatch("[^\r\n]+") do
+	if not line:find("^##") and line:find("%S") then files[#files + 1] = "../tools/ChillzoneProbe/" .. line:gsub("%s+$", "") end
+end
+
 T.test("static: toc перечисляет существующие файлы", function()
 	T.ok(#files > 5, "toc пуст")
 	for _, f in ipairs(files) do

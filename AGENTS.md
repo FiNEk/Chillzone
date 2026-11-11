@@ -13,7 +13,7 @@ Chillzone — аддон для **WoW: Forever** (клиенты Classic: Lua 5.
 ```bash
 luajit tests/run.lua     # все тесты; ненулевой код выхода при падении
 bash tests/run-parallel.sh lua5.1 # полный набор в четырёх процессах (Linux или WSL)
-luacheck Chillzone tests # линтер, настройки в .luacheckrc
+luacheck Chillzone tests tools # линтер, настройки в .luacheckrc
 ```
 
 На Windows: `scoop install luajit luacheck`; параллельный запуск требует Bash в Linux или WSL. `run-parallel.sh` принимает интерпретатор (по умолчанию `lua5.1`) и число процессов от 1 до 64 (по умолчанию 4), например `bash tests/run-parallel.sh luajit 4`. Он ждёт все части и возвращает ошибку, если хотя бы одна упала; при отмене останавливает дочерние процессы. Обычный `tests/run.lua` остаётся последовательным. Чтобы прогнать не всё, задайте `CZ_TEST_FILTER=<часть имени теста>` (сравнивается подстрока имени из `T.test`); `CZ_TEST_PROGRESS=1` печатает каждый пройденный тест. `CZ_SEED=<n>` меняет seed симулятора в `test_relay` и `test_chat`. CI (`.github/workflows/ci.yml`) запускает линтер, проверку оболочки и полный набор в четырёх процессах отдельно для Lua 5.1 и LuaJIT на каждый PR и пуш в `main`.
@@ -59,6 +59,8 @@ luacheck Chillzone tests # линтер, настройки в .luacheckrc
 `tests/wow.lua` — симулятор мира. В нём несколько клиентов, у каждого своё окружение и своя копия аддона. Есть гильдии с ростерами, доставка GUILD и WHISPER, общие часы и таймеры. Основное API: `World:Guild`, `World:Client{...}`, `World:Run(seconds)` (двигает часы и запускает таймеры), `Client:Fire`, `Client:Slash`, `Client:Saw(text)`. Так проверяются сценарии переписи, реле и чата целиком.
 
 То, чего тесты не видят (окно, карта, миникарта), нужно проверить в игре по чек-листу из `docs/DETAILS.md` («Проверка в игре»).
+
+`tools/ChillzoneProbe/` — отдельный проверочный аддон для канала игры (этап 0 перевода `/cz1` на канал). В архив релиза он не входит: `release.yml` собирает только `Chillzone/`. Его файлы проходят те же статические проверки и luacheck, логику проверяет `tests/test_probe.lua`, порядок проверки в игре — в его `README.md`.
 
 ## Olympus
 

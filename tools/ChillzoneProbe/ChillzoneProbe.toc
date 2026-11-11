@@ -1,0 +1,9 @@
+## Interface: 11509, 11510, 16001, 16002, 16003, 16004, 16005, 16010, 16100, 20506, 20507
+## Title: |cff7fd4c1Chillzone|r Probe
+## Notes: Проверка канала для Chillzone: журнал отправки и приёма строк. Не нужен для игры, только для проверки.
+## Author: Chillzone addon contributors
+## Version: 0.1.0
+## SavedVariables: ChillzoneProbeDB
+## X-License: MIT
+
+Probe.lua

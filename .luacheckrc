@@ -119,3 +119,20 @@ read_globals = {
 
 -- Тесты: LuaJIT (setfenv, bit, jit), игра в них симулируется (tests/wow.lua).
 files["tests/"] = { std = "luajit" }
+
+-- Проверочный аддон канала (tools/ChillzoneProbe, в релиз не входит): свои глобалы и вызовы игры.
+-- Большую часть API он берёт через rawget(_G, ...), здесь — только прямые обращения.
+files["tools/ChillzoneProbe/"] = {
+	globals = {
+		"ChillzoneProbeDB",
+		"SLASH_CHILLZONEPROBE1",
+		"SLASH_CHILLZONEPROBE2",
+	},
+	read_globals = {
+		"GetBuildInfo",
+		"GetChannelList",
+		"GetLocale",
+		"GetRealZoneText",
+		"IsInInstance",
+	},
+}

@@ -343,6 +343,7 @@ C.TRUST_ANY_MEMBER = true  -- репортёр и реле — любой уча
 Chillzone/          аддон (копируется в AddOns)
 Chillzone/media/    значок и логотип (TGA)
 tests/              тесты: luajit tests/run.lua
+tools/ChillzoneProbe/  проверочный аддон для канала игры, в релиз не входит
 reference/          Olympus 1.5.0 для справки (не в git)
 .github/workflows/  CI и сборка релиза
 .luacheckrc         настройки luacheck
@@ -353,14 +354,14 @@ reference/          Olympus 1.5.0 для справки (не в git)
 ```bash
 luajit tests/run.lua
 bash tests/run-parallel.sh lua5.1
-luacheck Chillzone tests
+luacheck Chillzone tests tools
 ```
 
 Параллельный запуск требует Bash в Linux или WSL: по умолчанию это четыре процесса Lua 5.1. Можно выбрать интерпретатор и число процессов от 1 до 64, например `bash tests/run-parallel.sh luajit 4`. Тесты распределяются без повторов и пропусков; ошибка хотя бы одной части делает весь прогон неуспешным. Обычный `tests/run.lua` остаётся последовательным, `CZ_TEST_FILTER` работает в обоих режимах.
 
 CI ([`.github/workflows/ci.yml`](../.github/workflows/ci.yml)) запускает линтер, проверку запуска процессов и полный набор в четырёх процессах отдельно для Lua 5.1 и LuaJIT на каждый PR и пуш в `main`. Обязательные проверки сохраняют имена `Luacheck`, `Tests (lua5.1)` и `Tests (luajit)`.
 
-luacheck следит за глобалами: аддон может писать только в перечисленные в `globals` из `.luacheckrc`, а читать — только Lua 5.1 и API игры из `read_globals`. Понадобилась новая функция игры — добавьте её в `read_globals`. Проверяются только `Chillzone` и `tests`, без `Chillzone/libs`: локальные копии проекта в других каталогах в прогон не попадают.
+luacheck следит за глобалами: аддон может писать только в перечисленные в `globals` из `.luacheckrc`, а читать — только Lua 5.1 и API игры из `read_globals`. Понадобилась новая функция игры — добавьте её в `read_globals`. Проверяются только `Chillzone`, `tests` и `tools`, без `Chillzone/libs`: локальные копии проекта в других каталогах в прогон не попадают.
 
 Тесты проверяют:
 

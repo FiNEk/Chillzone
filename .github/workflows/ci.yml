@@ -25,7 +25,7 @@ jobs:
       # Настройки — в .luacheckrc; libs/ не проверяются.
       - uses: lunarmodules/luacheck@v1.2.0
         with:
-          args: Chillzone tests
+          args: Chillzone tests tools
 
   test:
     name: Tests (${{ matrix.interpreter }})
