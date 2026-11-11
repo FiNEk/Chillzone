@@ -100,6 +100,42 @@ T.test("migration: обновлённый рядовой дожидается с
     Errors(c)
 end)
 
+T.test("migration: обновлённое реле отдаёт отчёт гильдии само, старые клиенты получают его от репортёра", function()
+    local w, c = Build()
+    c.m = w:Client({ first = "Мира", surname = "Тихая", guild = "Чиллзон", rank = 3, legacy = true })
+    w:Run(240)
+    c.o = Upgrade(w, c.o)
+    c.n = w:Client({ first = "Нина", surname = "Новая", guild = "Чиллзон", rank = 3 })
+    w:Run(300)
+    T.ok(c.k.ns.Census.IsReporter(), "репортёр главной гильдии — глава на 0.9")
+    T.ok(c.n.ns.Security.MyCertificate(), "новая участница получила сертификат")
+    local guild = c.v.guild
+    local relay = { key = c.v.ns.Util.Key(c.o:Name()), name = c.o:Name() }
+    c.v.ns.Relay.Pick = function() return relay end
+    c.v.ns.Roster.Scan()
+    local st = c.v.ns.Roster.report.st
+    c.v.ns.Census.MaybeReport(true)
+    local function Has(client)
+        local row = client.ns.Data.Row(guild)
+        return row and row.st and row.st >= st
+    end
+    for _ = 1, 180 do
+        if Has(c.m) and Has(c.n) then break end
+        w:Run(1)
+    end
+    local function Logged(client, text)
+        for _, line in ipairs(client.ns.db.log) do
+            if tostring(line):find(text, 1, true) then return true end
+        end
+        return false
+    end
+    T.ok(Has(c.n), "новая участница получила отчёт")
+    T.ok(Logged(c.n, "принят от " .. c.o:Name() .. ": он не репортёр гильдии"), "и взяла его у реле, не дожидаясь репортёра")
+    T.ok(Has(c.m), "старая участница получила отчёт")
+    T.ok(Logged(c.m, "RG от " .. c.o:Name() .. " отклонён"), "реле она отказала, как и раньше: отчёт пришёл от репортёра")
+    Errors(c)
+end)
+
 T.test("migration: глава обновляется последним, состав подписывается автоматически", function()
     local w, c = Build()
     c.b, c.v, c.o = Upgrade(w, c.b), Upgrade(w, c.v), Upgrade(w, c.o)

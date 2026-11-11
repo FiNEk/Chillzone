@@ -7,6 +7,9 @@
 -- подписано автором (Security.lua), поэтому подменить чужое реле не может.
 -- RG по GUILD гильдия принимает только от своего репортёра (и от прежнего, пока он передаёт
 -- дела): иначе любой участник заставлял бы всю гильдию проверять чужие подписи.
+-- Исключение — отчёт переписи новее сохранённого: его приносит любой согильдиец, а реле
+-- главной гильдии отдаёт чужой отчёт своей гильдии само. Иначе отчёт, дошедший до живого реле,
+-- терялся бы, пока репортёр гильдии молчит или не зарегистрирован у этого реле.
 -- Аренда репортёра у реле (RR) уступается заявителю со званием выше или преемнику, которого
 -- назвал сам держатель (RU). Рядовой не перехватит аренду офицера, посторонний — ничью.
 local ADDON, ns = ...
@@ -45,6 +48,7 @@ ns.On("UNION_POLICY", function(guild, wire)
 end)
 local seen = {} -- [ключ дедупа] = время
 local rate = {} -- [Key автора] = { n, t0 }
+local sideRate = {} -- [Key согильдийца] = { n, t0 }: его отчёты, принятые не от репортёра
 local hold = {} -- сообщения, пока ни одно реле не ответило
 local recent = {} -- [Key реле] = { { mode, inner, t } }: что ему недавно ушло (на случай офлайна)
 local lastPong = {} -- [Key] = когда отвечали RY
@@ -531,8 +535,20 @@ function Relay.Forward(origin, mode, inner, clear, certificate)
 	Seen(dk, now)
 	local igk = U.GuildKey(ig)
 	local mine = MyGuildKey()
-	if igk ~= mine then ns.Comm.Inject(clear, certificate.name,
-		{ via = "RL", authenticated = true, certificate = certificate, wire = inner }) end
+	local ctx = { via = "RL", authenticated = true, certificate = certificate, wire = inner }
+	if igk ~= mine then ns.Comm.Inject(clear, certificate.name, ctx) end
+	local shared = false
+	local function ToGuild(key)
+		if shared then return end
+		shared = true
+		ns.Security.Introduce("GUILD", certificate.raw)
+		ns.Comm.Send("GUILD", Codec.EncodeRM("RG", mode, U.Display(origin), inner), { key = key, prio = mode == "P", logged = Logged(inner) })
+	end
+	-- Чужой отчёт, новый для меня самого, отдаю своей гильдии сразу: её репортёр может молчать
+	-- или быть зарегистрирован у другого реле. Согильдийцы примут его как отчёт новее
+	-- сохранённого (обработчик RG). Репортёру он всё равно уходит по аренде: клиенты до этой
+	-- правки берут RG только от него.
+	if mode == "L" and ctx.taken then ToGuild("rg:" .. okey .. ":" .. Codec.InnerType(inner)) end
 	for gk, r in pairs(reporters) do
 		if now - r.t > REG_TTL then
 			reporters[gk] = nil
@@ -541,10 +557,7 @@ function Relay.Forward(origin, mode, inner, clear, certificate)
 			Relay.stats.forwarded = Relay.stats.forwarded + 1
 			local key = mode == "L" and ("rm:" .. gk .. ":" .. okey .. ":" .. Codec.InnerType(inner)) or nil
 			if r.key == ns.myKey then
-				if gk == mine then
-					ns.Security.Introduce("GUILD", certificate.raw)
-					ns.Comm.Send("GUILD", Codec.EncodeRM("RG", mode, U.Display(origin), inner), { key = key, prio = mode == "P", logged = Logged(inner) })
-				end
+				if gk == mine then ToGuild(key) end
 			else
 				ns.Security.Introduce(r.name, certificate.raw)
 				ns.Comm.Send("WHISPER", Codec.EncodeRM("RM", mode, U.Display(origin), inner), { target = r.name, key = key, prio = mode == "P", logged = Logged(inner) })
@@ -592,7 +605,10 @@ local function Deliver(mode, origin, inner, ctx, toGuild)
 	if (mode == "L") ~= (clear:sub(1, 2) == "R1") then return end
 	local now = Now()
 	local okey = U.Key(origin)
-	if not okey or Seen(Codec.DedupeKey(okey, inner), now) then return end
+	if not okey then return end
+	-- Отчёт не от репортёра в дедуп не попадает: тот же пакет ещё придёт мне по аренде (RM) или
+	-- как реле (RL), и его нужно будет раздать дальше. Повтор отсеет Data.Take.
+	if not ctx.side and Seen(Codec.DedupeKey(okey, inner), now) then return end
 	local ig = Relay.InnerGuild(inner)
 	if not ig or U.GuildKey(ig) == MyGuildKey() then return end -- своя гильдия приходит напрямую
 	Relay.stats.delivered = Relay.stats.delivered + 1
@@ -604,7 +620,7 @@ local function Deliver(mode, origin, inner, ctx, toGuild)
 		ns.Security.Introduce("GUILD", certificate.raw)
 		ns.Comm.Send("GUILD", Codec.EncodeRM("RG", mode, origin, inner), { key = key, prio = mode == "P", logged = Logged(inner) })
 	end
-	end, ctx.via == "RG")
+	end, ctx.via == "RG", ctx.side)
 end
 
 local function GossipList(exceptKey)
@@ -748,21 +764,60 @@ ns.Comm.On("RM", function(msg, sender, dist)
 	Deliver(mode, origin, inner, { via = "RM", relay = sender }, true)
 end)
 
+-- Подписанный отчёт чужой гильдии в конверте: "new" — новее сохранённого у меня, "old" — нет;
+-- nil — это не такой отчёт. Подпись здесь не проверяется: название и время читаются из открытого
+-- текста, а подделку отсеет Security.Open.
+local function ReportState(inner)
+	local clear = inner:match("^S1~[^~]+~%d+~%d+~[^~]+~(R1~.+)$")
+	local r = clear and Codec.DecodeReport(clear)
+	if not r or not r.st or not U.IsMemberGuild(r.guild) then return nil end
+	if U.GuildKey(r.guild) == MyGuildKey() or r.st > ns.ServerTime() + 300 then return nil end
+	local row = ns.Data.Row(r.guild)
+	return row and row.st and r.st <= row.st and "old" or "new"
+end
+
+-- Сколько отчётов не от репортёра один согильдиец доводит до проверки подписи за минуту.
+-- Второе значение — отказ первый в этом окне: о нём стоит написать в журнал.
+local function SideOk(key, now)
+	local s = sideRate[key]
+	if not s or now - s.t0 > 60 then
+		sideRate[key] = { n = 1, t0 = now }
+		return true
+	end
+	s.n = s.n + 1
+	return s.n <= C.RG_SIDE_PER_MIN, s.n == C.RG_SIDE_PER_MIN + 1
+end
+
 -- RG раздаёт репортёр (или реле-репортёр) своей гильдии. Пакет внутри подписан автором, но
--- проверка подписи стоит каждому в гильдии, поэтому RG принимается только от репортёра
--- (Census.MayForward), а не от любого участника.
+-- проверка подписи стоит каждому в гильдии, поэтому строки чата принимаются только от репортёра
+-- (Census.MayForward), а не от любого участника. Отчёт переписи принимается от любого
+-- согильдийца, если он новее сохранённого: старое и повторы отбрасываются без проверки подписи,
+-- на остальное у отправителя лимит RG_SIDE_PER_MIN. Так гильдия получает отчёт и от реле в
+-- своём составе, и из кэша соседа, когда репортёр молчит или сам знает меньше.
 ns.Comm.On("RG", function(msg, sender, dist)
 	if dist ~= "GUILD" then return end
-	if not ns.Roster.Fresh() or not ns.Census.MayForward(U.Key(sender)) then
-		Relay.stats.untrusted = Relay.stats.untrusted + 1
-		ns.Log("RG от %s отклонён: он не репортёр гильдии", U.Display(sender))
-		return
-	end
 	local kind, mode, origin, inner = Codec.DecodeRelay(msg)
+	local fresh = ns.Roster.Fresh()
+	local side = not (fresh and ns.Census.MayForward(U.Key(sender)))
+	if side then
+		local state = fresh and kind == "RG" and mode == "L" and ReportState(inner) or nil
+		if state == "old" then return end
+		local ok, first = false, true
+		if state == "new" then ok, first = SideOk(U.Key(sender), Now()) end
+		if not ok then
+			Relay.stats.untrusted = Relay.stats.untrusted + 1
+			if state ~= "new" then
+				ns.Log("RG от %s отклонён: он не репортёр гильдии", U.Display(sender))
+			elseif first then
+				ns.Log("RG от %s отклонён: слишком много отчётов не от репортёра", U.Display(sender))
+			end
+			return
+		end
+	end
 	if kind ~= "RG" then return end
 	-- Здесь, а не в R1: повторы отсекаются раньше него, а ответ на Q1 часто состоит из повторов.
 	if mode == "L" then ns.Activity.Touch("census", C.CENSUS_QUIET, 1) end
-	Deliver(mode, origin, inner, { via = "RG", relay = sender }, false)
+	Deliver(mode, origin, inner, { via = "RG", relay = sender, side = side or nil }, false)
 end)
 
 ---------------------------------------------------------------------------
@@ -831,6 +886,9 @@ ns.On("LOGIN", function()
 		end
 		for k, t in pairs(lastPong) do
 			if now - t > 60 then lastPong[k] = nil end
+		end
+		for k, s in pairs(sideRate) do
+			if now - s.t0 > 60 then sideRate[k] = nil end
 		end
 		for gk, claim in pairs(claims) do
 			if now - claim.t > REG_TTL then claims[gk] = nil end

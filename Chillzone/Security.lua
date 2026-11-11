@@ -1275,8 +1275,10 @@ function S.Own(wire)
     if mine and Current(mine.cert) then return mine.inner, mine.cert end
 end
 -- sender — от кого пришёл пакет (автор или пересылающий): с него лимит и у него KQ.
--- viaGuild — пакет пришёл по GUILD.
-function S.Open(wire, sender, done, viaGuild)
+-- viaGuild — пакет пришёл по GUILD. quiet — сертификат автора не спрашивать (KQ), только
+-- подождать: так открывается отчёт, который принёс не репортёр. Иначе на подделку с выдуманным
+-- отпечатком вся гильдия отвечала бы запросом сертификата.
+function S.Open(wire, sender, done, viaGuild, quiet)
     if type(wire) ~= "string" or #wire > MAX_WIRE then return false end
     local fp, at, seq, signature, inner = wire:match("^S1~([%w_-]+)~(%d+)~(%d+)~([%w_-]+)~(.+)$")
     local stamp, sequence = Int(at, 1, 4102444800), Int(seq, 1, 9007199254740991)
@@ -1338,7 +1340,7 @@ function S.Open(wire, sender, done, viaGuild)
     end
     local raw = byFp[fp]
     if raw then return Check(Certificate(raw)) end
-    return Await(fp, sender, Check, viaGuild)
+    return Await(fp, not quiet and sender or nil, Check, viaGuild)
 end
 ns.Comm.On("S1", function(wire, sender, dist)
     if dist ~= "GUILD" or not NativeRole(sender) then return end
