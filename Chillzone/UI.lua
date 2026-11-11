@@ -19,6 +19,7 @@ local WIDTH, HEIGHT = 814, 426
 local ICON = "Interface\\AddOns\\" .. ADDON .. "\\media\\icon"
 local TABS = {
 	{ key = "chat", text = "TAB_CHAT", icons = { "Interface\\Icons\\UI_Chat", "Interface\\Icons\\INV_Letter_15" } },
+	{ key = "groups", text = "TAB_GROUPS", icons = { "Interface\\Icons\\INV_Misc_GroupNeedMore", "Interface\\Icons\\Ability_Warrior_BattleShout" } },
 	{ key = "census", text = "TAB_CENSUS", icons = { "Interface\\Icons\\achievement_guildperk_everybodysfriend", "Interface\\Icons\\INV_Misc_Book_09" } },
 	{ key = "requests", text = "TAB_REQUESTS", icons = { "Interface\\Icons\\INV_Letter_15" } },
 	{ key = "kingdom", text = "TAB_KINGDOM", icons = { "Interface\\Icons\\achievement_guildperk_honorablemention", "Interface\\Icons\\INV_Misc_Note_01" } },
@@ -565,6 +566,7 @@ function UI.Render()
 	elseif ns.IsMember() and current == "join" then current = "census" end
 	for key, tab in pairs(tabs) do tab:SetChecked(key == current) end
 	if current ~= "requests" then ns.RecruitPane.HideInbox() end
+	if current ~= "groups" then ns.GroupsPane.Hide() end
 	UI.RenderStatus()
 	if current == "join" then
 		heading:SetText(L.RECRUIT_TITLE)
@@ -617,6 +619,12 @@ function UI.Render()
 		ns.UnionPane.Show()
 		return
 	end
+	if current == "groups" then
+		scroll:Hide()
+		ns.CensusPane.Hide()
+		ns.GroupsPane.Show()
+		return
+	end
 	if current == "census" then
 		scroll:Hide()
 		ns.CensusPane.Show()
@@ -659,7 +667,12 @@ local function SideTab(def)
 	if checked and checked.SetBlendMode then checked:SetBlendMode("ADD") end
 	b:SetScript("OnClick", function() ns.SafeCall("tab " .. def.key, SelectTab, def.key) end)
 	SetTip(b, function(tt)
-		-- Число заявок — в подсказке: подпись рядом со значком растягивала вкладку.
+		-- Число заявок и объявлений — в подсказке: подпись рядом со значком растягивала вкладку.
+		if def.key == "groups" then
+			local count = ns.Groups.Count()
+			tt:AddLine(count > 0 and L.TAB_GROUPS_COUNT:format(count) or L[def.text], 1, 1, 1)
+			return
+		end
 		local count = def.key == "requests" and #ns.Recruit.Requests() or 0
 		tt:AddLine(count > 0 and L.TAB_REQUESTS_COUNT:format(count) or L[def.text], 1, 1, 1)
 	end)
@@ -784,6 +797,7 @@ local function Create()
 	ns.RecruitPane.Build(body)
 	ns.RecruitPane.BuildInbox(body)
 	ns.CensusPane.Build(body)
+	ns.GroupsPane.Build(body)
 	ns.UnionPane.Build(body)
 	ns.JournalPane.Build(body)
 	body:Hide()
@@ -793,7 +807,7 @@ local function Create()
 	UI.tabs = tabs
 
 	f:SetScript("OnShow", function() UI.Render() end)
-	f:SetScript("OnHide", function() ns.ChatPane.Hide(); ns.Recruit.Cancel(); ns.UnionPane.Hide(); ns.JournalPane.Hide() end)
+	f:SetScript("OnHide", function() ns.ChatPane.Hide(); ns.Recruit.Cancel(); ns.UnionPane.Hide(); ns.JournalPane.Hide(); ns.GroupsPane.Hide() end)
 	local elapsed, debugElapsed, activityElapsed, pulse = 0, 0, 0, 0
 	f:SetScript("OnUpdate", ns.Perf.Wrap("window update", function(_, dt)
 		elapsed, debugElapsed = elapsed + (dt or 0), debugElapsed + (dt or 0)
@@ -813,7 +827,8 @@ local function Create()
 			UI.Render()
 		elseif elapsed >= 30 then
 			elapsed, debugElapsed = 0, 0
-			if current == "census" or current == "kingdom" or current == "join" or current == "requests" or current == "union" then
+			if current == "census" or current == "kingdom" or current == "join" or current == "requests" or current == "union"
+				or current == "groups" then
 				UI.Render()
 			else UI.RenderStatus() end
 		end
@@ -915,6 +930,7 @@ end, L.HELP_MINIMAP)
 
 ns.Command("kingdom", function() UI.Toggle("kingdom") end, L.HELP_KINGDOM)
 ns.Command("census", function() UI.Toggle("census") end, L.HELP_CENSUS)
+ns.Command("groups", function() UI.Toggle("groups") end, L.HELP_GROUPS)
 ns.Command("requests", function()
 	if not ns.RecruitSync.IsOfficer() then
 		ns.Print(L.REQUESTS_ONLY_OFFICERS)

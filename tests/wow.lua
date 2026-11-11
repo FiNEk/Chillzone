@@ -345,7 +345,18 @@ local function Env(c)
 		return frame
 	end
 	env.GameTooltip = NewFrame(c, "GameTooltip")
-	env.UnitFullName = function(unit) if unit == "player" then return c.first, c.surname end end
+	-- Группа игрока: c.party — остальные её участники (клиенты), c.raid — это рейд,
+	-- c.partyLeader == false — лидер не я. Без c.party игрок один.
+	env.UnitFullName = function(unit)
+		if unit == "player" then return c.first, c.surname end
+		local kind, index = tostring(unit):match("^(%a+)(%d+)$")
+		local member = (kind == "party" or kind == "raid") and c.party and c.party[tonumber(index)]
+		if member then return member.first, member.surname end
+	end
+	env.GetNumGroupMembers = function() return c.party and #c.party + 1 or 0 end
+	env.IsInGroup = function() return c.party ~= nil end
+	env.IsInRaid = function() return c.party ~= nil and c.raid == true end
+	env.UnitIsGroupLeader = function() return c.party ~= nil and c.partyLeader ~= false end
 	env.GetNormalizedRealmName = function() return c.realm end
 	env.GetRealmName = function() return c.realm end
 	env.UnitFactionGroup = function() return c.faction end
@@ -616,7 +627,7 @@ function World:Client(opts)
 	c.ns = {}
 	for _, f in ipairs(T.tocFiles()) do
 		if (not f:find("^libs/") or f == "libs/Ed25519.lua")
-			and not (opts.legacy and (f == "Issuers.lua" or f == "IssuerRevocations.lua" or f == "UnionAuthority.lua" or f == "Online.lua" or f == "Channel.lua")) then
+			and not (opts.legacy and (f == "Issuers.lua" or f == "IssuerRevocations.lua" or f == "UnionAuthority.lua" or f == "Online.lua" or f == "Channel.lua" or f == "Groups.lua")) then
 			if opts.legacy and (f == "Config.lua" or f == "Util.lua" or f == "Security.lua" or f == "Relay.lua" or f == "Census.lua") then
 				local chunk = assert(loadfile(T.ROOT .. "/tests/legacy/0.9/" .. f))
 				setfenv(chunk, c.env)("Chillzone", c.ns)

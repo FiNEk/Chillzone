@@ -66,6 +66,7 @@ function Relay.InnerGuild(inner)
 	local signed = inner:match("^S1~[^~]+~%d+~%d+~[^~]+~(.+)$")
 	if signed then return Relay.InnerGuild(signed) end
 	return inner:match("^M1~%u~([^~]+)~") or inner:match("^R1~([^~]+)~")
+		or inner:match("^G1~%u~%d+~([^~]+)")
 end
 
 local function Logged(inner)
