@@ -228,6 +228,46 @@ local function Harness(opts)
 	return h
 end
 
+T.test("map: текстовая зона третьей гильдии объединяется с номером карты", function()
+	local h = Harness()
+	local ns = h.ns
+	ns.Log = function() end
+	ns.ServerTime = function() return 1000 end
+	h.env.C_Map.GetMapChildrenInfo = function(id)
+		if id == 947 then return { { mapID = 1453, name = "Штормград", mapType = 3 } } end
+		return {}
+	end
+	h.env.C_Map.GetMapInfo = function(id)
+		if id == 1453 then return { mapID = id, name = "Штормград", mapType = 3 } end
+	end
+	T.load({ "Config.lua", "Util.lua", "Codec.lua", "Zones.lua", "Data.lua" }, h.env, ns)
+	ns.store = { guilds = {}, security = { union = {} } }
+	local function Report(guild, zones)
+		ns.store.security.union[ns.Util.GuildKey(guild)] = { active = true }
+		ns.store.guilds[ns.Util.GuildKey(guild)] = {
+			guild = guild, st = 1000, r = { guild = guild, zones = zones },
+		}
+	end
+	Report("Чиллзон", { m1453 = 56 })
+	Report("Запомни Навсегда", { m1453 = 8 })
+	Report("Чиллзон Навсегда", { ["tШтормград"] = 3, ["tНеизвестная зона"] = 1 })
+	ns.Map.RefreshNow()
+	T.eq(#h.pins.entries, 1, "одна метка Штормграда")
+	local circle = h.pins.entries[1].anchor.circle
+	T.eq(circle.count, 67, "в счётчике учтена третья гильдия")
+	circle.scripts.OnEnter(circle)
+	T.eq(h.env.GameTooltip.lines[1][1], "Штормград")
+	T.eq(#h.env.GameTooltip.lines, 5, "заголовок, итог и три гильдии")
+	T.same(h.env.GameTooltip.lines[5], { "Чиллзон Навсегда", "3" })
+	T.eq(ns.Data.ZoneCounts()["tНеизвестная зона"].total, 1, "неизвестная зона не приписывается городу")
+	local row = ns.Data.Row("Чиллзон Навсегда")
+	T.same(row.r.zones, { ["tШтормград"] = 3, ["tНеизвестная зона"] = 1 }, "исходный отчёт сохранён")
+	row.r.zones = { m1453 = 2, ["tШтормград"] = 1 }
+	T.eq(ns.Data.ZoneCounts().m1453.guilds["Чиллзон Навсегда"], 3, "оба ключа одной гильдии складываются")
+	row.st = 1000 - ns.Config.FRESH - 1
+	T.eq(ns.Data.ZoneCounts().m1453.total, 64, "устаревшая третья гильдия исключается")
+end)
+
 T.test("map: кнопка без других аддонов переключает общую настройку сразу", function()
 	local h = Harness()
 	local b = h.ns.MapControls.button
