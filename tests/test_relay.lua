@@ -365,6 +365,120 @@ T.test("relay: вопрос сразу после ответа не делает
 	T.ok(e.asked, "после паузы реле снова спрашивают")
 end)
 
+T.test("relay: задержка своей очереди не делает живое реле офлайн", function()
+	local w, c = Build()
+	local B = c.B.ns
+	local e = B.Relay.Known()[Key(c.B, c.A:Name())]
+	w:Run(10)
+	e.asked, e.down, e.verified = nil, nil, w.now - 10
+	local send = B.Comm.SendNow
+	B.Comm.SendNow = function() return false, 11 end
+	B.Relay.PingAll()
+	w:Run(B.Config.RELAY_TIMEOUT + 5)
+	T.no(e.down, "запрос ещё в очереди, реле не виновато")
+	B.Comm.SendNow = send
+	w:Run(25)
+	T.no(e.down, "после отправки реле ответило")
+	T.ok(e.verified and w.now - e.verified < 30, "связь подтверждена")
+	T.eq(#c.B.ns.db.errors, 0, "без ошибок")
+end)
+
+T.test("relay: своя блокировка после запроса не делает живое реле офлайн", function()
+	local w, c = Build()
+	local B = c.B.ns
+	local e = B.Relay.Known()[Key(c.B, c.A:Name())]
+	w:Run(10)
+	e.asked, e.down, e.verified = nil, nil, w.now - 10
+	Deafen(c.B)
+	local send = B.Comm.SendNow
+	local blocked = false
+	B.Comm.SendNow = function(dist, msg, target, ...)
+		local ok, why = send(dist, msg, target, ...)
+		if ok and dist == "WHISPER" and target == c.A:Name() and msg:sub(1, 3) == "RP~" then
+			c.B.lockdown, blocked = true, true
+		end
+		return ok, why
+	end
+	B.Relay.PingAll()
+	w:Run(B.Config.RELAY_TIMEOUT + 10)
+	T.ok(blocked, "запрос ушёл до начала блокировки")
+	T.no(e.down, "ответ не слышен из-за своей блокировки")
+	B.Comm.SendNow = send
+	c.B.lockdown = false
+	B.Relay.PingAll()
+	w:Run(25)
+	T.no(e.down, "после блокировки реле доступно")
+	T.ok(e.verified and w.now - e.verified < 30, "ответ снова получен")
+	T.eq(#c.B.ns.db.errors, 0, "без ошибок")
+end)
+
+T.test("relay: отказ очереди не запускает ожидание ответа", function()
+	local w, c = Build()
+	local B = c.B.ns
+	local e = B.Relay.Known()[Key(c.B, c.A:Name())]
+	w:Run(10)
+	e.asked, e.down, e.verified = nil, nil, w.now - 10
+	local send = B.Comm.Send
+	B.Comm.Send = function() return false end
+	B.Relay.PingAll()
+	T.no(e.asked, "неотправленный запрос не ждёт ответа")
+	B.Comm.Send = send
+end)
+
+T.test("relay: отправленный запрос без ответа по-прежнему исключает реле", function()
+	local w, c = Build()
+	local B = c.B.ns
+	local e = B.Relay.Known()[Key(c.B, c.A:Name())]
+	w:Run(10)
+	e.asked, e.down, e.verified = nil, nil, w.now - 10
+	c.A.ns.Comm.On("RP", function() end)
+	B.Relay.PingAll()
+	w:Run(B.Config.RELAY_TIMEOUT + 15)
+	T.ok(e.down and e.down > w.now, "молчащее реле исключено после отправки")
+end)
+
+T.test("relay: повторный опрос не возвращает заведомо недоступное реле в тройку", function()
+	local _, c = Build()
+	local B = c.B.ns
+	local e = B.Relay.Known()[Key(c.B, c.A:Name())]
+	B.Comm.SendNow("WHISPER", "ZZ~test", c.A:Name())
+	c.B:Fire("CHAT_MSG_SYSTEM", c.B.env.ERR_CHAT_PLAYER_NOT_FOUND_S:format(c.A:Name()))
+	T.ok(e.down, "транспорт подтвердил недоступность")
+	c.B:Slash("/chillzone", "relay ping")
+	T.ok(e.down, "отказ транспорта сохраняет исключение из тройки")
+	T.no(e.asked, "ответа на заведомо неотправленный запрос не ждём")
+end)
+
+T.test("relay: потерянный ответ не останавливает обмен на десять минут", function()
+	local w, c = Build()
+	local V = c.V.ns
+	local e = V.Relay.Known()[Key(c.V, c.A:Name())]
+	w:Run(10)
+	e.asked, e.down, e.verified = nil, nil, w.now - 10
+	local fire, blocked = c.A.Fire, true
+	c.A.Fire = function(self, event, prefix, msg, dist, sender, ...)
+		if blocked and event == "CHAT_MSG_ADDON" and dist == "WHISPER"
+			and msg:sub(1, 3) == "RR~" and Key(c.V, sender) == V.myKey then return end
+		return fire(self, event, prefix, msg, dist, sender, ...)
+	end
+	V.Relay.Register()
+	w:Run(V.Config.RELAY_TIMEOUT + 15)
+	T.ok(e.down and e.down > w.now, "на время выбираются другие реле")
+	T.ok(e.down - w.now <= 60, "потеря ответа требует короткой повторной проверки")
+	blocked = false
+	w:Run(90)
+	T.no(e.down, "регистрация сама восстановилась")
+	local held = c.A.ns.Relay.Reporters()[V.Util.GuildKey(c.V.guild)]
+	T.ok(held and w.now - held.t < c.A.ns.Relay.REG_TTL, "аренда снова продлевается")
+	for i = 1, 318 do w:AddOnline(c.V.guild, ("Участник%03d Игрок"):format(i), 3) end
+	V.Roster.Scan()
+	V.Census.MaybeReport(true)
+	w:Run(25)
+	local row = c.M.ns.Data.Row(c.V.guild)
+	T.ok(row and c.M.ns.Data.IsFresh(row), "главная гильдия получила свежую перепись")
+	T.eq(row.r.online, 320, "передан весь онлайн, включая игроков без аддона")
+end)
+
 T.test("relay: регистрация уходит, даже если реле только что подтвердилось", function()
 	local w, c = Build()
 	local V = c.V
@@ -1165,8 +1279,9 @@ T.test("relay: перезашедшее реле из тройки пишет в
 	c.O:Logout()
 	c.O = w:Client({ first = "Олег", surname = "Старший", guild = "Чиллзон", rank = 1, db = db })
 	local back, have, miss = c.O, "Чиллзон Север", "Орден Чиллзона"
-	-- Пока реле не прочитало ростер, RR теряются, и следующий придёт через REG_EVERY.
-	for _ = 1, 60 do
+	-- Первый RR может прийти до чтения ростера. Даём завершиться его тайм-ауту,
+	-- короткой паузе и очередной регистрации (раз в 15 секунд).
+	for _ = 1, back.ns.Config.RELAY_TIMEOUT + back.ns.Config.RELAY_RETRY + 30 do
 		if Lease(back, have) or Lease(back, miss) then break end
 		w:Run(1)
 	end
@@ -1204,7 +1319,7 @@ T.test("relay: вернувшееся реле пишет и тем, кто ещ
 	c.O:Logout()
 	c.O = w:Client({ first = "Олег", surname = "Старший", guild = "Чиллзон", rank = 1, db = db })
 	local back, have, miss = c.O, "Чиллзон Север", "Орден Чиллзона"
-	for _ = 1, 60 do
+	for _ = 1, back.ns.Config.RELAY_TIMEOUT + back.ns.Config.RELAY_RETRY + 30 do
 		if Lease(back, have) or Lease(back, miss) then break end
 		w:Run(1)
 	end
