@@ -1244,8 +1244,9 @@ ns.Comm.On("KQ", function(msg, sender, dist)
     served[key] = now
     ns.Comm.Send("WHISPER", "KP~" .. Ed.ToB64(raw), { target = sender, prio = true, key = "kp:" .. key })
 end)
--- Подписать своё M1, R1 или G1. done(wire) — подписано; done(nil, why) — не вышло уже после
--- постановки в очередь. Возвращает true (подпись в очереди) или false, why.
+-- Подписать своё M1, R1 или G1 (и G1 в конверте M1, Codec.WrapGroup). done(wire) — подписано;
+-- done(nil, why) — не вышло уже после постановки в очередь. Возвращает true (подпись в очереди)
+-- или false, why.
 -- why: "nocert" — нет действующего сертификата, "busy" — очередь подписей полна,
 -- "failed" — подпись не удалась или сертификат сменился, пока она шла, "long" — пакет велик.
 function S.Seal(inner, done)
@@ -1288,9 +1289,13 @@ function S.Open(wire, sender, done, viaGuild, quiet)
     local guild = inner:match("^M1~[ACL]~([^~]+)~") or inner:match("^R1~([^~]+)~")
         or inner:match("^G1~[GPX]~%d+~([^~]+)")
     if (kind ~= "M1" and kind ~= "R1" and kind ~= "G1") or not guild or not U.IsMemberGuild(guild) then return false end
+    -- Объявление в конверте строки чата (Codec.WrapGroup) — то же объявление о группе.
+    local group = kind == "G1" or (kind == "M1" and ns.Codec.UnwrapGroup(inner) ~= nil)
     -- Объявление о группе живёт до следующего повтора автора: его же пакет репортёр отдаёт
-    -- вошедшим позже. Порядок пакетов автора и снятые объявления помнит Groups.lua.
-    local keep = kind == "M1" and C.CHAT_DEDUPE or kind == "G1" and C.GROUPS_WINDOW or C.TOTAL_KEEP
+    -- вошедшим позже. Порядок пакетов автора и снятые объявления помнит Groups.lua, поэтому
+    -- отметок повтора строк чата (replay) у объявлений нет: иначе после /reload читатель не
+    -- принял бы ответ репортёра на GQ.
+    local keep = group and C.GROUPS_WINDOW or kind == "M1" and C.CHAT_DEDUPE or C.TOTAL_KEEP
     local function Check(c)
         local now = ns.ServerTime()
         if not c or not c.approvedRoot or not Current(c) or U.GuildKey(guild) ~= U.GuildKey(c.guild) or stamp > now + 30
@@ -1320,7 +1325,7 @@ function S.Open(wire, sender, done, viaGuild, quiet)
             if not Budget("a:" .. c.key, C.AUTH_AUTHOR_PER_MIN) then return end
             local id = c.public .. ":" .. c.key .. ":" .. seq
             local later = ns.ServerTime()
-            if kind == "M1" then
+            if kind == "M1" and not group then
                 if replay[id] and (replay[id].signature ~= signature or not openedHere[id]) then return end
                 local used = 0
                 for _, entry in pairs(replay) do if later - entry.at <= C.CHAT_DEDUPE then used = used + 1 end end

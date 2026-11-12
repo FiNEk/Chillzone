@@ -535,9 +535,15 @@ local function WaitsChannel(key)
 end
 
 -- Подписанная копия пришла после строки из канала: её гильдия подтверждена сертификатом.
-local function Confirm(c, guild, class)
+-- Строка, показанная с <?>, в окнах чата игры такой и останется: напечатанное там не исправить.
+-- В журнале видно, сколько шла подпись.
+local function Confirm(c, guild, class, now)
 	local e = c and c.e
 	if type(e) ~= "table" or not e.ch then return end
+	if e.u then
+		ns.Log("строка канала от %s показана без гильдии: подпись <%s> пришла через %d с", tostring(e.s), guild,
+			math.floor(now - c.t + 0.5))
+	end
 	e.g, e.u, e.ch = guild, nil, nil
 	if not e.c then e.c = class end
 end
@@ -615,7 +621,7 @@ function Chat.Receive(msg, sender, dist, ctx)
 		local c = Merged(key, ck, "signed", now)
 		if c then
 			Chat.paths.both = Chat.paths.both + 1
-			Confirm(c, d.guild, d.class)
+			Confirm(c, d.guild, d.class, now)
 			return
 		end
 	end
@@ -796,7 +802,7 @@ function Chat.Send(tier, text)
 				local ck = tier == "A" and CopyText(textPart) or nil
 				local echo = ck and Merged(ns.myKey, ck, "signed", at)
 				if echo then
-					Confirm(echo, guild, class)
+					Confirm(echo, guild, class, at)
 				else
 					local e = Chat.Show(tier, guild, ns.me, class, textPart)
 					if ck then Credit(ns.myKey, ck, "signed", at, e) end

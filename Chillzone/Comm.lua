@@ -319,6 +319,12 @@ end
 -- relay = имя реле }. sender — автор (для RM/RG — origin из конверта).
 function Comm.Dispatch(msg, sender, dist, ctx)
 	local kind = msg:sub(1, 2)
+	-- Объявление о группе в конверте строки чата (Codec.WrapGroup) читает доска, а не чат.
+	-- Конверт приходит только подписанным: без ctx он остаётся строкой, и чат его отбросит.
+	if kind == "M1" and ctx then
+		local group = Codec.UnwrapGroup(msg)
+		if group then msg, kind, ctx.wrapped = group, "G1", true end
+	end
 	local h = handlers[kind]
 	if not h then return end
 	if PLAIN[kind] then msg = Codec.Plain(msg) end
@@ -326,7 +332,7 @@ function Comm.Dispatch(msg, sender, dist, ctx)
 	ns.SafeCall("recv " .. kind, h, msg, sender, dist, ctx)
 end
 
--- Вложенное сообщение из конверта реле: только R1 и M1.
+-- Вложенное сообщение из конверта реле: только R1, M1 и G1.
 function Comm.Inject(inner, origin, ctx)
 	if not Codec.InnerType(inner) then return end
 	Comm.Dispatch(inner, origin, "RELAY", ctx)
