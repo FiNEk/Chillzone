@@ -1,4 +1,5 @@
--- Системные ошибки служебных шёпотов: локализация, очередь и повторная связь.
+-- Системные ошибки служебных шёпотов: локализация, очередь и повторная связь. Полосы
+-- отправки GUILD и WHISPER: свои паузы, квоты и выброс давних заданий, порядок before.
 local T = ...
 local Wow = assert(loadfile(T.ROOT .. "/tests/wow.lua"))(T)
 local TARGET = "Ника Маковка"
@@ -50,14 +51,15 @@ T.test("comm: недоступный адресат — отмена очере�
 	comm.Send("WHISPER", "KQ~other", { target = "Другой Игрок" })
 	comm.Send("GUILD", "H1~test")
 	comm.Pump()
-	T.eq(#sent, 1, "отправлен первый кусок")
+	T.eq(#sent, 2, "у каждой полосы свой кусок за тик")
+	T.eq(sent[1].target, TARGET, "отправлен первый кусок шёпота")
+	T.eq(sent[2].dist, "GUILD", "и сообщение гильдии")
 	c:Fire("CHAT_MSG_SYSTEM", ('Персонаж по имени "%s" в игре не найден.'):format(TARGET))
-	T.eq(comm.QueueSize(), 2, "убраны и начатое сообщение, и следующее тому же игроку")
+	T.eq(comm.QueueSize(), 1, "убраны и начатое сообщение, и следующее тому же игроку")
 	T.same(results, { { false, "offline" }, { false, "offline" } }, "отмена вызывает done ровно один раз")
-	comm.Pump(); comm.Pump()
+	comm.Pump()
 	T.eq(#sent, 3, "остальная очередь работает")
-	T.eq(sent[2].target, "Другой Игрок")
-	T.eq(sent[3].dist, "GUILD")
+	T.eq(sent[3].target, "Другой Игрок")
 end)
 
 T.test("comm: недоступный адресат — срок ошибки и повторной попытки", function()
@@ -204,4 +206,225 @@ T.test("comm: диагностика — без debug подробные зап�
 	comm.SendNow("WHISPER", "KQ~private-payload", TARGET)
 	c:Fire("CHAT_MSG_SYSTEM", "Неизвестный ответ системы")
 	T.eq(#c.ns.db.log, before)
+end)
+
+---------------------------------------------------------------------------
+-- Полосы отправки
+---------------------------------------------------------------------------
+-- Клиент, у которого игра отвечает по полосам: codes[dist] — код ответа (по умолчанию 0,
+-- принято). tried — все попытки, sent — принятые.
+local function Lanes(codes)
+	local w, c, comm, sent = Fresh()
+	codes = codes or {}
+	local tried = {}
+	c.env.C_ChatInfo.SendAddonMessage = function(_, msg, dist, target)
+		local e = { msg = msg, dist = dist, target = target }
+		tried[#tried + 1] = e
+		local code = codes[dist] or 0
+		if code == 0 then sent[#sent + 1] = e end
+		return code
+	end
+	return w, c, comm, sent, tried
+end
+
+local function Count(list, dist)
+	local n = 0
+	for _, e in ipairs(list) do
+		if e.dist == dist then n = n + 1 end
+	end
+	return n
+end
+
+T.test("comm: полосы — отказ сервера по GUILD не задерживает шёпот, и наоборот", function()
+	local codes = { GUILD = 3 }
+	local w, _, comm, sent, tried = Lanes(codes)
+	comm.Send("GUILD", "H1~a", { prio = comm.PRIO_CONTROL })
+	comm.Send("WHISPER", "GA~1", { target = TARGET, prio = true })
+	comm.Send("WHISPER", "GA~2", { target = "Другой Игрок", prio = true })
+	comm.Pump()
+	T.eq(Count(tried, "GUILD"), 1, "сервер отказал по GUILD")
+	T.eq(Count(sent, "WHISPER"), 1, "шёпот ушёл в тот же тик")
+	w.now = w.now + comm.SEND_INTERVAL
+	comm.Pump()
+	T.eq(Count(tried, "GUILD"), 1, "GUILD ждёт свою паузу")
+	T.eq(Count(sent, "WHISPER"), 2, "а шёпот идёт дальше")
+	-- Наоборот: отказ шёпоту не держит GUILD.
+	codes.GUILD, codes.WHISPER = 0, 9
+	w.now = w.now + 30
+	comm.Send("WHISPER", "GA~3", { target = TARGET, prio = true })
+	comm.Pump()
+	T.eq(Count(sent, "GUILD"), 1, "GUILD после паузы ушёл")
+	comm.Send("GUILD", "H1~b", { prio = comm.PRIO_CONTROL })
+	w.now = w.now + comm.SEND_INTERVAL
+	comm.Pump()
+	T.eq(Count(sent, "GUILD"), 2, "отказ шёпоту не держит GUILD")
+	T.eq(Count(tried, "WHISPER"), 3, "шёпот ждёт своей паузы")
+	T.eq(comm.QueueSize("WHISPER"), 1)
+end)
+
+for _, relay in ipairs({ false, true }) do
+	local isRelay = relay
+	T.test("comm: полосы — поток GUILD с приоритетом выше не задерживает шёпот, реле=" .. tostring(isRelay), function()
+		local w, c, comm, sent = Lanes()
+		c.ns.Relay.IAmRelay = function() return isRelay end
+		local parts = isRelay and comm.PARTS_RELAY or 1
+		for i = 1, 30 do comm.Send("GUILD", "H1~" .. i, { prio = comm.PRIO_CONTROL }) end
+		local delivered
+		comm.Send("WHISPER", "GA~1", { target = TARGET, prio = true, done = function(ok) delivered = ok end })
+		comm.Pump()
+		T.eq(Count(sent, "GUILD"), parts, "GUILD отправил свою квоту")
+		T.eq(delivered, true, "шёпот ушёл в первый же тик")
+		-- И обычный шёпот получает квоту каждый тик, сколько бы ни ждало в GUILD.
+		for i = 1, parts + 1 do comm.Send("WHISPER", "OQ~" .. i, { target = TARGET }) end
+		w.now = w.now + comm.SEND_INTERVAL
+		comm.Pump()
+		T.eq(Count(sent, "WHISPER"), 1 + parts)
+		T.eq(Count(sent, "GUILD"), 2 * parts)
+	end)
+end
+
+T.test("comm: полосы — блокировка чата держит обе", function()
+	local codes = {}
+	local w, c, comm, sent = Lanes(codes)
+	c.lockdown = true
+	comm.Send("GUILD", "H1~a", { prio = comm.PRIO_CONTROL })
+	comm.Send("WHISPER", "GA~1", { target = TARGET, prio = true })
+	comm.Pump()
+	comm.Flush(2)
+	T.eq(#sent, 0, "в блокировке ничего не уходит")
+	c.lockdown = false
+	comm.Pump()
+	T.eq(#sent, 2, "после неё уходят обе полосы")
+	-- Ответ игры «блокировка» (11) на GUILD останавливает и шёпот.
+	codes.GUILD = 11
+	comm.Send("GUILD", "H1~b", { prio = comm.PRIO_CONTROL })
+	comm.Send("WHISPER", "GA~2", { target = TARGET, prio = true })
+	w.now = w.now + comm.SEND_INTERVAL
+	comm.Pump()
+	T.eq(#sent, 2, "шёпот ждёт вместе с GUILD")
+	codes.GUILD = 0
+	w.now = w.now + 3
+	comm.Pump()
+	T.eq(#sent, 4)
+	-- Блокировка дольше HOLD_MAX выбрасывает давние задания обеих полос.
+	local why = {}
+	c.lockdown = true
+	comm.Send("GUILD", "H1~c", { done = function(_, reason) why.guild = reason end })
+	comm.Send("WHISPER", "GA~3", { target = TARGET, done = function(_, reason) why.whisper = reason end })
+	comm.Pump()
+	w.now = w.now + comm.HOLD_MAX + 10
+	c.lockdown = false
+	comm.Pump()
+	T.same(why, { guild = "stale", whisper = "stale" })
+	T.eq(#sent, 4)
+end)
+
+for _, dist in ipairs({ "GUILD", "WHISPER" }) do
+	local held = dist
+	local other = held == "GUILD" and "WHISPER" or "GUILD"
+	T.test("comm: полосы — простой " .. held .. " выбрасывает только её давние задания", function()
+		local codes = { [held] = 9 }
+		local w, _, comm, sent = Lanes(codes)
+		local results = {}
+		local function Opts(d, name)
+			return { target = d == "WHISPER" and TARGET or nil, done = function(ok, why) results[name] = why or ok end }
+		end
+		comm.Send(held, "ZZ~first", Opts(held, "first"))
+		comm.Pump()
+		w.now = w.now + 1
+		comm.Pump() -- полоса стоит: пауза после отказа
+		comm.Send(held, "ZZ~held", Opts(held, "held"))
+		comm.Send(other, "ZZ~other", Opts(other, "other"))
+		w.now = w.now + comm.HOLD_MAX + 10
+		codes[held] = 0
+		comm.Pump()
+		T.eq(results.first, "stale", "начатое после отказа, но не отправленное — выброшено")
+		T.eq(results.held, "stale", "давнее задание стоявшей полосы выброшено")
+		T.eq(results.other, true, "задание другой полосы не выброшено и ушло")
+		T.eq(#sent, 1)
+		T.eq(sent[1].msg, "ZZ~other")
+	end)
+end
+
+T.test("comm: полосы — Flush берёт первое срочное задание открытой полосы", function()
+	local _, _, comm, sent, tried = Lanes({ GUILD = 3 })
+	comm.Send("GUILD", "H1~a", { prio = comm.PRIO_CONTROL })
+	comm.Flush(1)
+	T.eq(Count(tried, "GUILD"), 1, "сервер отказал по GUILD")
+	comm.Send("WHISPER", "OQ~plain", { target = TARGET })
+	comm.Flush(1)
+	T.eq(#tried, 1, "обычное задание Flush не отправляет")
+	comm.Send("WHISPER", "GA~1", { target = TARGET, prio = true })
+	comm.Flush(2)
+	T.eq(Count(tried, "GUILD"), 1, "полоса на паузе пропущена")
+	T.eq(#sent, 1)
+	T.eq(sent[1].msg, "GA~1", "ушло срочное задание открытой полосы")
+end)
+
+T.test("comm: полосы — before держит KP шёпотом до KT по GUILD, другие шёпоты не ждут", function()
+	local codes = { GUILD = 3 }
+	local w, _, comm, sent = Lanes(codes)
+	-- Первый KP уже в очереди, когда корень ставится перед ним; второй ставится позже, пока
+	-- корень ещё ждёт (так делает обработчик K1 в Security.lua для двух вошедших подряд).
+	comm.Send("WHISPER", "KP~a", { target = TARGET, prio = true, key = "kp-own:a" })
+	comm.Send("GUILD", "KT~root", { prio = true, key = "root:g", before = "kp-own:a" })
+	comm.Send("GUILD", "KT~root", { prio = true, key = "root:g", before = "kp-own:b" })
+	comm.Send("WHISPER", "KP~b", { target = "Другой Игрок", prio = true, key = "kp-own:b" })
+	comm.Send("WHISPER", "GA~1", { target = "Третий Игрок", prio = true })
+	comm.Pump()
+	T.eq(#sent, 1, "KT не принят, KP ждут")
+	T.eq(sent[1].msg, "GA~1", "ждущие KP не задерживают другой шёпот")
+	w.now = w.now + comm.SEND_INTERVAL
+	comm.Pump()
+	comm.Flush(2)
+	T.eq(#sent, 1, "ни насос, ни Flush не отправляют KP раньше корня")
+	codes.GUILD = 0
+	w.now = w.now + 3
+	comm.Pump()
+	w.now = w.now + comm.SEND_INTERVAL
+	comm.Pump()
+	local order = {}
+	for i, e in ipairs(sent) do order[e.msg] = i end
+	T.ok(order["KT~root"], "корень ушёл")
+	T.ok(order["KP~a"] and order["KP~a"] > order["KT~root"], "стоявший в очереди KP — после корня")
+	T.ok(order["KP~b"] and order["KP~b"] > order["KT~root"], "поставленный позже KP — после корня")
+	T.eq(comm.QueueSize(), 0)
+end)
+
+T.test("comm: полосы — начатый KP досылается после корня, поставленного перед ним", function()
+	local codes = {}
+	local w, _, comm, sent = Lanes(codes)
+	comm.Send("WHISPER", "KP~" .. string.rep("x", 600), { target = TARGET, prio = true, key = "kp-own:a" })
+	comm.Pump()
+	T.eq(#sent, 1, "первый кусок KP ушёл")
+	codes.GUILD = 3
+	comm.Send("GUILD", "KT~root", { prio = true, key = "root:g", before = "kp-own:a" })
+	w.now = w.now + comm.SEND_INTERVAL
+	comm.Pump()
+	T.eq(#sent, 1, "остаток KP ждёт корня")
+	codes.GUILD = 0
+	w.now = w.now + 3
+	comm.Pump()
+	T.eq(sent[2].msg, "KT~root", "корень раньше остатка")
+	T.eq(sent[3].dist, "WHISPER", "остаток KP следом")
+end)
+
+T.test("comm: полосы — «сервер просит подождать», только пока стоит полоса с сообщениями", function()
+	local _, c, comm = Lanes({ WHISPER = 9 })
+	local L = c.ns.L
+	local function Throttled()
+		for _, row in ipairs(c.ns.Activity.List()) do
+			if row.text == L.ACT_THROTTLED then return row end
+		end
+	end
+	comm.Send("WHISPER", "KQ~test", { target = TARGET })
+	comm.Pump()
+	local row = Throttled()
+	T.ok(row, "шёпот ждёт паузы сервера")
+	T.eq(row and row.detail, L.ACT_THROTTLED_TIP:format(1), "подсказка называет ждущие сообщения")
+	comm.Send("GUILD", "H1~a")
+	c:Fire("CHAT_MSG_SYSTEM", ('Персонаж по имени "%s" в игре не найден.'):format(TARGET))
+	T.eq(comm.QueueSize("WHISPER"), 0, "шёпот отменён")
+	T.eq(comm.QueueSize("GUILD"), 1)
+	T.no(Throttled(), "пустая полоса на паузе не выдаётся за ожидание")
 end)

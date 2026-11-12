@@ -5,6 +5,7 @@
 -- ставят признак, SendChatMessage в CHANNEL без него строку не доставляет (c.blocked) и
 -- игра шлёт ADDON_ACTION_BLOCKED. Сервер пропускает channelLimit строк игрока за скользящие
 -- channelWindow секунд, лишние не раздаёт и отвечает автору THROTTLED (как в игре 2026-11-11).
+-- Лимит сервера на аддон-сообщения GUILD (World:GuildRefused) по умолчанию выключен.
 local T = ...
 
 local Wow = {}
@@ -128,6 +129,32 @@ function World:Deliver(from, dist, prefix, msg, target, logged)
 		return 0
 	end
 	return 4
+end
+
+-- Лимит сервера на аддон-сообщения GUILD, как на Forever: ведро на клиента и префикс — burst
+-- сразу, затем rate в секунду; лишнее не доставляется и получает код 3 (AddonMessageThrottle).
+-- Включается полем guildLimit мира или клиента: true — 10 сразу и 1 в секунду, либо таблица
+-- { burst, rate }. По умолчанию выключен. Отказы клиента считает c.guildRefused.
+function World:GuildRefused(c, prefix)
+	local limit = c.guildLimit
+	if limit == nil then limit = self.guildLimit end
+	if not limit then return false end
+	local burst = type(limit) == "table" and limit.burst or 10
+	local rate = type(limit) == "table" and limit.rate or 1
+	c.guildBuckets = c.guildBuckets or {}
+	local b = c.guildBuckets[prefix]
+	if not b then
+		b = { n = burst, at = self.now }
+		c.guildBuckets[prefix] = b
+	end
+	b.n = math.min(burst, b.n + (self.now - b.at) * rate)
+	b.at = self.now
+	if b.n < 1 then
+		c.guildRefused = (c.guildRefused or 0) + 1
+		return true
+	end
+	b.n = b.n - 1
+	return false
 end
 
 -- Фильтр брани клиента: слова из c.profanity заменяются знаками прямо в тексте события, как
@@ -466,10 +493,12 @@ local function Env(c)
 		RegisterAddonMessagePrefix = function() return true end,
 		SendAddonMessage = function(prefix, msg, dist, target)
 			assert(#msg <= 255, "сообщение длиннее 255 байт")
+			if dist == "GUILD" and w:GuildRefused(c, prefix) then return 3 end
 			return w:Deliver(c, dist, prefix, msg, target, false)
 		end,
 		SendAddonMessageLogged = function(prefix, msg, dist, target)
 			assert(#msg <= 255, "сообщение длиннее 255 байт")
+			if dist == "GUILD" and w:GuildRefused(c, prefix) then return 3 end
 			return w:Deliver(c, dist, prefix, msg, target, true)
 		end,
 		InChatMessagingLockdown = function() return c.lockdown == true end,

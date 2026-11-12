@@ -763,7 +763,8 @@ local function GroupRow(e, own)
 		row.action, row.actionText = "invite", L.GROUPS_INVITE
 	elseif e.applied == "sent" then
 		row.action, row.actionText = "withdraw", L.GROUPS_WITHDRAW
-		row.status = GREEN .. L.GROUPS_APPLIED .. "|r"
+		-- Пока заявка ждёт в очереди отправки, «отправлена» было бы неправдой.
+		row.status = e.sending and (GREY .. L.GROUPS_APPLYING .. "|r") or (GREEN .. L.GROUPS_APPLIED .. "|r")
 	elseif e.applied == "invited" then
 		row.status = GREEN .. L.GROUPS_YOU_INVITED .. "|r"
 	elseif e.applied == "declined" then

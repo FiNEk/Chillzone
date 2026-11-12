@@ -194,7 +194,8 @@ end
 function Sync.Pump()
 	if not Member(ns.me) then return end
 	for _ = 1, 4 do
-		if ns.Comm.QueueSize() >= 24 then return end
+		-- Считаем только шёпоты: поток по GUILD идёт своей полосой и шёпоты не задерживает.
+		if ns.Comm.QueueSize("WHISPER") >= 24 then return end
 		local peers = {}
 		for key in pairs(outgoing) do peers[#peers + 1] = key end
 		table.sort(peers)

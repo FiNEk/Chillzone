@@ -1,6 +1,19 @@
--- Chillzone: аддон-сообщения. Очередь отправки (раз в 1.2 с, у реле — 4 куска за раз),
--- повтор при «не сейчас» от игры, блокировка чата в подземельях, сборка кусков и
--- разбор входящих по типам. Правила очереди — из Olympus Comm.lua.
+-- Chillzone: аддон-сообщения. Очередь отправки с двумя полосами, GUILD и WHISPER (раз в 1.2 с
+-- каждая полоса отправляет кусок, у реле — 4 куска), повтор при «не сейчас» от игры, блокировка
+-- чата в подземельях, сборка кусков и разбор входящих по типам. Правила очереди — из Olympus Comm.lua.
+--
+-- Полосы. Сервер Forever режет аддон-сообщения GUILD: около 10 сразу, затем 1 в секунду на
+-- префикс, лишнее получает код 3. Шёпот вне подземелий этот лимит не трогает. Поэтому порядок
+-- заданий общий (приоритеты, ключи, before, переполнение), а отказы подряд, пауза и выброс
+-- давних заданий — у каждой полосы свои. За тик полоса отправляет первое по порядку своё
+-- задание и так до своей квоты: отказ сервера по GUILD и поток GUILD любого приоритета не
+-- задерживают прямые шёпоты (заявки, ответы реле, KP), и наоборот. Блокировка чата (InLockdown
+-- и код 11) держит обе полосы.
+--
+-- Порядок между полосами задаёт только before: задание с ключом K не уходит, пока в очереди
+-- есть другое задание, поставленное «перед K», даже если они в разных полосах (KT по GUILD
+-- перед KP шёпотом вошедшему, Security.lua). Ждущее так задание пропускается, остальные
+-- задания его полосы идут своим порядком.
 local ADDON, ns = ...
 
 local U = ns.Util
@@ -12,16 +25,18 @@ ns.Comm = Comm
 Comm.SEND_INTERVAL = 1.2
 Comm.PARTS_RELAY = 4
 Comm.MAX_QUEUE = 200
-Comm.HOLD_MAX = 600 -- не начатое и ждавшее столько (блокировка) — выбрасывается
+Comm.HOLD_MAX = 600 -- не начатое и ждавшее столько, пока его полоса стояла, — выбрасывается
 -- Управление связью (опрос корня, отзыв, соединение, приветствия) идёт первым, объявления
 -- ключей — следом. Сертификаты идут наравне с чатом (prio = true — уровень 1), в порядке
 -- очереди: так поток чата их не задерживает бесконечно, а пачка сертификатов — строки чата.
+-- Приоритет упорядочивает задания внутри полосы; GUILD шёпот не обгоняет и не задерживает.
 Comm.PRIO_BOOTSTRAP = 2
 Comm.PRIO_CONTROL = 3
 Comm.PRIO_LINK = 4 -- ручное соединение обгоняет фоновые опросы и их повторы
 
 -- Ответы игры «не сейчас»: AddonMessageThrottle (3), ChannelThrottle (8), GeneralError (9),
--- AddOnMessageLockdown (11). Сообщение остаётся на месте, очередь ждёт всё дольше.
+-- AddOnMessageLockdown (11). Сообщение остаётся на месте, его полоса ждёт всё дольше;
+-- на код 11 ждут обе полосы.
 local LOCKDOWN = 11
 local TARGET_OFFLINE = 12 -- Enum.SendAddonMessageResult.TargetOffline в API Forever
 local RETRYABLE = { [3] = true, [8] = true, [9] = true, [LOCKDOWN] = true }
@@ -32,7 +47,20 @@ local queue = {}
 local handlers = {}
 local assemblers = {}
 local nextId = math.random(0, 1000)
-local refusedInRow, waitUntil = 0, 0
+-- Полосы по dist: refused — отказов подряд, waitUntil — пауза после отказа, held — полоса
+-- стояла (пауза или блокировка): когда она пойдёт, её давние задания выбрасываются.
+local lanes, laneOrder = {}, {}
+local function Lane(dist)
+	local lane = lanes[dist]
+	if not lane then
+		lane = { dist = dist, refused = 0, waitUntil = 0 }
+		lanes[dist] = lane
+		laneOrder[#laneOrder + 1] = lane
+	end
+	return lane
+end
+Lane("GUILD")
+Lane("WHISPER")
 local unavailable = {} -- [Key] = до какого времени не шептать недоступному адресату
 local MarkUnavailable -- вызывается и по результату отправки, и по системной строке
 local WHISPER_FRESH = 10 -- системная ошибка относится только к недавней отправке аддона
@@ -90,12 +118,15 @@ function Comm.SendNow(dist, msg, target, logged, prefix, kind, source)
 	end
 	if ok and IsSuccess(res) then
 		Comm.stats.sent = Comm.stats.sent + 1
-		refusedInRow = 0
+		Lane(dist).refused = 0
 		return true
 	end
 	if ok and RETRYABLE[res] then
-		refusedInRow = refusedInRow + 1
-		waitUntil = ns.Now() + RETRY_WAIT[math.min(refusedInRow, #RETRY_WAIT)]
+		-- Пауза — только полосе этого сообщения: лимит GUILD шёпот не задерживает.
+		for _, lane in ipairs(res == LOCKDOWN and laneOrder or { Lane(dist) }) do
+			lane.refused = lane.refused + 1
+			lane.waitUntil = ns.Now() + RETRY_WAIT[math.min(lane.refused, #RETRY_WAIT)]
+		end
 	end
 	Comm.stats.fails = Comm.stats.fails + 1
 	ns.Log("не отправлено %s для %s: %s", dist, to or "гильдии", tostring(res))
@@ -186,25 +217,37 @@ local function Enqueue(job, before)
 	table.insert(queue, pos, job)
 end
 
+-- Задание с ключом key не уйдёт, пока job в очереди (и в другой полосе тоже). Ключи копятся:
+-- замена по ключу (повторное объявление корня) не отменяет прежних обязательств.
+local function AddBefore(job, key)
+	if not key or key == job.key then return end
+	job.before = job.before or {}
+	job.before[key] = true
+end
+
 -- В очередь. opts: target (шёпот), key (новое заменяет ещё не начатое с тем же ключом),
 -- prio (true или числовой приоритет, больше — раньше), logged (текст игрока), done(ok, why).
--- before — перед заданием с этим ключом того же приоритета, даже если оно уже отправляется.
+-- before — перед заданием с этим ключом: оно уже стоит в очереди (даже отправляется) или
+-- будет поставлено, пока это не завершено. Действует и между полосами; в своей полосе
+-- задание того же приоритета ещё и ставится прямо перед ним.
 -- prefix — явно старый транспорт для каталогов 0.8; новые KA/UQ по умолчанию отделены.
 function Comm.Send(dist, payload, opts)
 	opts = opts or {}
 	if type(payload) ~= "string" or payload == "" then return false end
 	if dist == "WHISPER" and not opts.target then return false end
 	if dist == "WHISPER" and Unavailable(opts.target) then return false, "offline" end
+	Lane(dist)
 	local kind = payload:sub(1, 2)
 	local source = dist == "WHISPER" and ns.Diagnostics.Callsite() or nil
 	local prefix = opts.prefix or ((kind == "KA" or kind == "UQ" or kind == "UO") and ns.Config.UNION_PREFIX) or ns.PREFIX
 	local now = ns.Now()
 	if opts.key then
 		for i, job in ipairs(queue) do
-			if job.key == opts.key and job.prefix == prefix and job.i == 1 then
+			if job.key == opts.key and job.prefix == prefix and job.dist == dist and job.i == 1 then
 				job.parts, job.at, job.target, job.done = Codec.Pack(payload, NewId()), now, opts.target, opts.done
 				job.guard = opts.guard
 				job.kind, job.source = kind, source
+				AddBefore(job, opts.before)
 				-- Ответ на срочный запрос мог заменить ещё не отправленное объявление.
 				local promoted = Priority(opts.prio) > Priority(job.prio)
 				if promoted then job.prio = opts.prio end
@@ -223,6 +266,7 @@ function Comm.Send(dist, payload, opts)
 		dist = dist, target = opts.target, parts = Codec.Pack(payload, NewId()), i = 1,
 		key = opts.key, prio = opts.prio, logged = opts.logged, at = now, tries = 0, done = opts.done, guard = opts.guard,
 	}
+	AddBefore(job, opts.before)
 	Enqueue(job, opts.before)
 	Comm.stats.queued = Comm.stats.queued + 1
 	-- Переполнение: выбрасывается самое старое обычное, ещё не начатое.
@@ -240,8 +284,14 @@ function Comm.Send(dist, payload, opts)
 	return true
 end
 
-function Comm.QueueSize()
-	return #queue
+-- Сколько заданий в очереди; dist — только в этой полосе.
+function Comm.QueueSize(dist)
+	if not dist then return #queue end
+	local n = 0
+	for _, job in ipairs(queue) do
+		if job.dist == dist then n = n + 1 end
+	end
+	return n
 end
 
 -- Сколько заданий в очереди (и начатых) с ключом, который начинается с prefix; exact — ровно с этим ключом.
@@ -254,9 +304,23 @@ function Comm.Queued(prefix, exact)
 	return n
 end
 
-local function PumpOnce(prioOnly)
-	local job = queue[1]
-	if not job or (prioOnly and not job.prio) then return false end
+-- Первое по порядку очереди задание, которое можно отправлять: open(полоса) — полоса открыта,
+-- и задание не ждёт другого, поставленного перед ним (before).
+local function Next(open)
+	local waiting
+	for _, j in ipairs(queue) do
+		if j.before then
+			waiting = waiting or {}
+			for key in pairs(j.before) do waiting[key] = true end
+		end
+	end
+	for _, j in ipairs(queue) do
+		if open(lanes[j.dist]) and not (waiting and j.key and waiting[j.key]) then return j end
+	end
+end
+
+-- Очередной кусок задания. false — полоса на этот тик всё: отказ игры или ошибка.
+local function SendPart(job)
 	if job.guard and not job.guard() then Finish(job, false, "authority changed"); return true end
 	if job.dist == "GUILD" and not ns.MyGuild() then
 		Finish(job, false, "no guild")
@@ -281,33 +345,62 @@ local function PumpOnce(prioOnly)
 	return true
 end
 
-local heldSince
+-- Отметить стоящие полосы; полоса, которая снова пошла, выбрасывает свои не начатые задания,
+-- ждавшие HOLD_MAX и дольше. Простой одной полосы задания другой не трогает.
+-- true — блокировка чата: стоят обе полосы.
+local function Release(now)
+	local lockdown = Comm.InLockdown()
+	for _, lane in ipairs(laneOrder) do
+		if lockdown or now < lane.waitUntil then
+			lane.held = true
+		elseif lane.held then
+			lane.held = nil
+			-- Сначала снимок: done может поставить в очередь другое сообщение.
+			local stale = {}
+			for _, j in ipairs(queue) do
+				if j.dist == lane.dist and j.i == 1 and now - j.at >= Comm.HOLD_MAX then stale[#stale + 1] = j end
+			end
+			for _, j in ipairs(stale) do Finish(j, false, "stale") end
+		end
+	end
+	return lockdown
+end
+
+-- Тик насоса: каждая полоса отправляет до своей квоты кусков (у реле — PARTS_RELAY), беря
+-- первое по порядку очереди своё задание. Квота своя у каждой полосы: иначе поток GUILD с
+-- приоритетом выше, который сервер принимает, навсегда обгонял бы шёпот.
 function Comm.Pump()
 	if not queue[1] then return end
 	local now = ns.Now()
-	if Comm.InLockdown() or now < waitUntil then
-		heldSince = heldSince or now
-		return
-	end
-	if heldSince then
-		heldSince = nil
-		for i = #queue, 1, -1 do
-			local j = queue[i]
-			if j.i == 1 and now - j.at >= Comm.HOLD_MAX then Finish(j, false, "stale") end
-		end
-	end
+	if Release(now) then return end
 	local R = ns.Relay
 	local parts = (R and R.IAmRelay and R.IAmRelay()) and Comm.PARTS_RELAY or 1
-	for _ = 1, parts do
-		if not PumpOnce(false) then return end
+	local left = {}
+	for _, lane in ipairs(laneOrder) do left[lane] = parts end
+	local function Open(lane)
+		return (left[lane] or 0) > 0 and now >= lane.waitUntil
+	end
+	while true do
+		local job = Next(Open)
+		if not job then return end
+		local lane = lanes[job.dist]
+		left[lane] = SendPart(job) and left[lane] - 1 or 0
 	end
 end
 
--- Срочное прямо сейчас, не дожидаясь насоса: до n кусков в порядке приоритета.
+-- Срочное прямо сейчас, не дожидаясь насоса: до n кусков. Каждый раз — первое по порядку
+-- задание с приоритетом, чья полоса не на паузе; обычное задание на очереди — конец.
 function Comm.Flush(n)
-	if Comm.InLockdown() or ns.Now() < waitUntil then return end
+	local now = ns.Now()
+	if Release(now) then return end
+	local function Open(lane)
+		return now >= lane.waitUntil
+	end
 	for _ = 1, n or 1 do
-		if not PumpOnce(true) then return end
+		local job = Next(Open)
+		if not job or not job.prio then return end
+		-- Отказ ставит на паузу только полосу этого задания: следующий кусок — из другой.
+		SendPart(job)
 	end
 end
 
@@ -392,7 +485,12 @@ ns.Activity.Probe(function()
 	local n, L = #queue, ns.L
 	if n == 0 then return nil end
 	if Comm.InLockdown() then return { kind = "block", text = L.ACT_LOCKDOWN, detail = L.ACT_LOCKDOWN_TIP:format(n) } end
-	if ns.Now() < waitUntil then return { kind = "wait", text = L.ACT_THROTTLED, detail = L.ACT_THROTTLED_TIP:format(n) } end
+	-- Сервер просит подождать полосу, в которой есть сообщения; их и называет подсказка.
+	local now, held = ns.Now(), 0
+	for _, job in ipairs(queue) do
+		if now < lanes[job.dist].waitUntil then held = held + 1 end
+	end
+	if held > 0 then return { kind = "wait", text = L.ACT_THROTTLED, detail = L.ACT_THROTTLED_TIP:format(held) } end
 	-- Одно-два сообщения уходят за пару секунд, отдельной строки они не стоят.
 	if n >= 3 then return { kind = "work", text = L.ACT_SENDING:format(n) } end
 end)

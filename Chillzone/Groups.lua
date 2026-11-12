@@ -40,7 +40,9 @@ Groups.CAPS = { 5, 10, 20, 25, 40 }
 
 local board = {} -- [ключ автора] = объявление с доски
 local closed = {} -- [ключ автора] = { at, seq } снятого объявления: старый пакет его не вернёт
-local applied = {} -- [ключ автора] = моя заявка: { id, at, state = "sent" | "invited" | "declined" }
+-- [ключ автора] = моя заявка: { id, at, state = "sent" | "invited" | "declined", sending }; sending —
+-- GA ещё в очереди отправки, сервер её пока не принял.
+local applied = {}
 local lastApply = {} -- [ключ автора] = когда я просился к нему
 local lastHeard = {} -- [ключ просящего] = когда он просился ко мне
 
@@ -258,7 +260,8 @@ end
 ns.Comm.On("G1", Groups.Receive)
 
 -- Объявления для вкладки: группы и игроки, новые сверху. kind — только этот вид мест.
--- У записи: applied — состояние моей заявки, short — мой уровень ниже нужного.
+-- У записи: applied — состояние моей заявки, sending — заявка ещё ждёт отправки,
+-- short — мой уровень ниже нужного.
 function Groups.List(kind)
 	local groups, players = {}, {}
 	local _, level = Me()
@@ -266,6 +269,7 @@ function Groups.List(kind)
 		if not kind or e.kind == kind then
 			local a = applied[key]
 			e.applied = a and a.id == e.id and a.state or nil
+			e.sending = a and a.id == e.id and a.sending or nil
 			e.short = e.min > 0 and level < e.min
 			local list = e.mode == "G" and groups or players
 			list[#list + 1] = e
@@ -546,15 +550,29 @@ function Groups.Apply(key, roles, note)
 	if not AnyRole(roles) then return false, "roles" end
 	local class, level = Me()
 	if e.min > 0 and level < e.min then return false, "level" end
-	local entry = { id = e.id, at = now, state = "sent", roles = roles }
+	-- «Заявка отправлена» — только когда сервер принял GA; до того она «отправляется».
+	local entry = { id = e.id, at = now, state = "sent", roles = roles, sending = true }
 	local name = e.name
 	ns.Security.Introduce(name) -- автору не придётся спрашивать сертификат отдельно
 	local sent = ns.Comm.Send("WHISPER", Codec.EncodeGroupApply(e.id, cert.fp, guild, class, level, roles, note), {
 		target = name, prio = true, key = "ga:" .. key,
-		done = function(ok)
-			if ok or applied[key] ~= entry then return end
+		done = function(ok, why)
+			if applied[key] ~= entry then return end
+			if ok then
+				entry.sending = nil
+				ns.Fire("GROUPS")
+				return
+			end
 			applied[key] = nil
-			ns.Print(L.GROUPS_APPLY_FAILED, name)
+			if why == "offline" then
+				ns.Print(L.GROUPS_APPLY_FAILED, name)
+			else
+				-- Очередь не отправила заявку (простой, переполнение, отказ сервера): до автора
+				-- ничего не дошло, проситься снова можно сразу.
+				lastApply[key] = nil
+				ns.Log("группы: заявка к %s не ушла: %s", name, tostring(why))
+				ns.Print(L.GROUPS_APPLY_NOT_SENT, name)
+			end
 			ns.Fire("GROUPS")
 		end,
 	})
