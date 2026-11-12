@@ -57,6 +57,13 @@ local function Mute(cl)
 	cl.ns.Comm.On("Q1", function() end)
 end
 
+-- Отметки повтора (RELAY_DEDUPE) живут только в памяти: после входа в игру их нет. Forget стирает
+-- одни отчёты, и без ожидания клиент отбросил бы как повтор тот же пакет, если получил его недавно.
+-- Ждать можно, только когда новых отчётов не будет: остальные гильдии вышли.
+local function Settle(w, cl)
+	w:Run(cl.ns.Config.RELAY_DEDUPE + 1)
+end
+
 -- Клиент забывает переписи других гильдий.
 local function Forget(cl)
 	for gk, row in pairs(cl.ns.store.guilds) do
@@ -174,6 +181,7 @@ T.test("q1: при одинаковом кэше у десятков клиен�
 	Mute(reporter)
 	-- Остальные гильдии выходят: новых отчётов нет, считаются только ответы на Q1.
 	for _, id in ipairs({ "B", "V", "G" }) do c[id]:Logout() end
+	Settle(w, member)
 	local wires, holders = {}, {}
 	for _, guild in ipairs({ "Чиллзон Север", "Орден Чиллзона" }) do
 		wires[guild], holders[guild] = member.ns.Data.Row(guild).signed, 0
@@ -213,6 +221,7 @@ T.test("q1: подделка под показанный отчёт не глу�
 	local guild = c.G.guild
 	-- Остальные гильдии выходят: отчёт Ордена не обновится за время теста.
 	for _, id in ipairs({ "B", "V", "G" }) do c[id]:Logout() end
+	Settle(w, asker)
 	local genuine = helper.ns.Data.Row(guild).signed
 	T.eq(helper.ns.Census.HelperSlot(Key(helper, asker:Name())), 1, "офицер — первый помощник")
 	local function Show(wire)
@@ -275,6 +284,7 @@ local function LegacyNetwork()
 	-- Север выходит: новых отчётов нет, считаются только ответы на Q1.
 	c.v:Logout()
 	c.b:Logout()
+	Settle(w, c.n)
 	T.ok(c.k.ns.Census.IsReporter(), "репортёр главной гильдии — глава на 0.9")
 	for _, id in ipairs({ "m", "o", "n" }) do
 		local row = c[id].ns.Data.Row(c.v.guild)
