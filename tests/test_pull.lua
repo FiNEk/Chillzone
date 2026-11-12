@@ -159,7 +159,10 @@ T.test("pull: формат RQ и RA, порог выше интервалов о
 	T.eq(w2, wire)
 	T.eq(Codec.DecodePullAnswer("RA~Орден~S1~fp~1~2~sig~M1~L~Орден~1~WA~привет"), nil, "внутри только отчёт")
 	T.eq(Codec.DecodePullAnswer("RA~Орден~R1~Орден~1"), nil, "отчёт без подписи не принимается")
-	T.ok(C.PULL_AFTER > C.REPORT_IDLE and C.PULL_AFTER > C.REPORT_EVERY, "живой репортёр отчитывается раньше порога")
+	T.ok(C.PULL_AFTER > C.REPORT_IDLE + C.SCAN_EVERY and C.PULL_AFTER > C.REPORT_EVERY,
+		"живой репортёр отчитывается раньше порога, даже по ростеру минутной давности")
+	T.ok(C.PULL_AFTER + C.PULL_TICK + C.PULL_TRIES * C.PULL_WAIT < C.FRESH,
+		"раунд запросов успевает, пока отчёт ещё свежий")
 	T.ok(C.PULL_WAIT < C.PULL_RETRY and C.PULL_RETRY <= C.PULL_RETRY_MAX, "паузы между раундами длиннее ожидания")
 end)
 
