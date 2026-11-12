@@ -256,32 +256,182 @@ T.test("pull: репортёр получает ответы — помощни�
 	NoErrors(c)
 end)
 
-T.test("pull: автор отчёта больше не репортёр — он не подписывает отчёт ради ответа", function()
-	local w, c = Build({ order2 = true })
+-- Сколько раз клиент cl отдал реле свой отчёт (Relay.Out с R1 внутри).
+local function WatchRelayOut(cl)
+	local n = { count = 0 }
+	local out = cl.ns.Relay.Out
+	cl.ns.Relay.Out = function(kind, wire, ...)
+		if type(wire) == "string" and wire:find("R1~", 1, true) then n.count = n.count + 1 end
+		return out(kind, wire, ...)
+	end
+	return n
+end
+
+-- Сколько отчётов своей гильдии клиент cl отдал на подпись; raw — последний из них.
+local function WatchSeals(cl)
+	local n = { count = 0 }
+	local seal = cl.ns.Security.Seal
+	cl.ns.Security.Seal = function(raw, ...)
+		if type(raw) == "string" and raw:find("R1~", 1, true) == 1 then n.count, n.raw = n.count + 1, raw end
+		return seal(raw, ...)
+	end
+	return n
+end
+
+-- Запрос RQ от asker к target о гильдии target; st — время отчёта у asker (по умолчанию нет).
+local function AskFor(w, asker, target, st)
+	local fp = asker.ns.Security.MyCertificate().fp
+	w:Deliver(asker, "WHISPER", asker.ns.PREFIX, asker.ns.Codec.EncodePullQuery(target.guild, fp, st or 0), target:Name())
+end
+
+T.test("pull: автор отчёта больше не репортёр — отвечает отчётом, подписанным заново по своему ростеру", function()
+	local w, c = Build()
 	SilenceRelays(c)
-	local guild = c.G.guild
-	-- Ян делится зонами, Глеб перестаёт: репортёр Ордена теперь Ян.
-	c.G.ns.char.shareZones = false
-	c.G.ns.Census.SendHello()
-	c.Y.ns.char.shareZones = true
-	c.Y.ns.Census.SendHello()
-	T.ok(Until(w, function() return c.Y.ns.Census.IsReporter() and not c.G.ns.Census.IsReporter() end, 30), "репортёр Ордена теперь Ян")
-	local gWire = c.G.ns.Census.lastRaw
-	-- Север знает последний отчёт Глеба: новее у Глеба ничего нет.
-	Give(c.V, gWire, c.G)
-	Give(c.B, gWire, c.G)
+	NoMainPull(c)
+	local G = c.G
+	local guild = G.guild
+	-- В Орден входит офицер Аким: по ключу он раньше Глеба и становится репортёром.
+	c.Z = w:Client({ first = "Аким", surname = "Алый", guild = guild, rank = 1, class = "ROGUE", config = { CHANNEL_CHAT = false } })
+	T.ok(Until(w, function() return c.Z.ns.Census.IsReporter() and not G.ns.Census.IsReporter() end, 600), "репортёр Ордена теперь Аким")
+	local gWire = G.ns.Census.lastRaw
+	-- Север знает последний отчёт Глеба: нового отчёта репортёра у Глеба нет.
+	Give(c.V, gWire, G)
+	Give(c.B, gWire, G)
 	local old = SignedReport(c.V, gWire).st
 	T.eq(c.V.ns.Data.Row(guild).st, old, "у Севера последний отчёт Глеба")
+	local broadcast, relayed, seals = WatchOwnBroadcast(G), WatchRelayOut(G), WatchSeals(G)
 	local from = #w.log
 	T.ok(Until(w, function() return Has(c.B, guild, old + 1) end, 1500), "Север получил новый отчёт Ордена")
-	T.eq(c.G.ns.Census.lastRaw, gWire, "Глеб не подписывал отчёт ради ответа")
-	T.eq(#Whispers(w, from, "RA", c.G:Name(), guild), 0, "Глеб промолчал")
 	local asked = Whispers(w, from, "RQ", c.V:Name(), guild)
-	T.eq(asked[1].target, c.G:Name(), "сначала спросили автора последнего отчёта")
-	T.eq(asked[2] and asked[2].target, c.Y:Name(), "потом офицера из того же отчёта")
-	T.ok(asked[2].t - asked[1].t >= c.V.ns.Config.PULL_WAIT, "после ожидания ответа")
-	T.ok(Logged(c.V, "получен напрямую от " .. c.Y:Name()) >= 1, "ответил новый репортёр")
-	T.ok(c.V.ns.Util.SameName(c.B.ns.Data.Row(guild).origin, c.Y:Name()), "у Бориса отчёт Яна")
+	T.eq(#asked, 1, "один запрос")
+	T.eq(asked[1].target, G:Name(), "автору последнего отчёта")
+	T.ok(Logged(c.V, "получен напрямую от " .. G:Name()) >= 1, "ответил Глеб")
+	T.eq(seals.count, 1, "Глеб подписал отчёт ради ответа")
+	T.eq(G.ns.Census.lastRaw, gWire, "свой последний отчёт репортёра Глеб не трогал")
+	local row = c.B.ns.Data.Row(guild)
+	T.ok(c.B.ns.Util.SameName(row.origin, G:Name()), "у Бориса отчёт Глеба")
+	local r = SignedReport(c.B, row.signed)
+	T.eq(r.version, G.ns.VERSION, "с версией ответившего")
+	T.eq(r.users, G.ns.Census.Users(), "и числом согильдийцев с аддоном по его приветам")
+	T.ok(r.users >= 2, "Глеб слышал Акима: " .. r.users)
+	T.eq(relayed.count, 0, "через реле этот отчёт не уходил")
+	T.eq(broadcast.count, 0, "и своей гильдии тоже")
+	NoErrors(c)
+end)
+
+T.test("pull: запросы к репортёру теряются — отвечает офицер, и подписи гильдии сходятся", function()
+	local w, c = Build({ order2 = true })
+	SilenceRelays(c)
+	NoMainPull(c)
+	local G, Y, V = c.G, c.Y, c.V
+	local guild = G.guild
+	-- Запросы к Глебу теряются по дороге: он остаётся репортёром, но не отвечает.
+	local deliver = w.Deliver
+	w.Deliver = function(self, from, dist, prefix, msg, target, logged)
+		if target == G:Name() and dist == "WHISPER" and type(msg) == "string" and msg:find("RQ~", 1, true) then
+			self.log[#self.log + 1] = { t = self.now, from = from:Name(), dist = dist, msg = msg, target = target }
+			return 0
+		end
+		return deliver(self, from, dist, prefix, msg, target, logged)
+	end
+	local broadcast, relayed = WatchOwnBroadcast(Y), WatchRelayOut(Y)
+	local old = V.ns.Data.Row(guild).st
+	local from = #w.log
+	T.ok(Until(w, function() return Has(c.B, guild, old + 1) end, 1500), "Север получил новый отчёт Ордена")
+	T.ok(G.ns.Census.IsReporter() and not Y.ns.Census.IsReporter(), "репортёр Ордена по-прежнему Глеб")
+	local asked = Whispers(w, from, "RQ", V:Name(), guild)
+	T.eq(asked[1].target, G:Name(), "сначала автору отчёта")
+	T.eq(asked[2] and asked[2].target, Y:Name(), "потом офицеру")
+	T.ok(Logged(V, "получен напрямую от " .. Y:Name()) >= 1, "ответил Ян")
+	T.eq(Y.ns.Census.lastRaw, nil, "отчёта репортёра у Яна нет")
+	T.eq(relayed.count, 0, "через реле Ян ничего не отдавал")
+	T.eq(broadcast.count, 0, "и своей гильдии тоже")
+	local row = V.ns.Data.Row(guild)
+	T.ok(V.ns.Util.SameName(row.origin, Y:Name()), "у Веры отчёт Яна")
+	local yst = row.st
+	-- Следующий отчёт репортёра по тому же ростеру не противоречит отчёту Яна.
+	local fresh, freshSt = UnsentReport(w, G)
+	T.ok(freshSt > yst, "отчёт Глеба новее")
+	Give(V, fresh, G)
+	row = V.ns.Data.Row(guild)
+	T.eq(row.st, freshSt, "Вера приняла отчёт Глеба")
+	T.eq(row.conflict, nil, "состав главы и офицеров у Глеба и Яна одинаков")
+	NoErrors(c)
+end)
+
+T.test("pull: отчёт, подписанный ради ответа, отдаётся повторно, а не подписывается на каждый запрос", function()
+	local w, c = Build({ order2 = true, extra = 4 })
+	local Y = c.Y
+	local C = Y.ns.Config
+	local broadcast, relayed, seals = WatchOwnBroadcast(Y), WatchRelayOut(Y), WatchSeals(Y)
+	T.ok(not Y.ns.Census.IsReporter() and Y.ns.Census.lastRaw == nil, "Ян не репортёр и отчётов не подписывал")
+	local from = #w.log
+	AskFor(w, c.R1, Y)
+	AskFor(w, c.R2, Y)
+	w:Run(30)
+	T.eq(#Whispers(w, from, "RA", Y:Name()), 2, "ответ обоим")
+	T.eq(seals.count, 1, "одна подпись на два запроса")
+	local st = Y.ns.Codec.DecodeReport(seals.raw).st
+	-- Ростер Яна обновился, но у спросившего уже есть его ответ: ради чуть более свежего ростера
+	-- Ян заново не подписывает.
+	w:Run(2 * C.SCAN_EVERY)
+	T.ok(Y.ns.Roster.report.st > st, "ростер Яна новее ответа")
+	from = #w.log
+	AskFor(w, c.R3, Y, st)
+	w:Run(10)
+	T.eq(#Whispers(w, from, "RA", Y:Name()), 0, "у спросившего уже есть этот отчёт — ответа нет")
+	T.eq(seals.count, 1, "и новой подписи тоже")
+	w:Run(C.PULL_ANSWER_KEEP - 2 * C.SCAN_EVERY - 60)
+	AskFor(w, c.R4, Y)
+	w:Run(10)
+	T.eq(#Whispers(w, from, "RA", Y:Name()), 1, "новый спрашивающий получил ответ")
+	T.eq(seals.count, 1, "пока ответ не устарел, он отдаётся без новой подписи")
+	w:Run(C.PULL_ANSWER_KEEP)
+	from = #w.log
+	AskFor(w, c.R1, Y)
+	w:Run(30)
+	T.eq(#Whispers(w, from, "RA", Y:Name()), 1, "позже снова ответ")
+	T.eq(seals.count, 2, "и новая подпись")
+	T.eq(Y.ns.Census.lastRaw, nil, "отчёт репортёра у Яна так и не появился")
+	T.eq(relayed.count, 0, "через реле ничего не уходило")
+	T.eq(broadcast.count, 0, "своей гильдии тоже")
+	NoErrors(c)
+end)
+
+T.test("pull: подпись не удалась или игрок только что вошёл — он молчит", function()
+	local w, c = Build({ order2 = true, extra = 4 })
+	local Y = c.Y
+	local seal = Y.ns.Security.Seal
+	-- Очередь подписи занята.
+	Y.ns.Security.Seal = function() return false, "очередь занята" end
+	local from = #w.log
+	AskFor(w, c.R1, Y)
+	w:Run(30)
+	T.eq(#Whispers(w, from, "RA", Y:Name()), 0, "без подписи нет ответа")
+	-- Подпись взялась, но не удалась.
+	Y.ns.Security.Seal = function(_, done)
+		done(nil, "ошибка")
+		return true
+	end
+	AskFor(w, c.R2, Y)
+	w:Run(30)
+	T.eq(#Whispers(w, from, "RA", Y:Name()), 0, "неудачная подпись — тоже")
+	T.ok(Logged(Y, "отчёт для ответа напрямую не подписан") >= 2, "обе неудачи в журнале")
+	Y.ns.Security.Seal = seal
+	-- Только что вошедший офицер: ростер свежий, сертификат есть, но приветы он слышит недолго.
+	c.Z = w:Client({ first = "Зоя", surname = "Зоркая", guild = Y.guild, rank = 1, class = "PRIEST", config = { CHANNEL_CHAT = false } })
+	local Z = c.Z
+	T.ok(Until(w, function() return Z.ns.Roster.Fresh() and Z.ns.Security.MyCertificate() ~= nil end, 120), "у Зои ростер и сертификат")
+	T.no(Z.ns.Census.Settled(), "Зоя слушает гильдию меньше HELPER_SETTLE")
+	from = #w.log
+	AskFor(w, c.R3, Z)
+	w:Run(30)
+	T.eq(#Whispers(w, from, "RA", Z:Name()), 0, "одиночка без приветов не отвечает")
+	T.ok(Until(w, function() return Z.ns.Census.Settled() end, Z.ns.Config.HELPER_SETTLE), "Зоя дослушала приветы")
+	from = #w.log
+	AskFor(w, c.R4, Z)
+	w:Run(30)
+	T.eq(#Whispers(w, from, "RA", Z:Name()), 1, "после этого отвечает")
 	NoErrors(c)
 end)
 
@@ -518,6 +668,40 @@ T.test("pull: клиент 0.9 запросы не знает — молчит �
 	local asked = #Whispers(w, from, "RQ", c.o:Name(), guild)
 	T.ok(asked >= 3 and asked <= 5, "за два часа запросов: " .. asked)
 	T.eq(#Whispers(w, from, "RQ", c.n:Name()), 0, "второй новый клиент не спрашивал")
+	for _, cl in pairs(c) do
+		T.eq(#cl.ns.db.errors, 0, cl:Name() .. ": ошибки " .. table.concat(cl.ns.db.errors, " | "))
+		T.eq(#cl:Leaks(), 0, cl:Name() .. ": глобалы")
+	end
+end)
+
+T.test("pull: репортёр гильдии на 0.9 — отвечает обновлённый офицер, подписав отчёт заново", function()
+	math.randomseed(tonumber(os.getenv("CZ_SEED") or "") or 37)
+	local w = Wow.World()
+	w.version = Wow.HELPER_VERSION
+	w:Guild("Чиллзон")
+	w:Guild("Орден Чиллзона")
+	local c = {}
+	c.k = w:Client({ first = "Король", surname = "Первый", guild = "Чиллзон", rank = 0, legacy = true })
+	c.o = w:Client({ first = "Офицер", surname = "Главный", guild = "Чиллзон", rank = 1 })
+	c.g = w:Client({ first = "Глеб", surname = "Гордый", guild = "Орден Чиллзона", rank = 0, legacy = true })
+	c.y = w:Client({ first = "Ян", surname = "Ясный", guild = "Орден Чиллзона", rank = 1 })
+	w:Run(30)
+	w:Init(c.k, c.g)
+	w:Pair(c.g, c.k)
+	w:Run(400)
+	T.ok(c.g.ns.Census.IsReporter() and not c.y.ns.Census.IsReporter(), "репортёр Ордена — глава на 0.9")
+	local guild = c.g.guild
+	local row = c.o.ns.Data.Row(guild)
+	T.ok(row and row.signed, "офицер главной гильдии знает отчёт Ордена")
+	local old = row.st
+	SilenceRelays(c)
+	local from = #w.log
+	T.ok(Until(w, function() return Has(c.o, guild, old + 1) end, 1800), "офицер получил новый отчёт Ордена")
+	local asked = Whispers(w, from, "RQ", c.o:Name(), guild)
+	T.eq(asked[1].target, c.g:Name(), "сначала автору на 0.9")
+	T.eq(asked[2] and asked[2].target, c.y:Name(), "потом обновлённому офицеру")
+	T.ok(Logged(c.o, "получен напрямую от " .. c.y:Name()) >= 1, "ответил Ян")
+	T.eq(c.y.ns.Census.lastRaw, nil, "отчёта репортёра у Яна нет")
 	for _, cl in pairs(c) do
 		T.eq(#cl.ns.db.errors, 0, cl:Name() .. ": ошибки " .. table.concat(cl.ns.db.errors, " | "))
 		T.eq(#cl:Leaks(), 0, cl:Name() .. ": глобалы")

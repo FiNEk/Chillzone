@@ -194,6 +194,11 @@ local function Helps(version)
 	return U.VersionNewer(version, C.LAST_WITHOUT_HELPERS)
 end
 
+-- Слушаю приветы своей гильдии дольше HELPER_SETTLE: число согильдийцев с аддоном уже известно.
+function Census.Settled()
+	return Settled(listenSince, ns.Now())
+end
+
 function Census.Helpers(except)
 	if not ns.myKey then return {} end
 	local now = ns.Now()

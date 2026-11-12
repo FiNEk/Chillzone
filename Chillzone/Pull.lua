@@ -4,7 +4,7 @@
 -- которой чужой отчёт старше PULL_AFTER (дольше REPORT_IDLE: живой репортёр за это время
 -- отчитался бы), шепчет запрос RQ участнику той гильдии: сначала автору последнего отчёта (её
 -- репортёру тогда), затем случайным из главы, офицеров и связных, которые по тому отчёту были в
--- игре. Ответ RA — последний отчёт, подписанный самим ответившим. Он проверяется как отчёт от
+-- игре. Ответ RA — отчёт его гильдии, подписанный самим ответившим. Он проверяется как отчёт от
 -- реле и уходит гильдии спросившего (RG), как отчёт, пришедший репортёру по аренде.
 --
 -- Спрашивает репортёр гильдии. Узнать, спрашивает ли он и отвечают ли ему, остальные не могут:
@@ -12,11 +12,13 @@
 -- ответа от своих адресатов. Поэтому, если отчёт так и не обновился, на PULL_HELPER_DELAY позже
 -- спрашивает и первый помощник (Census.Helpers), какой бы версии ни был репортёр.
 --
--- Отвечающий не подписывает отчёт ради ответа: свежая подпись рядового получила бы новое время и
--- вытеснила бы у всех более полный отчёт репортёра (зоны идут только с согласия репортёра, число
--- клиентов с аддоном он знает по приветам). Поэтому не репортёр отвечает отчётом, который сам
--- подписал, пока был репортёром (Census.lastRaw, до перезагрузки), и только если он новее, чем у
--- спросившего. Иначе молчит, и спросивший переходит к следующему адресату.
+-- Отвечает любой обновлённый участник гильдии. Репортёр (или бывший, до перезагрузки) отдаёт свой
+-- последний отчёт (Census.lastRaw), пока тот не устарел. Иначе отвечающий подписывает отчёт своей
+-- гильдии по своему ростеру и отдаёт его повторно PULL_ANSWER_KEEP. Такой отчёт не уходит ни через
+-- реле, ни своей гильдии и не трогает отчёт репортёра. Одиночка не отвечает: подпись только при
+-- свежем ростере и после HELPER_SETTLE приветов, иначе число согильдийцев с аддоном было бы
+-- занижено. У спросившего этот отчёт новее и вытесняет прежний; отчёт репортёра с меньшим
+-- временем, пришедший позже, будет отклонён как «старее» до его следующего отчёта.
 local ADDON, ns = ...
 
 local U = ns.Util
@@ -177,13 +179,84 @@ end)
 ---------------------------------------------------------------------------
 -- Отвечающий
 ---------------------------------------------------------------------------
+local answer -- { wire, st, at }: отчёт, подписанный ради ответа; раздаётся повторно PULL_ANSWER_KEEP
+local sealing -- { at, waiters, epoch }: такой отчёт подписывается, waiters — кому его отдать
+local epoch = 0 -- меняется со сменой гильдии: прежние подписи никому не отдаются
+local SEAL_WAIT = 30 -- подпись дольше этого считается потерянной
+
 local function ServeRoom(now)
 	while serveTimes[1] and now - serveTimes[1] > 60 do table.remove(serveTimes, 1) end
 	return #serveTimes < C.PULL_SERVE_PER_MIN
 end
 
--- Отвечаю только участнику другой гильдии объединения и только своим последним подписанным
--- отчётом своей гильдии, если он новее, чем у спросившего. Гильдии ничего не рассылаю.
+-- Готовый пакет для ответа: мой последний отчёт репортёра, если он ещё не устарел, иначе
+-- подписанный недавно ради ответа. Только своей гильдии и только новее, чем у спросившего.
+local function Ready(own, st)
+	local server = ns.ServerTime()
+	local r = ReportOf(ns.Census.lastRaw)
+	if r and U.GuildKey(r.guild) == U.GuildKey(own) and (r.st or 0) > st and server - (r.st or 0) < C.PULL_AFTER then
+		return ns.Census.lastRaw
+	end
+	if answer and ns.Now() - answer.at < C.PULL_ANSWER_KEEP and answer.st > st then return answer.wire end
+	return nil
+end
+
+-- Могу ли подписать свежий отчёт своей гильдии: ростер свежий и новее, чем у спросившего, а приветы
+-- слушаю дольше HELPER_SETTLE, иначе число согильдийцев с аддоном было бы занижено. Одиночка,
+-- только что вошедший в игру, не отвечает. Подпись не чаще раза в PULL_ANSWER_KEEP: у кого уже
+-- есть недавний ответ, тому новой подписи ради чуть более свежего ростера не будет.
+local function CanSeal(st)
+	if answer and ns.Now() - answer.at < C.PULL_ANSWER_KEEP then return false end
+	local r = ns.Roster.report
+	return r ~= nil and (r.st or 0) > st and ns.Roster.Fresh() and ns.Census.Settled()
+		and ns.Security.MyCertificate() ~= nil
+end
+
+local function Answer(sender, own, wire)
+	if not ns.IsMember() then return end
+	ns.Security.IntroduceWire(sender, wire)
+	ns.Comm.Send("WHISPER", Codec.EncodePullAnswer(own, wire), { target = sender, key = "ra:" .. U.Key(sender) })
+	Pull.stats.served = Pull.stats.served + 1
+	ns.Log("отчёт своей гильдии отдан напрямую: %s", U.Display(sender))
+end
+
+-- Подписать отчёт своей гильдии по своему ростеру и отдать его sender. Этот отчёт не уходит ни
+-- через реле, ни своей гильдии и не трогает отчёт репортёра (Census.lastRaw и сравнение в
+-- MaybeReport): он хранится здесь. Очередь подписи занята или подпись не удалась — молчу, и
+-- спросивший перейдёт к следующему адресату.
+local function Seal(sender, own, st)
+	local waiter = { sender = sender, st = st }
+	if sealing and ns.Now() - sealing.at < SEAL_WAIT then
+		sealing.waiters[#sealing.waiters + 1] = waiter
+		return
+	end
+	local r = ns.Roster.report
+	local copy = Codec.Shareable(r, ns.char.shareZones)
+	copy.users = ns.Census.Users()
+	copy.version = ns.VERSION
+	local job = { at = ns.Now(), waiters = { waiter }, epoch = epoch }
+	sealing = job
+	local queued, why = ns.Security.Seal(Codec.EncodeReport(copy), function(wire, failed)
+		if sealing == job then sealing = nil end
+		if job.epoch ~= epoch then return end
+		if not wire then
+			ns.Log("отчёт для ответа напрямую не подписан (%s)", tostring(failed))
+			return
+		end
+		answer = { wire = wire, st = copy.st or 0, at = ns.Now() }
+		for _, w in ipairs(job.waiters) do
+			if answer.st > w.st then Answer(w.sender, own, wire) end
+		end
+	end)
+	if not queued then
+		if sealing == job then sealing = nil end
+		ns.Log("отчёт для ответа напрямую не подписан (%s)", tostring(why))
+	end
+end
+
+-- Отвечаю только участнику другой гильдии объединения и только отчётом своей гильдии новее, чем у
+-- спросившего: последним своим отчётом репортёра, отчётом, подписанным недавно ради ответа, или
+-- свежим, подписанным сейчас по своему ростеру. Гильдии ничего не рассылаю.
 ns.Comm.On("RQ", function(msg, sender, dist)
 	if dist ~= "WHISPER" or not ns.IsMember() then return end
 	local guild, fp, st = Codec.DecodePullQuery(msg)
@@ -191,21 +264,22 @@ ns.Comm.On("RQ", function(msg, sender, dist)
 	if not guild or not own or U.GuildKey(guild) ~= U.GuildKey(own) then return end
 	-- В блокировке ответ застрял бы в очереди: пусть спросивший перейдёт к другому адресату.
 	if ns.Comm.InLockdown() or not ns.Roster.Fresh() then return end
-	local wire = ns.Census.lastRaw
-	local r = ReportOf(wire)
-	if not r or U.GuildKey(r.guild) ~= U.GuildKey(own) or (r.st or 0) <= st then return end
+	if not Ready(own, st) and not CanSeal(st) then return end
 	local key, now = U.Key(sender), ns.Now()
 	if not key or (served[key] and now - served[key] < C.PULL_SERVE_GAP) or not ServeRoom(now) then return end
-	-- До проверки сертификата: иначе поток выдуманных отпечатков вызвал бы поток KQ.
+	-- До проверки сертификата и подписи: иначе поток выдуманных отпечатков вызвал бы поток KQ.
 	served[key] = now
 	serveTimes[#serveTimes + 1] = now
+	local mine = epoch
 	ns.Security.Resolve(fp, sender, sender, function(certificate)
+		if mine ~= epoch or not ns.IsMember() then return end
 		if not U.IsMemberGuild(certificate.guild) or U.GuildKey(certificate.guild) == U.GuildKey(own) then return end
-		if ns.Census.lastRaw ~= wire or not ns.IsMember() then return end
-		ns.Security.IntroduceWire(sender, wire)
-		ns.Comm.Send("WHISPER", Codec.EncodePullAnswer(own, wire), { target = sender, key = "ra:" .. key })
-		Pull.stats.served = Pull.stats.served + 1
-		ns.Log("отчёт своей гильдии отдан напрямую: %s", U.Display(sender))
+		local wire = Ready(own, st)
+		if wire then
+			Answer(sender, own, wire)
+		elseif CanSeal(st) then
+			Seal(sender, own, st)
+		end
 	end)
 end)
 
@@ -237,6 +311,7 @@ ns.On("GUILD_CHANGED", function()
 	wipe(asks)
 	wipe(retry)
 	wipe(served)
+	answer, sealing, epoch = nil, nil, epoch + 1
 end)
 
 ns.Status(function()
