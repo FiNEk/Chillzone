@@ -274,8 +274,12 @@ ns.Comm.On("R1", function(msg, sender, dist, ctx)
 	ns.Update.Heard(U.Key(sender), r.version)
 	local ok, why = ns.Data.Take(r, msg, sender, nil, ctx)
 	if not ok and why ~= "повтор" then ns.Log("отчёт %s от %s не принят: %s", r.guild, U.Display(sender), tostring(why)) end
+	-- Обычная доставка идёт от репортёра и в журнал не пишется; эта строка показывает, что отчёт
+	-- пришёл в обход него.
+	if ok and ctx.side then ns.Log("отчёт %s принят от %s: он не репортёр гильдии", r.guild, U.Display(ctx.relay)) end
 	-- Перезашедшее реле присылает последний известный ему отчёт, а гильдии нужен только новый.
-	ctx.outdated = why == "старее"
+	-- taken — отчёт оказался новым для меня: реле делится таким со своей гильдией.
+	ctx.outdated, ctx.taken = why == "старее", ok or nil
 end)
 
 ---------------------------------------------------------------------------

@@ -1534,6 +1534,456 @@ T.test("relay: старый отчёт от реле не вытесняет н�
 	NoErrors(c)
 end)
 
+---------------------------------------------------------------------------
+-- Отчёт в обход репортёра: гильдия берёт отчёт новее сохранённого у любого согильдийца, а реле
+-- главной гильдии отдаёт чужой отчёт своей гильдии само.
+---------------------------------------------------------------------------
+
+-- Отчёт внутри подписанного пакета и всё, что стоит перед ним (отпечаток, время, подпись).
+local function SignedReport(cl, wire)
+	local head, clear = (wire or ""):match("^(S1~[^~]+~%d+~%d+~[^~]+~)(R1~.+)$")
+	return clear and cl.ns.Codec.DecodeReport(clear), head
+end
+
+-- Новый отчёт гильдии репортёра cl: подписан, но реле не достался. Возвращает пакет и время отчёта.
+local function UnsentReport(w, cl)
+	local relay = cl.ns.Relay
+	local out = relay.Out
+	relay.Out = function() return true end
+	w:Run(65)
+	cl.ns.Roster.Scan()
+	local st = cl.ns.Roster.report.st
+	cl.ns.Census.MaybeReport(true)
+	w:Run(5)
+	relay.Out = out
+	local wire = cl.ns.Census.lastRaw
+	local r = SignedReport(cl, wire)
+	T.ok(r and r.st == st, "новый отчёт подписан")
+	return wire, st
+end
+
+-- Главная гильдия из Build: репортёр, второй офицер и рядовая Мира.
+local function MainRoles(c)
+	local reporter = c.K.ns.Census.IsReporter() and c.K or c.A
+	T.ok(reporter.ns.Census.IsReporter(), "у главной гильдии есть репортёр")
+	T.no(c.M.ns.Census.IsReporter(), "рядовая не репортёр")
+	return reporter, reporter == c.K and c.A or c.K, c.M
+end
+
+-- Сколько раз cl открывал подписанный пакет, начинающийся с head.
+local function CountOpens(cl, head)
+	local count, open = { n = 0 }, cl.ns.Security.Open
+	cl.ns.Security.Open = function(wire, ...)
+		if type(wire) == "string" and wire:sub(1, #head) == head then count.n = count.n + 1 end
+		return open(wire, ...)
+	end
+	return count
+end
+
+local function Logged(cl, text)
+	local n = 0
+	for _, line in ipairs(cl.ns.db.log) do
+		if tostring(line):find(text, 1, true) then n = n + 1 end
+	end
+	return n
+end
+
+-- Клиент в игре, но шёпот аддона до него не доходит; в гильдии он слышит и пишет как обычно.
+local function DeafToWhispers(cl)
+	local fire = cl.Fire
+	cl.Fire = function(self, event, prefix, msg, dist, ...)
+		if (event == "CHAT_MSG_ADDON" or event == "CHAT_MSG_ADDON_LOGGED") and dist == "WHISPER" then return end
+		return fire(self, event, prefix, msg, dist, ...)
+	end
+end
+
+T.test("relay: отчёт новее сохранённого гильдия принимает и не от репортёра", function()
+	local w, c = Build()
+	local guild = c.G.guild
+	local reporter, officer, carrier = MainRoles(c)
+	local old = c.G.ns.Census.lastRaw
+	local wire, st = UnsentReport(w, c.G)
+	local readers = { reporter, officer }
+	local _, head = SignedReport(c.G, wire)
+	local _, oldHead = SignedReport(c.G, old)
+	local opens, oldOpens, untrusted = {}, {}, {}
+	for i, cl in ipairs(readers) do
+		T.ok(cl.ns.Data.Row(guild).st < st, cl:Name() .. ": нового отчёта ещё нет")
+		opens[i], oldOpens[i] = CountOpens(cl, head), CountOpens(cl, oldHead)
+		untrusted[i] = cl.ns.Relay.stats.untrusted
+	end
+	local function Share(raw)
+		carrier.ns.Comm.Send("GUILD", carrier.ns.Codec.EncodeRM("RG", "L", c.G:Name(), raw))
+		w:Run(20)
+	end
+	Share(wire)
+	for i, cl in ipairs(readers) do
+		T.eq(cl.ns.Data.Row(guild).st, st, cl:Name() .. ": отчёт принят от рядовой")
+		T.eq(opens[i].n, 1, cl:Name() .. ": подпись автора проверена")
+		T.eq(Logged(cl, "принят от " .. carrier:Name() .. ": он не репортёр гильдии"), 1, cl:Name() .. ": журнал называет, кто принёс отчёт")
+	end
+	-- Тот же отчёт ещё раз и прежний отчёт: дальше сравнения времени дело не идёт.
+	Share(wire)
+	Share(old)
+	for i, cl in ipairs(readers) do
+		T.eq(opens[i].n, 1, cl:Name() .. ": повтор не доходит до проверки подписи")
+		T.eq(oldOpens[i].n, 0, cl:Name() .. ": старый отчёт не доходит до проверки подписи")
+		T.eq(cl.ns.Data.Row(guild).st, st, cl:Name() .. ": отчёт остался новым")
+		T.eq(cl.ns.Relay.stats.untrusted, untrusted[i], cl:Name() .. ": повторы не считаются недоверенными")
+		T.eq(RejectedRG(cl, carrier:Name()), 0, cl:Name() .. ": в журнале нет отказов")
+	end
+	NoErrors(c)
+end)
+
+T.test("relay: подделки под новый отчёт не от репортёра упираются в лимит", function()
+	local w, c = Build()
+	local guild = c.G.guild
+	local _, reader, carrier = MainRoles(c)
+	local Codec, limit = reader.ns.Codec, reader.ns.Config.RG_SIDE_PER_MIN
+	local r, head = SignedReport(reader, reader.ns.Data.Row(guild).signed)
+	T.ok(r and r.leader == c.G:Name(), "настоящий отчёт Ордена известен")
+	local opens, untrusted = CountOpens(reader, head), reader.ns.Relay.stats.untrusted
+	r.leader = carrier:Name()
+	-- Время подделки — чуть впереди часов: плановый отчёт Ордена, пришедший по ходу теста, её не обгонит.
+	local function Forge(i)
+		r.st = reader.ns.ServerTime() + i
+		w:Deliver(carrier, "GUILD", reader.ns.PREFIX, Codec.EncodeRM("RG", "L", c.G:Name(), head .. Codec.EncodeReport(r)), nil, false)
+	end
+	for i = 1, limit + 5 do Forge(i) end
+	w:Run(5)
+	T.eq(opens.n, limit, "до проверки подписи дошло не больше лимита")
+	T.eq(reader.ns.Relay.stats.untrusted - untrusted, 5, "остальные отклонены без проверки")
+	T.eq(Logged(reader, "RG от " .. carrier:Name() .. " отклонён: слишком много отчётов не от репортёра"), 1, "в журнале один отказ на окно")
+	T.eq(reader.ns.Data.Row(guild).r.leader, c.G:Name(), "подделки не приняты")
+	w:Run(61)
+	Forge(limit + 6)
+	w:Run(5)
+	T.eq(opens.n, limit + 1, "через минуту лимит восстановлен")
+	T.eq(reader.ns.Data.Row(guild).r.leader, c.G:Name(), "подделка снова не принята")
+
+	-- Выдуманный отпечаток сертификата: такой пакет ждёт сертификат молча. Запрос KQ по GUILD
+	-- отправил бы каждый клиент гильдии на каждую подделку.
+	local asked, send = 0, reader.ns.Comm.Send
+	reader.ns.Comm.Send = function(dist, payload, ...)
+		if type(payload) == "string" and payload:sub(1, 3) == "KQ~" then asked = asked + 1 end
+		return send(dist, payload, ...)
+	end
+	local fp = head:match("^S1~([^~]+)~")
+	local unknown = "S1~" .. ("x"):rep(#fp) .. head:sub(#fp + 4)
+	local reached = CountOpens(reader, unknown)
+	w:Run(61)
+	r.st = reader.ns.ServerTime() + limit + 7
+	w:Deliver(carrier, "GUILD", reader.ns.PREFIX, Codec.EncodeRM("RG", "L", c.G:Name(), unknown .. Codec.EncodeReport(r)), nil, false)
+	w:Run(5)
+	T.eq(reached.n, 1, "пакет дошёл до ожидания сертификата")
+	T.eq(asked, 0, "сертификат автора у гильдии не запрашивается")
+	NoErrors(c)
+end)
+
+T.test("relay: отчёт, принятый от согильдийца, реле всё равно рассылает по арендам", function()
+	local w, c = Build()
+	local guild = c.G.guild
+	local _, relay, carrier = MainRoles(c)
+	local wire, st = UnsentReport(w, c.G)
+	T.ok(Lease(relay, "Чиллзон Север"), "Север зарегистрирован у реле")
+	carrier.ns.Comm.Send("GUILD", carrier.ns.Codec.EncodeRM("RG", "L", c.G:Name(), wire))
+	w:Run(20)
+	T.eq(relay.ns.Data.Row(guild).st, st, "реле приняло отчёт от рядовой")
+	T.ok(c.V.ns.Data.Row(guild).st < st, "Север отчёта ещё не видел")
+	c.G.ns.Comm.Send("WHISPER", c.G.ns.Codec.EncodeRL("L", wire), { target = relay:Name() })
+	-- Отчёт идёт кусками через три очереди: реле, репортёр Севера, его гильдия.
+	for _ = 1, 120 do
+		if c.V.ns.Data.Row(guild).st == st and c.B.ns.Data.Row(guild).st == st then break end
+		w:Run(1)
+	end
+	for _, cl in ipairs({ c.V, c.B }) do
+		T.eq(cl.ns.Data.Row(guild).st, st, cl:Name() .. ": отчёт дошёл по аренде")
+	end
+	NoErrors(c)
+end)
+
+T.test("relay: репортёр пересылает гильдии отчёт по аренде, даже если уже принял его от согильдийца", function()
+	local w, c = Build()
+	local guild = c.G.guild
+	local reporter, relay, carrier = MainRoles(c)
+	local wire, st = UnsentReport(w, c.G)
+	carrier.ns.Comm.Send("GUILD", carrier.ns.Codec.EncodeRM("RG", "L", c.G:Name(), wire))
+	w:Run(20)
+	T.eq(reporter.ns.Data.Row(guild).st, st, "репортёр принял отчёт от рядовой")
+	local sent, send = 0, reporter.ns.Comm.Send
+	reporter.ns.Comm.Send = function(dist, payload, ...)
+		if dist == "GUILD" and payload:sub(1, 5) == "RG~L~" and payload:find(wire, 1, true) then sent = sent + 1 end
+		return send(dist, payload, ...)
+	end
+	relay.ns.Comm.Send("WHISPER", relay.ns.Codec.EncodeRM("RM", "L", c.G:Name(), wire), { target = reporter:Name() })
+	w:Run(20)
+	T.eq(sent, 1, "клиенты до этой правки берут RG только от репортёра")
+	NoErrors(c)
+end)
+
+T.test("relay: репортёр не отдаёт гильдии второй раз отчёт, который она слышала от репортёра", function()
+	local w, c = Build()
+	local guild = c.G.guild
+	local reporter, relay, carrier = MainRoles(c)
+	-- carrier будто прежний репортёр, который ещё передаёт дела: его RG гильдия принимает, а реле
+	-- шлют пакет по аренде уже новому.
+	local mayForward, carrierKey = reporter.ns.Census.MayForward, Key(reporter, carrier:Name())
+	reporter.ns.Census.MayForward = function(key) return key == carrierKey or mayForward(key) end
+	local wire, st = UnsentReport(w, c.G)
+	carrier.ns.Comm.Send("GUILD", carrier.ns.Codec.EncodeRM("RG", "L", c.G:Name(), wire))
+	w:Run(20)
+	T.eq(reporter.ns.Data.Row(guild).st, st, "репортёр принял отчёт от прежнего репортёра")
+	T.eq(Logged(reporter, "принят от " .. carrier:Name()), 0, "отчёт принят как от репортёра")
+	local sent, send = 0, reporter.ns.Comm.Send
+	reporter.ns.Comm.Send = function(dist, payload, ...)
+		if dist == "GUILD" and payload:sub(1, 3) == "RG~" and payload:find(wire, 1, true) then sent = sent + 1 end
+		return send(dist, payload, ...)
+	end
+	relay.ns.Comm.Send("WHISPER", relay.ns.Codec.EncodeRM("RM", "L", c.G:Name(), wire), { target = reporter:Name() })
+	w:Run(20)
+	T.eq(sent, 0, "гильдия уже получила отчёт от репортёра")
+	NoErrors(c)
+end)
+
+T.test("relay: реле отдаёт чужой отчёт своей гильдии само, без аренды её репортёра", function()
+	local w, c = PartialNetwork({
+		root = { "Ярослав", "Старший", 0 }, O1 = { "Богдан", "Бравый", 1 },
+		O2 = { "Виктор", "Верный", 1 }, O3 = { "Глафира", "Гордая", 1 },
+		R1 = { "Адам", "Рядовой", 3 },
+	}, { "O1", "O2", "O3" })
+	local relay = c.root
+	T.no(relay.ns.Relay.InTop(), "реле автора вне общей тройки")
+	T.no(relay.ns.Census.IsReporter(), "реле автора не репортёр своей гильдии")
+	T.eq(Lease(relay, "Чиллзон"), nil, "репортёр главной гильдии у него не зарегистрирован")
+	-- Автор знает только это реле, а оно не может передать отчёт общей тройке.
+	local peer = { key = relay.ns.myKey, name = relay:Name() }
+	c.V.ns.Relay.Pick = function() return peer end
+	relay.ns.Relay.Pick = function() return nil end
+	w:Run(65)
+	c.V.ns.Roster.Scan()
+	local st = c.V.ns.Roster.report.st
+	c.V.ns.Census.MaybeReport(true)
+	w:Run(60)
+	for _, id in ipairs({ "O1", "O2", "O3", "R1" }) do
+		local row = c[id].ns.Data.Row(c.V.guild)
+		T.ok(row and row.st >= st, id .. ": отчёт пришёл от реле своей гильдии")
+		T.ok(Logged(c[id], "принят от " .. relay:Name() .. ": он не репортёр гильдии") >= 1, id .. ": журнал называет реле")
+	end
+	NoErrors(c)
+end)
+
+T.test("relay: репортёр главной гильдии не слышит шёпот — гильдия получает отчёты от реле", function()
+	local w, c = Build()
+	local reporter = MainRoles(c)
+	-- Читатель вне тройки реле: отчёт до неё доходит только через гильдию.
+	local reader = w:Client({ first = "Яна", surname = "Последняя", guild = "Чиллзон", rank = 3 })
+	w:Run(300)
+	T.ok(reader.ns.Security.MyCertificate(), "читатель получил сертификат")
+	T.no(reader.ns.Relay.InTop(), "читатель вне тройки реле")
+	DeafToWhispers(reporter)
+	w:Run(240)
+	T.ok(reporter.ns.Census.IsReporter(), "оглохший остаётся репортёром: в гильдии его слышно")
+	T.eq(reader.ns.Census.Reporter(), Key(reader, reporter:Name()), "читатель выбирает его же")
+	local author = c.V.ns.Census.IsReporter() and c.V or c.B
+	T.ok(author.ns.Census.IsReporter(), "у Севера есть репортёр")
+	author.ns.Roster.Scan()
+	local st = author.ns.Roster.report.st
+	author.ns.Census.MaybeReport(true)
+	local row
+	for _ = 1, 120 do
+		row = reader.ns.Data.Row(author.guild)
+		if row and row.st >= st then break end
+		w:Run(1)
+	end
+	T.ok(row and row.st >= st, "читатель получил свежий отчёт Севера мимо оглохшего репортёра")
+	NoErrors(c)
+	T.eq(#reader.ns.db.errors, 0, "читатель: ошибки " .. table.concat(reader.ns.db.errors, " | "))
+end)
+
+---------------------------------------------------------------------------
+-- Реле получает пакет и как читатель (RG, RM), и как реле (RL). Первое не должно отменять второе:
+-- аренды, которые есть только у этого реле, иначе пакета не получат.
+---------------------------------------------------------------------------
+
+-- Запасное реле — глава Ярослав (корень) с большим ключом, вне общей тройки офицеров. Юг
+-- зарегистрирован только у тройки. Зонами делится один reporter: он репортёр главной гильдии.
+local function SpareRelay(reporter)
+	local w, c = PartialNetwork({
+		root = { "Ярослав", "Старший", 0 }, O1 = { "Богдан", "Бравый", 1 },
+		O2 = { "Виктор", "Верный", 1 }, O3 = { "Глафира", "Гордая", 1 },
+	}, { "O1", "O2", "O3" })
+	for _, id in ipairs({ "root", "O1", "O2", "O3" }) do
+		if id ~= reporter then
+			c[id].ns.char.shareZones = false
+			c[id].ns.Census.SendHello()
+		end
+	end
+	ConnectSouth(w, c)
+	for _, id in ipairs({ "O1", "O2", "O3" }) do
+		c.root.ns.Security.Introduce(c.J:Name(), c[id].ns.Security.MyCertificate().raw, true)
+	end
+	w:Run(90)
+	c.J.ns.Relay.Register(); w:Run(20)
+	T.ok(c[reporter].ns.Census.IsReporter(), reporter .. ": репортёр главной гильдии")
+	local own = Lease(c[reporter], "Чиллзон")
+	T.ok(own and own.key == c[reporter].ns.myKey, reporter .. ": аренда своей гильдии у себя")
+	T.no(c.root.ns.Relay.InTop(), "запасное реле вне общей тройки")
+	for _, id in ipairs({ "O1", "O2", "O3" }) do T.ok(Lease(c[id], c.J.guild), id .. ": Юг зарегистрирован у тройки") end
+	c.root.ns.Relay.Reporters()[c.root.ns.Util.GuildKey(c.J.guild)] = nil
+	return w, c
+end
+
+-- Север знает только запасное реле. Его отчёт и строка должны дойти до Юга и Ордена, которые
+-- зарегистрированы только у тройки; строку каждый видит один раз. Строка офицерская (/cz2): она
+-- идёт только через реле, а /cz1 дошла бы и по каналу игры. before() — перед каждой отправкой.
+local function ThroughSpare(w, c, before)
+	local relay = c.root
+	-- Сколько раз каждый клиент отдал своей гильдии (RG) пакет, содержащий marker.
+	local marker, given = nil, {}
+	for id, cl in pairs(c) do
+		local send = cl.ns.Comm.Send
+		cl.ns.Comm.Send = function(dist, payload, ...)
+			if marker and dist == "GUILD" and type(payload) == "string" and payload:sub(1, 3) == "RG~"
+				and payload:find(marker, 1, true) then given[id] = (given[id] or 0) + 1 end
+			return send(dist, payload, ...)
+		end
+	end
+	local wire, st = UnsentReport(w, c.V)
+	before()
+	marker = wire
+	c.V.ns.Comm.Send("WHISPER", c.V.ns.Codec.EncodeRL("L", wire), { target = relay:Name() })
+	local function Has(cl)
+		local row = cl.ns.Data.Row(c.V.guild)
+		return row and row.st >= st
+	end
+	for _ = 1, 120 do
+		if Has(c.J) and Has(c.G) then break end
+		w:Run(1)
+	end
+	T.ok(Has(c.J), "Юг получил отчёт Севера через запасное реле")
+	T.ok(Has(c.G), "Орден получил отчёт Севера через запасное реле")
+	for id, n in pairs(given) do T.eq(n, 1, id .. ": отчёт отдан гильдии не больше одного раза") end
+	local peer = { key = relay.ns.myKey, name = relay:Name() }
+	c.V.ns.Relay.Pick = function() return peer end
+	before()
+	local text = "через запасное реле"
+	marker, given = text, {}
+	c.V:Slash("/cz2", text)
+	w:Run(35)
+	for name, cl in pairs(c) do
+		if name == "B" then
+			T.eq(cl:Saw(text), 0, "Борис не офицер и офицерскую строку не видит")
+		else
+			T.eq(cl:Saw(text), 1, name .. " видит строку один раз")
+		end
+	end
+	local byGuild = {}
+	for id, n in pairs(given) do byGuild[c[id].guild] = (byGuild[c[id].guild] or 0) + n end
+	for _, guild in ipairs({ "Чиллзон", "Орден Чиллзона", "Чиллзон Юг" }) do
+		T.eq(byGuild[guild], 1, guild .. ": строка отдана гильдии один раз")
+	end
+	T.eq(byGuild["Чиллзон Север"], nil, "своя гильдия автора получает строку напрямую")
+	NoErrors(c)
+end
+
+T.test("relay: реле тройки раздаёт пакет по арендам, хотя уже слышало его от репортёра своей гильдии", function()
+	-- Запасное реле само репортёр главной гильдии: отдаёт пакет ей (RG), потом пересылает реле
+	-- тройки (RL). Реле тройки слышит RG раньше, чем RL.
+	local w, c = SpareRelay("root")
+	ThroughSpare(w, c, function() end)
+end)
+
+T.test("relay: реле-репортёр раздаёт пакет по арендам, хотя уже получило его по своей аренде", function()
+	-- Репортёр главной гильдии — реле тройки Богдан. Он считал Глафиру недоступной и
+	-- зарегистрировался у запасного реле, поэтому оно шлёт ему пакет по аренде (RM), а затем
+	-- пересылает ему же (RL).
+	local w, c = SpareRelay("O1")
+	local x, relay = c.O1, c.root
+	local fp = x.ns.Security.MyCertificate().fp
+	local peer = { key = x.ns.myKey, name = x:Name() }
+	relay.ns.Relay.Pick = function() return peer end
+	ThroughSpare(w, c, function()
+		x.ns.Comm.Send("WHISPER", "RR~" .. x.ns.Codec.Clean(x.guild) .. "~" .. fp, { target = relay:Name(), prio = true })
+		w:Run(2)
+		local held = Lease(relay, "Чиллзон")
+		T.ok(held and held.key == x.ns.myKey, "у запасного реле аренда главной гильдии — Богдан")
+	end)
+end)
+
+-- Репортёр главной гильдии (реле с арендой своей гильдии) уже знает новый отчёт Ордена, а ему снова
+-- приходит прежний: по аренде от другого реле (ByLease) или на рассылку от автора (ToRelay).
+-- Счётчики: rg — сколько раз прежний отчёт ушёл гильдии, opened — сколько раз репортёр обработал
+-- его у себя.
+local function StaleReport()
+	local w, c = Build()
+	local reporter, relay = MainRoles(c)
+	local own = Lease(reporter, "Чиллзон")
+	T.ok(own and own.key == reporter.ns.myKey, "репортёр главной гильдии — реле с арендой своей гильдии")
+	local guild, dedupe = c.G.guild, reporter.ns.Config.RELAY_DEDUPE
+	local old = c.G.ns.Census.lastRaw
+	T.ok(old, "у Ордена уже есть отчёт")
+	-- Перезашедшее реле отдаёт отчёт позже, чем истекает защита от повторов.
+	w:Run(dedupe + 30)
+	local wire, st = UnsentReport(w, c.G)
+	c.G.ns.Comm.Send("WHISPER", c.G.ns.Codec.EncodeRL("L", wire), { target = reporter:Name() })
+	for _ = 1, 60 do
+		if reporter.ns.Data.Row(guild).st == st then break end
+		w:Run(1)
+	end
+	T.eq(reporter.ns.Data.Row(guild).st, st, "репортёр получил новый отчёт")
+	local s = { w = w, c = c, reporter = reporter, guild = guild, st = st, dedupe = dedupe, rg = 0, opened = 0 }
+	local send, inject = reporter.ns.Comm.Send, reporter.ns.Comm.Inject
+	reporter.ns.Comm.Send = function(dist, payload, ...)
+		if dist == "GUILD" and payload:sub(1, 3) == "RG~" and payload:find(old, 1, true) then s.rg = s.rg + 1 end
+		return send(dist, payload, ...)
+	end
+	reporter.ns.Comm.Inject = function(inner, origin, ctx)
+		if ctx and ctx.wire == old then s.opened = s.opened + 1 end
+		return inject(inner, origin, ctx)
+	end
+	function s.ByLease()
+		relay.ns.Comm.Send("WHISPER", relay.ns.Codec.EncodeRM("RM", "L", c.G:Name(), old), { target = reporter:Name() })
+		w:Run(15)
+	end
+	function s.ToRelay()
+		c.G.ns.Comm.Send("WHISPER", c.G.ns.Codec.EncodeRL("L", old), { target = reporter:Name() })
+		w:Run(15)
+	end
+	return s
+end
+
+T.test("relay: реле-репортёр не отдаёт гильдии устаревший отчёт ни по аренде, ни из рассылки", function()
+	local s = StaleReport()
+	s.ByLease(); s.ToRelay()
+	T.eq(s.rg, 0, "сначала по аренде: устаревший отчёт гильдии не отдан")
+	s.w:Run(s.dedupe + 30)
+	s.ToRelay(); s.ByLease()
+	T.eq(s.rg, 0, "сначала на рассылку: устаревший отчёт гильдии не отдан")
+	T.eq(s.reporter.ns.Data.Row(s.guild).st, s.st, "у репортёра остался новый отчёт")
+	NoErrors(s.c)
+end)
+
+T.test("relay: повтор устаревшего отчёта отсекается молча", function()
+	-- Повторы в жизни шлёт CatchUp: репортёру с новой или истёкшей арендой реле отдаёт все
+	-- известные отчёты, а регистрируется он у нескольких реле сразу.
+	local s = StaleReport()
+	local reporter, text = s.reporter, "не принят: старее"
+	local function Phase(name, steps)
+		local logged, opened = Logged(reporter, text), s.opened
+		for _, step in ipairs(steps) do step() end
+		T.eq(Logged(reporter, text) - logged, 1, name .. ": в журнале одна строка")
+		T.eq(s.opened - opened, 1, name .. ": отчёт обработан один раз")
+		s.w:Run(s.dedupe + 30)
+	end
+	Phase("четыре раза по аренде", { s.ByLease, s.ByLease, s.ByLease, s.ByLease })
+	Phase("по аренде, на рассылку, по аренде", { s.ByLease, s.ToRelay, s.ByLease })
+	Phase("на рассылку, по аренде, по аренде", { s.ToRelay, s.ByLease, s.ByLease })
+	T.eq(s.rg, 0, "устаревший отчёт гильдии не отдан")
+	-- За три окна Орден успевает прислать и плановый отчёт.
+	T.ok(reporter.ns.Data.Row(s.guild).st >= s.st, "прежний отчёт не вытеснил новый")
+	NoErrors(s.c)
+end)
+
 T.test("relay: реле вышло из игры — сообщение уходит через другое", function()
 	local w, c = Build()
 	local pick = c.B.ns.Relay.Pick()
