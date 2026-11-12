@@ -18,6 +18,7 @@ local SUITES = {
 	"test_data",
 	"test_relay",
 	"test_q1",
+	"test_pull",
 	"test_chat",
 	"test_channel",
 	"test_chat_config",

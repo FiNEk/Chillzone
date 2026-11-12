@@ -655,7 +655,10 @@ local function Deliver(mode, origin, inner, ctx, toGuild)
 	if ctx.via == "RG" and not ctx.side then Mark("settled", dk, now) end
 	local fresh = Mark("got", dk, now)
 	local share = toGuild and not Marked("settled", dk, now)
-	if not fresh and not share then return end
+	if not fresh and not share then
+		if ctx.after then ctx.after(false) end
+		return
+	end
 	local ig = Relay.InnerGuild(inner)
 	if not ig or U.GuildKey(ig) == MyGuildKey() then return end -- своя гильдия приходит напрямую
 	-- Строку чата второй раз не показываю. Отчёт, который ещё отдавать гильдии, обрабатываю и
@@ -676,7 +679,15 @@ local function Deliver(mode, origin, inner, ctx, toGuild)
 		ns.Comm.Send("GUILD", Codec.EncodeRM("RG", mode, origin, inner), { key = key, prio = mode == "P", logged = Logged(inner) })
 		if mode == "L" then ns.Census.Shown(inner, true) end
 	end
+	if ctx.after then ctx.after(ctx.taken) end
 	end, ctx.via == "RG", ctx.side)
+end
+
+-- Отчёт, который автор прислал мне сам в ответ на прямой запрос (Pull.lua). Проверка та же, что
+-- у отчёта от реле: автор пакета — сам ответивший. Новый отчёт уходит моей гильдии (RG), как
+-- отчёт, пришедший репортёру по аренде. after(taken) — после проверки подписи.
+function Relay.Direct(origin, inner, after)
+	return Deliver("L", origin, inner, { via = "RA", relay = origin, after = after }, true)
 end
 
 local function GossipList(exceptKey)

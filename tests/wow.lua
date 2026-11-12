@@ -616,7 +616,7 @@ function World:Client(opts)
 	c.ns = {}
 	for _, f in ipairs(T.tocFiles()) do
 		if (not f:find("^libs/") or f == "libs/Ed25519.lua")
-			and not (opts.legacy and (f == "Issuers.lua" or f == "IssuerRevocations.lua" or f == "UnionAuthority.lua" or f == "Online.lua" or f == "Channel.lua")) then
+			and not (opts.legacy and (f == "Issuers.lua" or f == "IssuerRevocations.lua" or f == "UnionAuthority.lua" or f == "Online.lua" or f == "Pull.lua" or f == "Channel.lua")) then
 			if opts.legacy and (f == "Config.lua" or f == "Util.lua" or f == "Security.lua" or f == "Relay.lua" or f == "Census.lua") then
 				local chunk = assert(loadfile(T.ROOT .. "/tests/legacy/0.9/" .. f))
 				setfenv(chunk, c.env)("Chillzone", c.ns)

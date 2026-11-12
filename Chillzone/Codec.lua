@@ -20,6 +20,8 @@
 -- Реле:   RP~fp · RY~Имя1,Имя2 · RR~guild~fp · RU~guild~преемник · RL~mode~inner
 --         RM~mode~origin~inner · RG~mode~origin~inner     (fp — отпечаток сертификата)
 -- Онлайн: OQ~guild~fp · OL~guild~fp~st~i~n~имя:класс:уровень[:1],...  (шёпотом напрямую, без реле; 1 — есть аддон)
+-- Отчёт напрямую: RQ~guild~fp~st · RA~guild~<S1 с R1>  (шёпотом напрямую, без реле; st — base36 времени отчёта
+--         у спрашивающего, 0 — нет; RA — последний отчёт, подписанный самим ответившим; 0.13.1 и более ранние версии их не знают)
 local ADDON, ns = ...
 
 local Codec = {}
@@ -378,6 +380,35 @@ function Codec.DecodeOnlineQuery(s)
 	local guild, fp = s:match("^OQ~([^~]+)~([%w_-]+)$")
 	if not guild or LongGuild(guild) then return nil end
 	return guild, fp
+end
+
+---------------------------------------------------------------------------
+-- Прямой запрос отчёта переписи (Pull.lua): чей отчёт, мой отпечаток и время отчёта, который у
+-- меня уже есть. Ответ — подписанный пакет целиком, его проверяет Security.Open.
+---------------------------------------------------------------------------
+function Codec.EncodePullQuery(guild, fp, st)
+	return "RQ~" .. clean(guild) .. "~" .. fp .. "~" .. (Codec.Base36(st) or "0")
+end
+
+-- guild, fp, st или nil.
+function Codec.DecodePullQuery(s)
+	if type(s) ~= "string" then return nil end
+	local guild, fp, stamp = s:match("^RQ~([^~]+)~([%w_-]+)~([0-9a-z]+)$")
+	local st = unBase36(stamp)
+	if not guild or LongGuild(guild) or not st then return nil end
+	return guild, fp, st
+end
+
+function Codec.EncodePullAnswer(guild, wire)
+	return "RA~" .. clean(guild) .. "~" .. wire
+end
+
+-- guild, wire или nil. Внутри — только подписанный отчёт.
+function Codec.DecodePullAnswer(s)
+	if type(s) ~= "string" then return nil end
+	local guild, wire = s:match("^RA~([^~]+)~(S1~.+)$")
+	if not guild or LongGuild(guild) or not wire:find("^S1~[%w_-]+~%d+~%d+~[%w_-]+~R1~") then return nil end
+	return guild, wire
 end
 
 -- people: { name, class, level, addon }. Без зон: другим гильдиям уходят только их числа.
