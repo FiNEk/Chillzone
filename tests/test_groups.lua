@@ -587,6 +587,7 @@ T.test("groups pane: форма со свободным названием, пр
 	T.ok(f.form:IsShown(), "форма открыта")
 	T.no(f.idle:IsShown())
 	T.eq(f.form.title:GetText(), L.GROUPS_FORM_GROUP)
+	T.eq(f.form.nameLabel:GetText(), L.GROUPS_FIELD_TITLE, "подпись названия у группы")
 	T.no(f.form.pick:IsShown(), "без списка игры кнопки «Из списка» нет")
 
 	-- Пустое название не проходит, форма остаётся.
@@ -644,6 +645,7 @@ T.test("groups pane: форма со свободным названием, пр
 	f.own.lower:Click()
 	f.idle.player:Click()
 	T.eq(f.form.title:GetText(), L.GROUPS_FORM_PLAYER)
+	T.eq(f.form.nameLabel:GetText(), L.GROUPS_FIELD_WISH, "подпись названия у «ищу группу»")
 	T.no(f.form.steppers[1]:IsShown(), "у игрока нет «кого ищем»")
 	T.ok(f.form.roles[1]:IsShown())
 	c.B:Hardware(function() f.form.submit:Click() end)
@@ -697,6 +699,8 @@ T.test("groups pane: список занятий игры только подс�
 	T.ok(f.form.pick:IsShown(), "кнопка «Из списка» появилась")
 	f.form.pick:Click()
 	T.ok(f.picker:IsShown())
+	T.no(f.form:IsShown(), "список стоит на месте формы, форма под ним скрыта")
+	T.ok(f.picker.search:HasFocus(), "фокус в поле поиска")
 	local pick
 	for _, r in ipairs(f.pickerRows) do
 		if r:IsShown() and r.activity then pick = r end
@@ -705,6 +709,8 @@ T.test("groups pane: список занятий игры только подс�
 	T.eq(pick.name:GetText(), "Мёртвые копи")
 	pick:Click()
 	T.no(f.picker:IsShown(), "список закрылся")
+	T.ok(f.form:IsShown(), "форма вернулась")
+	T.no(f.picker.search:HasFocus(), "фокус с поля поиска снят")
 	T.eq(f.form.name:GetText(), "Мёртвые копи", "название подставлено")
 	T.eq(f.form.min:GetText(), "17")
 	-- Подставленное можно переписать как угодно.
@@ -712,5 +718,139 @@ T.test("groups pane: список занятий игры только подс�
 	c.B:Hardware(function() f.form.submit:Click() end)
 	T.eq(c.B.ns.Groups.Mine().title, "Мёртвые копи, только сундуки")
 	T.eq(c.B.ns.Groups.Mine().kind, "D")
+	NoErrors(c.B, "автор")
+end)
+
+T.test("groups pane: поиск в списке занятий игры", function()
+	local w, c = Build()
+	local L = c.B.ns.L
+	-- Три подземелья и рейд; в названиях — символы шаблонов Lua и «е» вместо «ё».
+	local info = {
+		[801] = { "Зул'Фаррак", 5, 39 },
+		[802] = { "Забытый город (север)", 5, 50 },
+		[803] = { "Верхняя часть пика Черной горы", 10, 55 },
+		[901] = { "Зул'Гуруб", 20, 58 },
+	}
+	c.B.env.C_LFGList = {
+		GetAvailableCategories = function() return { 2, 114 } end,
+		GetAvailableActivities = function(category)
+			if category == 2 then return { 801, 802, 803 } end
+			if category == 114 then return { 901 } end
+			return {}
+		end,
+		GetActivityInfoTable = function(id)
+			local a = info[id]
+			if a then return { fullName = a[1], maxNumPlayers = a[2], minLevel = a[3] } end
+		end,
+	}
+	c.B.ns.UI.Toggle("groups")
+	local f = c.B.ns.GroupsPane.frames
+	local picker = f.picker
+	-- Видимые строки списка по порядку: заголовки разделов в скобках, занятия — названием.
+	-- rawget: незаданное поле кадра-заглушки не nil.
+	local function Shown()
+		local out = {}
+		for _, r in ipairs(f.pickerRows) do
+			if r:IsShown() then
+				local a = rawget(r, "activity")
+				out[#out + 1] = a and a.name
+					or ("[" .. r.name:GetText():gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "") .. "]")
+			end
+		end
+		return out
+	end
+	-- В игре SetText поля сам зовёт OnTextChanged, в симуляторе — нет.
+	local function Search(text)
+		picker.search:SetText(text)
+		picker.search:GetScript("OnTextChanged")(picker.search, true)
+	end
+	local D, R = "[" .. L.GROUPS_KIND_D .. "]", "[" .. L.GROUPS_KIND_R .. "]"
+	local all = { D, "Зул'Фаррак", "Забытый город (север)", "Верхняя часть пика Черной горы", R, "Зул'Гуруб" }
+
+	f.idle.group:Click()
+	f.form.pick:Click()
+	T.ok(picker:IsShown(), "список открыт")
+	T.no(f.form:IsShown(), "форма под списком скрыта")
+	T.eq(picker.search:GetText(), "", "поле поиска пустое")
+	T.ok(picker.search:HasFocus(), "можно сразу печатать")
+	T.ok(picker.hint:IsShown(), "подсказка в пустом поле")
+	T.no(picker.none:IsShown())
+	T.same(Shown(), all, "без запроса — весь список")
+	T.eq(f.pickerRows[2].right:GetText(), L.GROUPS_PICK_LEVEL:format(39) .. ", " .. L.GROUPS_PICK_CAP:format(5))
+
+	picker.scroll:SetVerticalScroll(40)
+	Search("ЗУЛ")
+	T.same(Shown(), { D, "Зул'Фаррак", R, "Зул'Гуруб" }, "регистр кириллицы не важен")
+	T.no(picker.hint:IsShown(), "подсказка скрыта, пока в поле есть текст")
+	T.eq(picker.scroll:GetVerticalScroll(), 0, "новый запрос — прокрутка в начале")
+	Search("чёрной")
+	T.same(Shown(), { D, "Верхняя часть пика Черной горы" }, "«ё» находит «е»")
+	Search("  забытый   север ")
+	T.same(Shown(), { D, "Забытый город (север)" }, "каждое слово — в названии")
+	Search("забытый юг")
+	T.same(Shown(), {}, "одного слова нет — занятие не подходит")
+	Search("гуруб")
+	T.same(Shown(), { R, "Зул'Гуруб" }, "раздел без подходящих занятий не выводится")
+	Search("(север)")
+	T.same(Shown(), { D, "Забытый город (север)" }, "скобки — обычные символы")
+	Search("'")
+	T.same(Shown(), { D, "Зул'Фаррак", R, "Зул'Гуруб" }, "апостроф — обычный символ")
+	Search("%a")
+	T.same(Shown(), {}, "запрос не шаблон Lua")
+	T.ok(picker.none:IsShown(), "ничего не найдено — подсказка")
+	T.eq(picker.none:GetText(), L.GROUPS_PICK_NONE)
+	Search("")
+	T.same(Shown(), all, "очистка запроса возвращает весь список")
+	T.no(picker.none:IsShown())
+	T.ok(picker.hint:IsShown())
+
+	-- Перерисовка вкладки во время поиска (пришло чужое объявление, тик окна) запрос и
+	-- прокрутку не сбрасывает.
+	Search("зул")
+	picker.scroll:SetVerticalScroll(19)
+	T.ok(c.A.ns.Groups.Raise(Spec()))
+	w:Run(30)
+	T.ok(BoardRow(c.B, c.A), "объявление пришло и нарисовано")
+	T.ok(picker:IsShown(), "список не закрылся")
+	T.no(f.form:IsShown())
+	T.eq(picker.search:GetText(), "зул", "запрос на месте")
+	T.same(Shown(), { D, "Зул'Фаррак", R, "Зул'Гуруб" }, "результат на месте")
+	T.eq(picker.scroll:GetVerticalScroll(), 19, "прокрутка на месте")
+
+	-- Выбор найденного подставляет название и возвращает форму.
+	Search("забытый")
+	local pick
+	for _, r in ipairs(f.pickerRows) do
+		if r:IsShown() and rawget(r, "activity") then pick = r end
+	end
+	T.eq(pick.name:GetText(), "Забытый город (север)")
+	pick:Click()
+	T.no(picker:IsShown(), "список закрылся")
+	T.ok(f.form:IsShown(), "форма вернулась")
+	T.no(picker.search:HasFocus(), "фокус с поля поиска снят")
+	T.eq(f.form.name:GetText(), "Забытый город (север)", "название подставлено")
+	T.eq(f.form.min:GetText(), "50")
+
+	-- Повторное открытие — с пустым поиском и всем списком; «Закрыть» оставляет поля формы.
+	f.form.note:SetText("на сундуки")
+	f.form.pick:Click()
+	T.eq(picker.search:GetText(), "", "поиск снова пустой")
+	T.same(Shown(), all)
+	T.eq(picker.scroll:GetVerticalScroll(), 0)
+	picker.close:Click()
+	T.no(picker:IsShown())
+	T.ok(f.form:IsShown())
+	T.no(picker.search:HasFocus())
+	T.eq(f.form.name:GetText(), "Забытый город (север)", "название не потерялось")
+	T.eq(f.form.note:GetText(), "на сундуки", "примечание не потерялось")
+
+	-- Закрытие окна при открытом списке закрывает и форму, и список.
+	f.form.pick:Click()
+	c.B.ns.UI.Toggle()
+	T.no(picker:IsShown(), "список закрыт вместе с окном")
+	T.no(picker.search:HasFocus())
+	c.B.ns.UI.Toggle("groups")
+	T.ok(f.idle:IsShown(), "после окна — снова роли и кнопки")
+	T.no(picker:IsShown())
 	NoErrors(c.B, "автор")
 end)

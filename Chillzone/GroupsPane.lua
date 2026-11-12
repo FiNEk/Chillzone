@@ -3,7 +3,8 @@
 -- логика — в Groups.lua.
 --
 -- Название объявления — свободный текст. Список занятий игры (Groups.Catalog) — только
--- подсказка: кнопка «Из списка» подставляет название в поле, и его можно править.
+-- подсказка: кнопка «Из списка» подставляет название в поле, и его можно править. Список
+-- с поиском по названию встаёт на место формы, а не поверх неё.
 --
 -- Штатные выпадающие списки и popup игры не используются (taint): подсказка названий — свой
 -- список, поля ввода — свои EditBox. Приглашение в группу вызывается только из щелчка.
@@ -28,6 +29,7 @@ local idle, form, own, picker
 local rows, filters, applicantRows, pickerRows = {}, {}, {}, {}
 local filter -- вид мест или nil — все
 local editing -- "G" или "P", пока открыта форма
+local picking = false -- открыт список занятий игры: он показан вместо формы
 local draft -- то, что в форме не лежит в полях ввода: { mode, edit, kind, cap, roles }
 
 ---------------------------------------------------------------------------
@@ -334,17 +336,27 @@ local function DefaultNeed()
 	return need
 end
 
+-- Список занятий закрывается, на его место возвращается форма: поля и draft не трогаем.
+local function ClosePicker()
+	picking = false
+	if picker then
+		picker.search:ClearFocus()
+		picker:Hide()
+	end
+end
+
 local function CloseForm()
 	editing, draft = nil, nil
+	ClosePicker()
 	if form then
 		form.name:ClearFocus()
 		form.note:ClearFocus()
 		form.min:ClearFocus()
 	end
-	if picker then picker:Hide() end
 end
 
 local function OpenForm(mode)
+	ClosePicker()
 	local mine = Groups.Mine()
 	local edit = mine ~= nil and mine.mode == mode
 	draft = {
@@ -367,13 +379,11 @@ local function BuildIdle()
 	Label(idle, 0, 4, L.GROUPS_MY_ROLES, "GameFontNormal")
 	idle.roles = RoleChips(idle)
 	PlaceRow(idle, idle.roles, 0, 26, 6)
-	local hint = Label(idle, 0, 58, L.GROUPS_ROLES_HINT, "GameFontDisableSmall")
-	hint:SetWidth(SIDE_W)
 	local group = Button(idle, L.GROUPS_NEW_GROUP, SIDE_W, "new group", function() OpenForm("G") end)
-	group:SetPoint("TOPLEFT", 0, -120)
+	group:SetPoint("TOPLEFT", 0, -62)
 	local player = Button(idle, L.GROUPS_NEW_PLAYER, SIDE_W, "new player", function() OpenForm("P") end)
-	player:SetPoint("TOPLEFT", 0, -148)
-	local about = Label(idle, 0, 184, L.GROUPS_IDLE_HINT, "GameFontDisableSmall")
+	player:SetPoint("TOPLEFT", 0, -90)
+	local about = Label(idle, 0, 126, L.GROUPS_IDLE_HINT, "GameFontDisableSmall")
 	about:SetWidth(SIDE_W)
 	idle.group, idle.player = group, player
 end
@@ -387,9 +397,9 @@ local function PickerRow(i)
 	r = CreateFrame("Button", nil, picker.child)
 	r:SetSize(SIDE_W - 26, 18)
 	r:SetPoint("TOPLEFT", picker.child, "TOPLEFT", 0, -(i - 1) * 19)
-	local hl = r:CreateTexture(nil, "HIGHLIGHT")
-	hl:SetAllPoints()
-	hl:SetColorTexture(1, 1, 1, 0.08)
+	r.hl = r:CreateTexture(nil, "HIGHLIGHT")
+	r.hl:SetAllPoints()
+	r.hl:SetColorTexture(1, 1, 1, 0.08)
 	r.right = FS(r, "GameFontDisableSmall", "RIGHT")
 	r.right:SetPoint("RIGHT", -4, 0)
 	r.name = FS(r, "GameFontHighlightSmall")
@@ -406,7 +416,7 @@ local function PickerRow(i)
 				if a.cap >= 2 and a.cap <= Codec.GROUP_CAP then draft.cap = a.cap end
 				form.min:SetText(a.min > 1 and tostring(a.min) or "")
 			end
-			picker:Hide()
+			ClosePicker()
 			Pane.Render()
 		end)
 	end)
@@ -414,54 +424,69 @@ local function PickerRow(i)
 	return r
 end
 
--- Список занятий игры: заголовки разделов и названия. Щелчок подставляет название в поле.
-local function OpenPicker()
-	local catalog = Groups.Catalog()
-	if not catalog then return end
-	local i, kind = 0, nil
-	for _, a in ipairs(catalog) do
-		if a.kind ~= kind then
-			kind, i = a.kind, i + 1
-			local head = PickerRow(i)
-			head.activity = nil
-			head.name:SetText("|cffffd100" .. L["GROUPS_KIND_" .. kind] .. "|r")
-			head.right:SetText("")
-			head:Show()
-		end
-		i = i + 1
+-- Строки списка по запросу из поля поиска (строки готовит Views.GroupPicks). Запрос и
+-- прокрутку не сбрасывает: зовётся и при перерисовке вкладки, пока игрок ищет.
+local function RenderPicker()
+	local query = picker.search:GetText() or ""
+	local items = Views.GroupPicks(query)
+	for i, it in ipairs(items) do
 		local r = PickerRow(i)
-		r.activity = a
-		r.name:SetText(a.name)
-		local parts = {}
-		if a.min > 1 then parts[#parts + 1] = L.GROUPS_PICK_LEVEL:format(a.min) end
-		if a.cap > 1 then parts[#parts + 1] = L.GROUPS_PICK_CAP:format(a.cap) end
-		r.right:SetText(table.concat(parts, ", "))
+		r.activity = it.activity
+		-- Заголовок раздела не щёлкается: подсветка только у занятий.
+		r.hl:SetAlpha(it.header and 0 or 1)
+		r.name:SetText(it.header or it.name)
+		r.right:SetText(it.right or "")
 		r:Show()
 	end
-	for j = i + 1, #pickerRows do pickerRows[j]:Hide() end
-	picker.child:SetHeight(math.max(i * 19, 10))
+	for i = #items + 1, #pickerRows do pickerRows[i]:Hide() end
+	picker.child:SetHeight(math.max(#items * 19, 10))
+	picker.none:SetShown(#items == 0)
+	picker.hint:SetShown(query == "")
+end
+
+-- «Из списка»: список встаёт на место формы с пустым поиском, прокруткой в начале и
+-- фокусом в поле поиска — можно сразу печатать. Щелчок по занятию подставляет название.
+local function OpenPicker()
+	if not draft or not Groups.Catalog() then return end
+	picker.search:SetText("")
 	picker.scroll:SetVerticalScroll(0)
-	picker:Show()
+	picking = true
+	Pane.Render()
+	picker.search:SetFocus()
 end
 
 local function BuildPicker()
 	picker = CreateFrame("Frame", nil, side)
 	picker:SetAllPoints(side)
-	picker:SetFrameLevel((side:GetFrameLevel() or 1) + 20)
-	picker:EnableMouse(true)
-	local bg = picker:CreateTexture(nil, "BACKGROUND")
-	bg:SetPoint("TOPLEFT", -6, 4)
-	bg:SetPoint("BOTTOMRIGHT", 6, -4)
-	bg:SetColorTexture(0.05, 0.05, 0.05, 0.97)
 	Label(picker, 0, 4, L.GROUPS_PICK_TITLE, "GameFontNormal")
+	picker.search = Input(picker, SIDE_W, 60)
+	picker.search:SetPoint("TOPLEFT", 0, -24)
+	-- Подсказка лежит на самом поле, иначе её закроет его подложка.
+	picker.hint = FS(picker.search, "GameFontDisableSmall")
+	picker.hint:SetPoint("LEFT", 6, 0)
+	picker.hint:SetText(L.GROUPS_PICK_SEARCH)
+	picker.search:SetScript("OnTextChanged", function()
+		ns.SafeCall("groups: picker search", function()
+			if not picking then return end
+			picker.scroll:SetVerticalScroll(0)
+			RenderPicker()
+		end)
+	end)
 	picker.scroll = CreateFrame("ScrollFrame", nil, picker, "UIPanelScrollFrameTemplate")
-	picker.scroll:SetPoint("TOPLEFT", 0, -26)
+	picker.scroll:SetPoint("TOPLEFT", 0, -52)
 	picker.scroll:SetPoint("BOTTOMRIGHT", -24, 30)
 	picker.child = CreateFrame("Frame", nil, picker.scroll)
 	picker.child:SetSize(SIDE_W - 26, 10)
 	picker.scroll:SetScrollChild(picker.child)
-	local close = Button(picker, L.GROUPS_CLOSE, 100, "picker close", function() picker:Hide() end)
-	close:SetPoint("BOTTOMRIGHT", 0, 2)
+	-- Уже панели: справа стоит полоса прокрутки, она видна и при пустом списке.
+	picker.none = Label(picker, 2, 56, L.GROUPS_PICK_NONE, "GameFontDisableSmall")
+	picker.none:SetWidth(SIDE_W - 30)
+	picker.none:Hide()
+	picker.close = Button(picker, L.GROUPS_CLOSE, 100, "picker close", function()
+		ClosePicker()
+		Pane.Render()
+	end)
+	picker.close:SetPoint("BOTTOMRIGHT", 0, 2)
 	picker:Hide()
 end
 
@@ -726,12 +751,16 @@ end
 local function RenderSide()
 	local mine = Groups.Mine()
 	local state = editing and "form" or (mine and "own" or "idle")
+	if state ~= "form" and picking then ClosePicker() end
 	idle:SetShown(state == "idle")
-	form:SetShown(state == "form")
+	-- Список занятий показан вместо формы: под ним ничего не просвечивает.
+	form:SetShown(state == "form" and not picking)
+	picker:SetShown(state == "form" and picking)
 	own:SetShown(state == "own")
-	if state ~= "form" and picker:IsShown() then picker:Hide() end
 	if state == "idle" then
 		MarkRoles(idle.roles)
+	elseif state == "form" and picking then
+		RenderPicker()
 	elseif state == "form" then
 		RenderForm()
 	else

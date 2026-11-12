@@ -833,3 +833,44 @@ function Views.GroupApplicants()
 	end
 	return out
 end
+
+-- Вид для поиска по названию: нижний регистр с кириллицей и «ё» как «е» (в названиях игры
+-- пишут «Черной горы», игрок может набрать «чёрной»).
+local function SearchFold(s)
+	return (U.Fold(s):gsub("\209\145", "\208\181"))
+end
+
+-- Список занятий игры для «Из списка»: { header = текст } перед разделом и { activity, name,
+-- right } — занятия, в названии которых есть каждое слово запроса (подстрокой, без шаблонов).
+-- Пустой запрос — весь список. Второе значение — сколько занятий в списке без учёта запроса
+-- (0 — игра списка не даёт).
+function Views.GroupPicks(query)
+	local catalog = ns.Groups.Catalog()
+	if not catalog then return {}, 0 end
+	local words = {}
+	for word in SearchFold(query):gmatch("%S+") do words[#words + 1] = word end
+	local out, kind = {}, nil
+	for _, a in ipairs(catalog) do
+		local fit = true
+		if #words > 0 then
+			local name = SearchFold(a.name)
+			for _, word in ipairs(words) do
+				if not name:find(word, 1, true) then
+					fit = false
+					break
+				end
+			end
+		end
+		if fit then
+			if a.kind ~= kind then
+				kind = a.kind
+				out[#out + 1] = { header = GOLD .. L["GROUPS_KIND_" .. kind] .. "|r" }
+			end
+			local parts = {}
+			if a.min > 1 then parts[#parts + 1] = L.GROUPS_PICK_LEVEL:format(a.min) end
+			if a.cap > 1 then parts[#parts + 1] = L.GROUPS_PICK_CAP:format(a.cap) end
+			out[#out + 1] = { activity = a, name = a.name, right = table.concat(parts, ", ") }
+		end
+	end
+	return out, #catalog
+end
