@@ -7,10 +7,10 @@
 -- игре. Ответ RA — последний отчёт, подписанный самим ответившим. Он проверяется как отчёт от
 -- реле и уходит гильдии спросившего (RG), как отчёт, пришедший репортёру по аренде.
 --
--- Спрашивает один клиент гильдии: её репортёр. Если репортёр старее меня и запросов не знает, вместо
--- него спрашивает первый помощник (Census.Helpers). Узнать, что репортёр спрашивает и ему не
--- отвечают, помощник не может: шёпот виден только адресату. Поэтому за обновлённого репортёра он не
--- берётся, иначе гильдия спрашивала бы вдвоём.
+-- Спрашивает репортёр гильдии. Узнать, спрашивает ли он и отвечают ли ему, остальные не могут:
+-- шёпот виден только адресату, а репортёр может быть старой версии, в блокировке чата или без
+-- ответа от своих адресатов. Поэтому, если отчёт так и не обновился, на PULL_HELPER_DELAY позже
+-- спрашивает и первый помощник (Census.Helpers), какой бы версии ни был репортёр.
 --
 -- Отвечающий не подписывает отчёт ради ответа: свежая подпись рядового получила бы новое время и
 -- вытеснила бы у всех более полный отчёт репортёра (зоны идут только с согласия репортёра, число
@@ -113,16 +113,15 @@ local function Start(gk, row, fp)
 	Next(ask)
 end
 
--- Запрос — моя забота: я репортёр, или репортёр старее меня (запросов не знает), а я первый из
--- PULL_HELPERS помощников. Помощники старше меня в очередь не попадают (Census.Helpers).
-local function OnDuty()
+-- С какого возраста отчёта запрос — моя забота: репортёр спрашивает с PULL_AFTER, первые
+-- PULL_HELPERS помощников — на PULL_HELPER_DELAY позже, если отчёт так и не обновился. Какой
+-- версии репортёр, не важно: спрашивает ли он и отвечают ли ему, помощник не видит.
+local function DutyAfter()
 	local Census = ns.Census
-	if Census.IsReporter() then return true end
-	local reporter = Census.Reporter()
-	local peer = reporter and Census.Peers()[reporter]
-	if not peer or not U.VersionNewer(ns.VERSION, peer.version) then return false end
+	if Census.IsReporter() then return C.PULL_AFTER end
 	local slot = Census.HelperSlot()
-	return slot ~= nil and slot <= C.PULL_HELPERS
+	if slot and slot <= C.PULL_HELPERS then return C.PULL_AFTER + C.PULL_HELPER_DELAY end
+	return nil
 end
 
 -- Раз в PULL_TICK: устаревшие отчёты других гильдий, если запрос — моя забота. Сразу после входа
@@ -131,7 +130,7 @@ local function Tick()
 	if not ns.IsMember() or not ns.loginAt or ns.Now() - ns.loginAt < C.HELPER_SETTLE then return end
 	local mine = ns.Security.MyCertificate()
 	if not mine or ns.Comm.InLockdown() or not ns.Roster.Fresh() then return end
-	local duty = OnDuty()
+	local after = DutyAfter()
 	local now, server = ns.Now(), ns.ServerTime()
 	local own = ns.MyGuild()
 	local ownKey = own and U.GuildKey(own)
@@ -141,7 +140,7 @@ local function Tick()
 			local age = server - (row.st or 0)
 			if age < C.PULL_AFTER then
 				asks[gk], retry[gk] = nil, nil -- отчёт обновился сам
-			elseif duty and not asks[gk] and not (retry[gk] and now < retry[gk].at) then
+			elseif after and age >= after and not asks[gk] and not (retry[gk] and now < retry[gk].at) then
 				due[#due + 1] = gk
 			end
 		end

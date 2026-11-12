@@ -70,6 +70,27 @@ local function SilenceRelays(c)
 	end
 end
 
+-- Главная гильдия сама отчёты не запрашивает: иначе её реле раздали бы полученный отчёт и Северу,
+-- и нельзя было бы проверить, кто в Севере спрашивал.
+local function NoMainPull(c)
+	for _, cl in pairs(c) do
+		if cl.guild == "Чиллзон" then cl.ns.Config.PULL_AFTER = math.huge end
+	end
+end
+
+-- Запросы RQ клиента cl теряются по дороге: он спрашивает, но ему никто не отвечает, а другие
+-- этого не видят. В журнал мира они попадают.
+local function LoseRequests(w, cl)
+	local deliver = w.Deliver
+	w.Deliver = function(self, from, dist, prefix, msg, target, logged)
+		if from == cl and dist == "WHISPER" and type(msg) == "string" and msg:find("RQ~", 1, true) then
+			self.log[#self.log + 1] = { t = self.now, from = from:Name(), dist = dist, msg = msg, target = target }
+			return 0
+		end
+		return deliver(self, from, dist, prefix, msg, target, logged)
+	end
+end
+
 -- Согильдиец в игре без аддона: шёпот доходит, но никто не отвечает.
 local function SilentAddon(w, cl)
 	cl:Logout()
@@ -199,6 +220,41 @@ T.test("pull: реле молчат — отчёт берётся у автор�
 	NoErrors(c)
 end)
 
+T.test("pull: запросы репортёра не доходят — после задержки спрашивает помощник", function()
+	local w, c = Build()
+	SilenceRelays(c)
+	NoMainPull(c)
+	LoseRequests(w, c.V)
+	local guild = c.G.guild
+	local old = c.V.ns.Data.Row(guild).st
+	local from = #w.log
+	local age
+	T.ok(Until(w, function()
+		if not age and #Whispers(w, from, "RQ", c.B:Name(), guild) > 0 then age = c.B.ns.ServerTime() - old end
+		return Has(c.V, guild, old + 1)
+	end, 1800), "Вера получила новый отчёт Ордена от помощника")
+	local C = c.B.ns.Config
+	T.ok(#Whispers(w, from, "RQ", c.V:Name(), guild) >= 1, "Вера спрашивала первой")
+	T.ok(age and age >= C.PULL_AFTER + C.PULL_HELPER_DELAY, "помощник ждал задержку: " .. tostring(age))
+	T.ok(age and age <= C.PULL_AFTER + C.PULL_HELPER_DELAY + C.PULL_TICK + 15, "и не намного дольше: " .. tostring(age))
+	T.ok(Logged(c.B, "получен напрямую от " .. c.G:Name()) >= 1, "Борису ответил Глеб")
+	NoErrors(c)
+end)
+
+T.test("pull: репортёр получает ответы — помощник не спрашивает", function()
+	local w, c = Build()
+	SilenceRelays(c)
+	NoMainPull(c)
+	local guild = c.G.guild
+	local from = #w.log
+	local C = c.B.ns.Config
+	w:Run(2 * (C.PULL_AFTER + C.PULL_HELPER_DELAY))
+	T.ok(Logged(c.V, "получен напрямую от " .. c.G:Name()) >= 2, "Вера получала отчёт Ордена не раз")
+	T.eq(#Whispers(w, from, "RQ", c.B:Name()), 0, "Борис ни разу не спрашивал")
+	T.ok(c.B.ns.ServerTime() - c.B.ns.Data.Row(guild).st < C.PULL_AFTER + C.PULL_HELPER_DELAY, "у Бориса отчёт не старше задержки")
+	NoErrors(c)
+end)
+
 T.test("pull: автор отчёта больше не репортёр — он не подписывает отчёт ради ответа", function()
 	local w, c = Build({ order2 = true })
 	SilenceRelays(c)
@@ -266,7 +322,15 @@ T.test("pull: никто не отвечает — раунды всё реже,
 	for i = 3, #rounds do
 		T.ok(rounds[i] - rounds[i - 1] > rounds[i - 1] - rounds[i - 2], "пауза растёт: " .. table.concat(rounds, ", "))
 	end
-	T.eq(#Whispers(w, from, "RQ", c.B:Name()), 0, "Борис не спрашивал")
+	-- Помощник не видит, что Вере не отвечают, и спрашивает сам: позже Веры и так же редко.
+	local C = c.B.ns.Config
+	local helper, helperRounds = Whispers(w, from, "RQ", c.B:Name(), guild), {}
+	for _, e in ipairs(helper) do
+		if e.target == "Глеб Гордый" then helperRounds[#helperRounds + 1] = e.t end
+	end
+	T.ok(#helperRounds >= 1 and helperRounds[1] - rounds[1] >= C.PULL_HELPER_DELAY - C.PULL_TICK,
+		"помощник начал на задержку позже Веры: " .. table.concat(helperRounds, ", "))
+	T.ok(#helperRounds <= #rounds and #helper <= 2 * #helperRounds, "и спрашивает не чаще: " .. #helper)
 	T.ok(Logged(c.V, "отчёт Орден Чиллзона напрямую не получен") >= #rounds - 1, "неудачные раунды в журнале")
 	NoErrors(c)
 end)
@@ -438,9 +502,10 @@ T.test("pull: клиент 0.9 запросы не знает — молчит �
 	T.ok(Until(w, function()
 		if #Whispers(w, from, "RQ", c.o:Name(), guild) > 0 then age = c.o.ns.ServerTime() - old end
 		return age ~= nil
-	end, 1500), "обновлённый офицер спросил вместо старого репортёра")
+	end, 1800), "обновлённый офицер спросил вместо старого репортёра")
 	local C = c.o.ns.Config
-	T.ok(age >= C.PULL_AFTER and age <= C.PULL_AFTER + C.PULL_TICK + 15, "сразу после порога: " .. age)
+	local after = C.PULL_AFTER + C.PULL_HELPER_DELAY
+	T.ok(age >= after and age <= after + C.PULL_TICK + 15, "после задержки помощника: " .. age)
 	-- Старому клиенту приходят и запрос, и ответ: оба он отбрасывает молча.
 	w:Deliver(c.n, "WHISPER", c.n.ns.PREFIX, c.n.ns.Codec.EncodePullAnswer(guild, row.signed), c.v:Name())
 	w:Run(7200)
