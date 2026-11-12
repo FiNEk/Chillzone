@@ -1910,7 +1910,11 @@ T.test("relay: реле-репортёр раздаёт пакет по арен
 	end)
 end)
 
-T.test("relay: реле-репортёр не отдаёт гильдии устаревший отчёт ни по аренде, ни из рассылки", function()
+-- Репортёр главной гильдии (реле с арендой своей гильдии) уже знает новый отчёт Ордена, а ему снова
+-- приходит прежний: по аренде от другого реле (ByLease) или на рассылку от автора (ToRelay).
+-- Счётчики: rg — сколько раз прежний отчёт ушёл гильдии, opened — сколько раз репортёр обработал
+-- его у себя.
+local function StaleReport()
 	local w, c = Build()
 	local reporter, relay = MainRoles(c)
 	local own = Lease(reporter, "Чиллзон")
@@ -1927,26 +1931,57 @@ T.test("relay: реле-репортёр не отдаёт гильдии уст
 		w:Run(1)
 	end
 	T.eq(reporter.ns.Data.Row(guild).st, st, "репортёр получил новый отчёт")
-	local sent, send = 0, reporter.ns.Comm.Send
+	local s = { w = w, c = c, reporter = reporter, guild = guild, st = st, dedupe = dedupe, rg = 0, opened = 0 }
+	local send, inject = reporter.ns.Comm.Send, reporter.ns.Comm.Inject
 	reporter.ns.Comm.Send = function(dist, payload, ...)
-		if dist == "GUILD" and payload:sub(1, 3) == "RG~" and payload:find(old, 1, true) then sent = sent + 1 end
+		if dist == "GUILD" and payload:sub(1, 3) == "RG~" and payload:find(old, 1, true) then s.rg = s.rg + 1 end
 		return send(dist, payload, ...)
 	end
-	local function ByLease()
+	reporter.ns.Comm.Inject = function(inner, origin, ctx)
+		if ctx and ctx.wire == old then s.opened = s.opened + 1 end
+		return inject(inner, origin, ctx)
+	end
+	function s.ByLease()
 		relay.ns.Comm.Send("WHISPER", relay.ns.Codec.EncodeRM("RM", "L", c.G:Name(), old), { target = reporter:Name() })
 		w:Run(15)
 	end
-	local function ToRelay()
+	function s.ToRelay()
 		c.G.ns.Comm.Send("WHISPER", c.G.ns.Codec.EncodeRL("L", old), { target = reporter:Name() })
 		w:Run(15)
 	end
-	ByLease(); ToRelay()
-	T.eq(sent, 0, "сначала по аренде: устаревший отчёт гильдии не отдан")
-	w:Run(dedupe + 30)
-	ToRelay(); ByLease()
-	T.eq(sent, 0, "сначала на рассылку: устаревший отчёт гильдии не отдан")
-	T.eq(reporter.ns.Data.Row(guild).st, st, "у репортёра остался новый отчёт")
-	NoErrors(c)
+	return s
+end
+
+T.test("relay: реле-репортёр не отдаёт гильдии устаревший отчёт ни по аренде, ни из рассылки", function()
+	local s = StaleReport()
+	s.ByLease(); s.ToRelay()
+	T.eq(s.rg, 0, "сначала по аренде: устаревший отчёт гильдии не отдан")
+	s.w:Run(s.dedupe + 30)
+	s.ToRelay(); s.ByLease()
+	T.eq(s.rg, 0, "сначала на рассылку: устаревший отчёт гильдии не отдан")
+	T.eq(s.reporter.ns.Data.Row(s.guild).st, s.st, "у репортёра остался новый отчёт")
+	NoErrors(s.c)
+end)
+
+T.test("relay: повтор устаревшего отчёта отсекается молча", function()
+	-- Повторы в жизни шлёт CatchUp: репортёру с новой или истёкшей арендой реле отдаёт все
+	-- известные отчёты, а регистрируется он у нескольких реле сразу.
+	local s = StaleReport()
+	local reporter, text = s.reporter, "не принят: старее"
+	local function Phase(name, steps)
+		local logged, opened = Logged(reporter, text), s.opened
+		for _, step in ipairs(steps) do step() end
+		T.eq(Logged(reporter, text) - logged, 1, name .. ": в журнале одна строка")
+		T.eq(s.opened - opened, 1, name .. ": отчёт обработан один раз")
+		s.w:Run(s.dedupe + 30)
+	end
+	Phase("четыре раза по аренде", { s.ByLease, s.ByLease, s.ByLease, s.ByLease })
+	Phase("по аренде, на рассылку, по аренде", { s.ByLease, s.ToRelay, s.ByLease })
+	Phase("на рассылку, по аренде, по аренде", { s.ToRelay, s.ByLease, s.ByLease })
+	T.eq(s.rg, 0, "устаревший отчёт гильдии не отдан")
+	-- За три окна Орден успевает прислать и плановый отчёт.
+	T.ok(reporter.ns.Data.Row(s.guild).st >= s.st, "прежний отчёт не вытеснил новый")
+	NoErrors(s.c)
 end)
 
 T.test("relay: реле вышло из игры — сообщение уходит через другое", function()

@@ -11,7 +11,7 @@
 -- главной гильдии отдаёт чужой отчёт своей гильдии само. Иначе отчёт, дошедший до живого реле,
 -- терялся бы, пока репортёр гильдии молчит или не зарегистрирован у этого реле.
 -- Повторы отсекаются по исходному пакету, но раздельно: обработал ли я его у себя, разослал ли
--- как реле и получила ли его моя гильдия. Реле получает пакет и как читатель (RG, RM), и на
+-- как реле и решено ли с ним для моей гильдии. Реле получает пакет и как читатель (RG, RM), и на
 -- рассылку (RL); первое не отменяет второго, иначе аренды только этого реле пакета не получат.
 -- Аренда репортёра у реле (RR) уступается заявителю со званием выше или преемнику, которого
 -- назвал сам держатель (RU). Рядовой не перехватит аренду офицера, посторонний — ничью.
@@ -52,8 +52,9 @@ end)
 -- Отметки повторов по пакету: [вид][Codec.DedupeKey] = время первой отметки. Пакет приходит реле
 -- и как читателю (RG, RM), и как реле (RL), поэтому у каждой обязанности своя отметка:
 -- got — пакет обработан у меня (показан, сохранён); relayed — я разослал его как реле;
--- shared — моя гильдия его уже получила: RG отправил я или я слышал RG её репортёра.
-local marks = { got = {}, relayed = {}, shared = {} }
+-- settled — с моей гильдией по пакету всё решено: RG отправил я, я слышал RG её репортёра или
+-- отчёт оказался устаревшим и гильдии не нужен. Решённый отчёт повторно не обрабатываю.
+local marks = { got = {}, relayed = {}, settled = {} }
 local rate = {} -- [Key автора] = { n, t0 }
 local sideRate = {} -- [Key согильдийца] = { n, t0 }: его отчёты, принятые не от репортёра
 local hold = {} -- сообщения, пока ни одно реле не ответило
@@ -552,14 +553,17 @@ function Relay.Forward(origin, mode, inner, clear, certificate)
 	local mine = MyGuildKey()
 	local ctx = { via = "RL", authenticated = true, certificate = certificate, wire = inner }
 	-- Как в Deliver: полученное мной как читателем второй раз не показываю, а отчёт обрабатываю
-	-- и повторно, пока его, может быть, ещё отдавать гильдии: так известно, не устарел ли он.
+	-- и повторно, пока с гильдией по нему не решено: так известно, не устарел ли он.
 	local fresh = Mark("got", dk, now)
-	if igk ~= mine and (fresh or (mode == "L" and not Marked("shared", dk, now))) then
+	if igk ~= mine and (fresh or (mode == "L" and not Marked("settled", dk, now))) then
 		ns.Comm.Inject(clear, certificate.name, ctx)
+		-- Устаревший отчёт гильдии не нужен: решено, повторы отсекаются молча.
+		if ctx.outdated then Mark("settled", dk, now) end
 	end
-	-- Гильдии — один раз и не устаревший отчёт: он заменил бы в очереди ещё не ушедший новый.
+	-- Гильдии — один раз. Устаревший отчёт уже отмечен решённым: он заменил бы в очереди ещё не
+	-- ушедший новый.
 	local function ToGuild(key)
-		if ctx.outdated or not Mark("shared", dk, now) then return end
+		if not Mark("settled", dk, now) then return end
 		ns.Security.Introduce("GUILD", certificate.raw)
 		ns.Comm.Send("GUILD", Codec.EncodeRM("RG", mode, U.Display(origin), inner), { key = key, prio = mode == "P", logged = Logged(inner) })
 	end
@@ -629,9 +633,9 @@ local function Deliver(mode, origin, inner, ctx, toGuild)
 	-- RG репортёра гильдия уже получила: второй RG ей не нужен. Отчёт, который принёс не репортёр
 	-- (ctx.side), так не считается: клиенты старых версий берут RG только у репортёра, и ему
 	-- отчёт ещё придёт по аренде (RM). Как реле (RL) я раздаю пакет независимо от этих отметок.
-	if ctx.via == "RG" and not ctx.side then Mark("shared", dk, now) end
+	if ctx.via == "RG" and not ctx.side then Mark("settled", dk, now) end
 	local fresh = Mark("got", dk, now)
-	local share = toGuild and not Marked("shared", dk, now)
+	local share = toGuild and not Marked("settled", dk, now)
 	if not fresh and not share then return end
 	local ig = Relay.InnerGuild(inner)
 	if not ig or U.GuildKey(ig) == MyGuildKey() then return end -- своя гильдия приходит напрямую
@@ -642,9 +646,12 @@ local function Deliver(mode, origin, inner, ctx, toGuild)
 		ctx.authenticated, ctx.certificate, ctx.wire = true, certificate, inner
 		ns.Comm.Inject(clear, certificate.name, ctx)
 	end
-	-- У всех отчётов автора один ключ очереди: устаревший заменил бы ещё не ушедший новый.
-	if share and ns.MyGuild() and not ctx.outdated then
-		Mark("shared", dk, now)
+	-- Устаревший отчёт гильдии не отдаю: у всех отчётов автора один ключ очереди, и он заменил бы
+	-- ещё не ушедший новый. С гильдией по нему решено, повторы отсекаются молча.
+	if ctx.outdated then
+		Mark("settled", dk, now)
+	elseif share and ns.MyGuild() then
+		Mark("settled", dk, now)
 		local key = mode == "L" and ("rg:" .. okey .. ":" .. Codec.InnerType(inner)) or nil
 		ns.Security.Introduce("GUILD", certificate.raw)
 		ns.Comm.Send("GUILD", Codec.EncodeRM("RG", mode, origin, inner), { key = key, prio = mode == "P", logged = Logged(inner) })
