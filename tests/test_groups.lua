@@ -460,6 +460,73 @@ T.test("groups: в общий чат уходит строка о новой г�
 	T.eq(Lines(c.V), 1, "правка в чат не пишет")
 end)
 
+local function Logged(cl, text)
+	local n = 0
+	for _, line in ipairs(cl.ns.db.log) do
+		if line:find(text, 1, true) then n = n + 1 end
+	end
+	return n
+end
+
+T.test("groups: журнал показывает, что объявление дошло, снято или пропало", function()
+	local w, c = Build()
+	T.ok(c.A.ns.Groups.Raise(Spec()))
+	w:Run(30)
+	T.eq(Logged(c.A, "группы: своё объявление ушло гильдии и реле"), 1)
+	T.eq(Logged(c.K, "группы: объявление Арагорн Светлый <Чиллзон> принято (своя гильдия)"), 1)
+	T.eq(Logged(c.V, "группы: объявление Арагорн Светлый <Чиллзон> принято (реле)"), 1)
+	T.eq(Logged(c.B, "группы: объявление Арагорн Светлый <Чиллзон> принято (реле)"), 1)
+	-- Повторы того же объявления журнал не засоряют.
+	w:Run(6 * 60)
+	T.ok(Seen(c.V, c.A), "объявление на доске")
+	T.eq(Logged(c.V, "объявление Арагорн Светлый <Чиллзон> принято"), 1)
+	T.eq(Logged(c.A, "своё объявление ушло"), 1)
+	T.ok(c.A.ns.Groups.Lower())
+	w:Run(30)
+	T.eq(Logged(c.A, "группы: своё объявление снято (сам автор)"), 1)
+	T.eq(Logged(c.K, "группы: Арагорн Светлый <Чиллзон> снял объявление (своя гильдия)"), 1)
+	T.eq(Logged(c.V, "группы: Арагорн Светлый <Чиллзон> снял объявление (реле)"), 1)
+	-- Автор вышел, не сняв объявление: видно, что оно пропало само, а не снято.
+	T.ok(c.B.ns.Groups.Raise({ mode = "P", title = "куда позовут", roles = { t = 0, h = 1, d = 0 } }))
+	w:Run(30)
+	T.ok(Seen(c.A, c.B))
+	c.B:Logout()
+	w:Run(15 * 60)
+	T.no(Seen(c.A, c.B))
+	T.eq(Logged(c.A, "группы: объявление Борис Быстрый <Чиллзон Север> пропало с доски: автор его не повторил"), 1)
+	T.eq(Logged(c.A, "Борис Быстрый <Чиллзон Север> снял объявление"), 0)
+end)
+
+-- Случай из игры: рядовой другой гильдии, которого получатель ещё не слышал, сообщает о своём
+-- объявлении в общий чат. Строка из канала приходит раньше подписанной, и подтвердить гильдию
+-- автора по имени нечем.
+T.test("groups: строка о группе от незнакомого рядового — <?> в чате игры, гильдия в окне", function()
+	local w, c = Build()
+	local new = w:Client({ first = "Нина", surname = "Новая", guild = "Чиллзон Север", rank = 3, class = "WARLOCK", level = 30 })
+	w:Run(200)
+	T.ok(new.ns.Security.MyCertificate(), "новичок получил сертификат")
+	T.eq(c.A.ns.Chat.Attribute(new:Name()), nil, "в другой гильдии его по имени не знают")
+	new:Hardware(function()
+		T.ok(new.ns.Groups.Raise({ mode = "P", kind = "D", title = "Даларан", roles = { t = 0, h = 0, d = 1 }, announce = true }))
+	end)
+	w:Run(30)
+	local line
+	for _, m in ipairs(c.A.ns.Chat.History("A")) do
+		if tostring(m.x):find("Хочу: Даларан", 1, true) then
+			T.eq(line, nil, "строка одна")
+			line = m
+		end
+	end
+	T.ok(line, "строка о группе дошла")
+	T.eq(c.A:Saw("|cff999999<?>|r |Hplayer:"), 1, "в чате игры она напечатана с <?>")
+	T.eq(line.g, "Чиллзон Север", "в окне гильдию подтвердила подписанная копия")
+	T.eq(line.u, nil)
+	T.eq(Logged(c.A, "строка канала от Нина Новая показана без гильдии: подпись <Чиллзон Север> пришла через"), 1)
+	T.ok(Seen(c.A, new), "объявление на доске")
+	T.eq(Logged(c.A, "группы: объявление Нина Новая <Чиллзон Север> принято (реле)"), 1)
+	T.eq(select(2, c.A.ns.Chat.Attribute(new:Name())), "cert", "следующую строку автора подтвердит сертификат")
+end)
+
 T.test("groups: клиент прежней версии объявления и запросы молча пропускает", function()
 	local w, c = Build()
 	local old = w:Client({ first = "Олег", surname = "Старый", guild = "Чиллзон", rank = 3, legacy = true })
@@ -477,6 +544,394 @@ T.test("groups: клиент прежней версии объявления и
 	T.eq(#(old.ns.db.errors or {}), 0, "ошибок нет: " .. tostring((old.ns.db.errors or {})[1]))
 	T.eq(old:Saw("Мёртвые копи"), 0, "в чат ничего не выведено")
 	T.eq(#(c.A.ns.db.errors or {}), 0, "у автора ошибок нет")
+end)
+
+---------------------------------------------------------------------------
+-- Конверт строки чата: объявление через реле и репортёров 0.13.1 и старше
+---------------------------------------------------------------------------
+T.test("groups codec: конверт строки чата для реле прежних версий", function()
+	local Codec = codec()
+	local msg = Codec.EncodeGroup(listing())
+	local env = Codec.WrapGroup(msg)
+	T.eq(env, "M1~A~Чиллзон Север~" .. msg)
+	local inner, guild = Codec.UnwrapGroup(env)
+	T.eq(inner, msg)
+	T.eq(guild, "Чиллзон Север")
+	T.eq(Codec.InnerType(env), "M1", "реле видит строку чата")
+	T.no(Codec.DecodeChat(env), "чат конверт не читает")
+	-- Образец DecodeChat вышедших версий 0.9-0.14.0: третье поле — номер строки, а здесь G1.
+	T.no((env:match("^M1~(%u)~([^~|]+)~(%d%d?%d?%d?)~(%u?%u?)~(.+)$")), "вышедшие версии его не читают")
+	local x = Codec.EncodeGroup({ mode = "X", id = 1794412800, guild = "Чиллзон" })
+	T.eq((Codec.UnwrapGroup(Codec.WrapGroup(x))), x, "снятие тоже")
+	-- Гильдию конверта проверяет подпись, поэтому она должна быть гильдией объявления.
+	T.no(Codec.UnwrapGroup("M1~A~Чиллзон~" .. msg), "внутри объявление другой гильдии")
+	T.no(Codec.UnwrapGroup("M1~C~Чиллзон Север~" .. msg), "только вид A")
+	T.no(Codec.UnwrapGroup(Codec.EncodeChat("A", "Чиллзон Север", 12, "MAGE", msg)), "строка чата с текстом объявления")
+	T.no(Codec.UnwrapGroup("M1~A~Чиллзон Север~G1~G~1794412800~Чиллзон Север~" .. ("x"):rep(300)), "слишком длинно")
+	T.no(Codec.WrapGroup(Codec.EncodeChat("A", "Чиллзон", 12, "MAGE", "привет")), "в конверт идёт только G1")
+	T.no(Codec.WrapGroup("G1~G~1794412800~Чиллзон~" .. ("x"):rep(260)), "длинное G1")
+	-- Самое длинное объявление в конверте подписывается: предел — размер подписанного пакета.
+	local l = listing()
+	l.guild, l.title, l.note = ("Щ"):rep(24), ("Ж"):rep(40), ("я"):rep(90)
+	local long = Codec.WrapGroup(Codec.EncodeGroup(l))
+	T.ok(long and #long > 255 and Codec.UnwrapGroup(long), "конверт длиннее 255 байт читается")
+end)
+
+-- Вложенное подписанного пакета: "G1" — родной пакет, "M1G1" — конверт, "M1" — строка чата.
+local Codec0 = codec()
+local function Kind(wire)
+	local inner = wire:match("^S1~[^~]+~%d+~%d+~[^~]+~(.+)$") or ""
+	if Codec0.UnwrapGroup(inner) then return "M1G1" end
+	return inner:sub(1, 2)
+end
+
+-- Репортёр «Чиллзон Север» и второй её участник (выборы решают сами клиенты).
+local function North(c)
+	if c.V.ns.Census.IsReporter() then return c.V, c.B end
+	T.ok(c.B.ns.Census.IsReporter(), "у Севера есть репортёр")
+	return c.B, c.V
+end
+
+-- Пакеты автора через реле: перехватываются и никуда не уходят, раздаёт их тест (Share).
+local function Hold(c)
+	local held = {}
+	c.ns.Relay.Out = function(_, wire)
+		held[#held + 1] = wire
+		return true
+	end
+	return held
+end
+
+-- Пакеты автора через реле с видом и временем; уходят как обычно.
+local function Outs(c)
+	local list, out = {}, c.ns.Relay.Out
+	c.ns.Relay.Out = function(mode, wire)
+		list[#list + 1] = { t = c.world.now, kind = Kind(wire), mode = mode }
+		return out(mode, wire)
+	end
+	return list
+end
+
+-- Репортёр отдаёт пакет автора своей гильдии, как после RM от реле.
+local function Share(rep, author, wire)
+	rep.ns.Security.Introduce("GUILD", author.ns.Security.MyCertificate().raw)
+	rep.ns.Comm.Send("GUILD", rep.ns.Codec.EncodeRM("RG", "P", author:Name(), wire), {})
+end
+
+local function NoTrace(cl, label)
+	T.eq(cl:Saw("G1~"), 0, label .. ": в чате игры нет конверта")
+	for _, tier in ipairs({ "A", "C", "L" }) do
+		for _, m in ipairs(cl.ns.Chat.History(tier)) do
+			T.no(tostring(m.x):find("G1~", 1, true), label .. ": в окне нет конверта")
+		end
+	end
+	T.eq(Logged(cl, "отклонен"), 0, label .. ": в журнале нет отказов")
+end
+
+T.test("groups: через реле объявление идёт и в конверте строки чата, своей гильдии — только родное", function()
+	local w, c = Build()
+	local guild, outs = Capture(c.A), Outs(c.A)
+	T.ok(c.A.ns.Groups.Raise(Spec()))
+	w:Run(30)
+	T.eq(#guild, 1, "своей гильдии — один родной пакет")
+	T.eq(#outs, 2, "через реле — два пакета")
+	T.eq(outs[1].kind, "G1", "сначала родной")
+	T.eq(outs[2].kind, "M1G1", "затем конверт")
+	for _, viewer in ipairs({ c.V, c.B }) do
+		local e = Seen(viewer, c.A)
+		T.ok(e, viewer:Name() .. " видит объявление")
+		T.eq(e.title, "Мёртвые копи")
+		T.ok(e.wrapped and e.native, "на доске конверт, родной пакет при нём")
+		T.eq(Kind(e.native), "G1")
+		T.eq(viewer.ns.Groups.stats.wrapped, 1)
+		T.eq(Logged(viewer, "объявление Арагорн Светлый <Чиллзон> принято"), 1, "в журнале одна запись")
+		NoTrace(viewer, viewer:Name())
+	end
+	T.eq(c.K.ns.Groups.stats.wrapped, 0, "своей гильдии конверт не приходит")
+	NoTrace(c.K, c.K:Name())
+	-- Снятие — тоже двумя пакетами через реле.
+	T.ok(c.A.ns.Groups.Lower())
+	w:Run(30)
+	T.eq(#outs, 4)
+	T.same({ outs[3].kind, outs[4].kind }, { "G1", "M1G1" })
+	T.no(Seen(c.V, c.A))
+	T.no(Seen(c.B, c.A))
+	T.eq(Logged(c.V, "Арагорн Светлый <Чиллзон> снял объявление"), 1)
+	for _, cl in pairs(c) do
+		T.eq(#cl.ns.db.errors, 0, cl:Name() .. ": ошибки " .. table.concat(cl.ns.db.errors, " | "))
+		T.eq(#cl:Leaks(), 0, cl:Name() .. ": глобалы")
+	end
+end)
+
+T.test("groups: две копии в любом порядке — одно объявление, заявка не сбрасывается, старое не возвращается", function()
+	local w, c = Build()
+	local rep, reader = North(c)
+	local held = Hold(c.A)
+	T.ok(c.A.ns.Groups.Raise(Spec()))
+	w:Run(10)
+	T.eq(#held, 2)
+	local native1, env1 = held[1], held[2]
+	T.eq(Kind(native1), "G1")
+	T.eq(Kind(env1), "M1G1")
+	-- Конверт пришёл раньше родной копии.
+	Share(rep, c.A, env1)
+	w:Run(10)
+	local e = Seen(reader, c.A)
+	T.ok(e and e.wrapped, "объявление из конверта")
+	T.eq(e.title, "Мёртвые копи")
+	T.eq(Logged(reader, "группы: объявление Арагорн Светлый <Чиллзон> принято (реле, в конверте чата)"), 1)
+	T.ok(reader.ns.Groups.Apply(Key(c.A), { t = 0, h = 1, d = 0 }))
+	local stale = reader.ns.Groups.stats.stale
+	Share(rep, c.A, native1)
+	w:Run(10)
+	T.eq(Seen(reader, c.A), e, "запись на доске прежняя")
+	T.eq(e.native, native1, "родной пакет запомнен")
+	T.eq(reader.ns.Groups.stats.stale, stale + 1)
+	T.eq(Logged(reader, "объявление Арагорн Светлый <Чиллзон> принято"), 1, "в журнале одна запись")
+	T.eq(reader.ns.Groups.List()[1].applied, "sent", "заявка не сброшена")
+	-- Правка: родной пакет сразу, конверт — после паузы GROUPS_WRAP_GAP.
+	T.ok(c.A.ns.Groups.Raise(Spec({ title = "Мёртвые копи, героик" })))
+	w:Run(10)
+	T.eq(#held, 3, "конверт правки ждёт")
+	local native2 = held[3]
+	T.eq(Kind(native2), "G1")
+	Share(rep, c.A, native2)
+	w:Run(10)
+	e = Seen(reader, c.A)
+	T.eq(e.title, "Мёртвые копи, героик")
+	T.no(e.wrapped, "на доске родной пакет")
+	T.eq(reader.ns.Groups.List()[1].applied, "sent", "правка заявку не сбрасывает")
+	w:Run(c.A.ns.Config.GROUPS_WRAP_GAP)
+	T.eq(#held, 4, "пауза прошла — конверт правки ушёл")
+	local env2 = held[4]
+	T.eq(Kind(env2), "M1G1")
+	T.ok(env2:find("Мёртвые копи, героик", 1, true), "в конверте последняя правка")
+	-- Конверт правки пришёл позже: запись сменилась, родной пакет правки остался при ней.
+	Share(rep, c.A, env2)
+	w:Run(10)
+	e = Seen(reader, c.A)
+	T.ok(e.wrapped)
+	T.eq(e.native, native2, "родной пакет с тем же текстом, хоть и подписан раньше")
+	T.eq(reader.ns.Groups.List()[1].applied, "sent")
+	-- Снятие: доходит только конверт X, родной X и прежние пакеты приходят следом.
+	T.ok(c.A.ns.Groups.Lower())
+	w:Run(10)
+	T.eq(#held, 6, "снятие — родной пакет и конверт")
+	local lowered = {}
+	for i = 5, 6 do lowered[Kind(held[i])] = held[i] end
+	T.ok(lowered.G1 and lowered.M1G1)
+	Share(rep, c.A, lowered.M1G1)
+	w:Run(10)
+	T.no(Seen(reader, c.A), "снято конвертом")
+	T.eq(Logged(reader, "группы: Арагорн Светлый <Чиллзон> снял объявление (реле, в конверте чата)"), 1)
+	-- Прежний пакет, который этот читатель ещё не видел, и родное снятие следом ничего не меняют.
+	Share(rep, c.A, lowered.G1)
+	w:Run(10)
+	T.no(Seen(reader, c.A))
+	T.eq(Logged(reader, "снял объявление"), 1)
+	NoTrace(reader, reader:Name())
+	T.eq(#reader.ns.db.errors, 0, table.concat(reader.ns.db.errors, " | "))
+end)
+
+T.test("groups: прежний конверт после новой родной копии не откатывает правку", function()
+	local w, c = Build()
+	local rep, reader = North(c)
+	local held = Hold(c.A)
+	T.ok(c.A.ns.Groups.Raise(Spec()))
+	w:Run(10)
+	local env1 = held[2]
+	T.ok(c.A.ns.Groups.Raise(Spec({ title = "Мёртвые копи, героик" })))
+	w:Run(10)
+	Share(rep, c.A, held[3])
+	w:Run(10)
+	T.eq(Seen(reader, c.A).title, "Мёртвые копи, героик")
+	local stale = reader.ns.Groups.stats.stale
+	Share(rep, c.A, env1)
+	w:Run(10)
+	T.eq(Seen(reader, c.A).title, "Мёртвые копи, героик", "правка осталась")
+	T.no(Seen(reader, c.A).wrapped)
+	T.eq(reader.ns.Groups.stats.stale, stale + 1, "прежний конверт отброшен")
+end)
+
+T.test("groups: конверт с объявлением другой гильдии не читается ни доской, ни чатом", function()
+	local w, c = Build()
+	local rep, reader = North(c)
+	local held = Hold(c.A)
+	-- Член «Чиллзон» подписывает конверт своей гильдии с объявлением «Чиллзон Север» внутри.
+	local fake = c.A.ns.Codec.EncodeGroup({
+		mode = "G", id = c.A.env.GetServerTime(), guild = "Чиллзон Север", class = "WARRIOR", level = 24, kind = "D",
+		roles = { t = 1, h = 1, d = 3 }, size = 1, cap = 5, min = 0, every = 5, title = "Подделка", note = "",
+	})
+	T.ok(c.A.ns.Security.Seal("M1~A~Чиллзон~" .. fake, function(wire) held[#held + 1] = wire end))
+	w:Run(5)
+	T.eq(#held, 1)
+	T.eq(Kind(held[1]), "M1", "это не конверт объявления")
+	Share(rep, c.A, held[1])
+	w:Run(10)
+	T.no(Seen(reader, c.A), "на доске нет")
+	T.eq(reader.ns.Groups.stats.heard, 0)
+	NoTrace(reader, reader:Name())
+	T.eq(#reader.ns.db.errors, 0, table.concat(reader.ns.db.errors, " | "))
+end)
+
+T.test("groups: отвечая на GQ, репортёр отдаёт родной пакет, а конверт — только если родного нет", function()
+	local w, c = Build()
+	local rep = North(c)
+	T.ok(c.A.ns.Groups.Raise(Spec()))
+	T.ok(c.K.ns.Groups.Raise({ mode = "P", title = "куда позовут", roles = { t = 0, h = 1, d = 0 } }))
+	w:Run(60)
+	local a, k = Seen(rep, c.A), Seen(rep, c.K)
+	T.ok(a and a.wrapped and a.native, "у репортёра конверт и родной пакет А")
+	-- Объявление К будто бы пришло через реле 0.13.1: только конверт.
+	T.ok(k and k.wrapped)
+	k.native, k.nativeAt = nil, nil
+	local served = {}
+	local send = rep.ns.Comm.Send
+	rep.ns.Comm.Send = function(dist, payload, opts)
+		local kind, _, origin, inner = rep.ns.Codec.DecodeRelay(payload)
+		local what = kind == "RG" and dist == "GUILD" and Kind(inner)
+		if what == "G1" or what == "M1G1" then served[origin] = what end
+		return send(dist, payload, opts)
+	end
+	local late = w:Client({ first = "Леголас", surname = "Зоркий", guild = "Чиллзон Север", rank = 3, class = "HUNTER" })
+	w:Run(200)
+	T.eq(served["Арагорн Светлый"], "G1", "А — родным пакетом")
+	T.eq(served["Карл Великий"], "M1G1", "К — конвертом")
+	T.eq(Logged(rep, "отдано чужих объявлений: 2, из них в конверте чата: 1"), 1)
+	T.ok(Seen(late, c.A) and not Seen(late, c.A).wrapped, "новичок принял родной пакет")
+	T.ok(Seen(late, c.K) and Seen(late, c.K).wrapped, "и конверт")
+	NoTrace(late, late:Name())
+end)
+
+local function Lines(viewer, text)
+	local n = 0
+	for _, m in ipairs(viewer.ns.Chat.History("A")) do
+		if tostring(m.x):find(text, 1, true) then n = n + 1 end
+	end
+	return n
+end
+
+T.test("groups: размещение с объявлением в чат — через реле три пакета, строка чата первой", function()
+	local w, c = Build()
+	local outs = Outs(c.A)
+	c.A:Hardware(function() T.ok(c.A.ns.Groups.Raise(Spec({ announce = true }))) end)
+	w:Run(30)
+	local kinds = {}
+	for _, o in ipairs(outs) do kinds[#kinds + 1] = o.kind end
+	T.same(kinds, { "G1", "M1", "M1G1" }, "родной пакет, строка чата, конверт")
+	T.eq(c.K.ns.Relay.stats.dropped, 0, "реле ничего не отбросило по лимиту")
+	for _, viewer in ipairs({ c.K, c.V, c.B }) do
+		T.eq(Lines(viewer, "Мёртвые копи"), 1, viewer:Name() .. ": строка о группе одна")
+		T.ok(Seen(viewer, c.A), viewer:Name() .. ": объявление на доске")
+		NoTrace(viewer, viewer:Name())
+	end
+	-- Автор правит объявление и пишет в чат: конверт правок не чаще GROUPS_WRAP_GAP, и за минуту
+	-- через реле уходит меньше RELAY_PER_MIN пакетов — строкам чата место остаётся.
+	local C = c.A.ns.Config
+	local from = #outs
+	for i = 1, 8 do
+		c.A.ns.Groups.SetNeed("d", i % 3)
+		w:Run(16)
+		if i % 2 == 0 then
+			c.A:Hardware(function() c.A.ns.Chat.Send("A", "строка " .. i) end)
+		end
+	end
+	w:Run(C.GROUPS_WRAP_GAP)
+	local wraps, worst = 0, 0
+	for i = from + 1, #outs do
+		if outs[i].kind == "M1G1" then wraps = wraps + 1 end
+		local n = 0
+		for j = i, #outs do
+			if outs[j].t - outs[i].t < 60 then n = n + 1 end
+		end
+		worst = math.max(worst, n)
+	end
+	T.ok(wraps >= 1 and wraps <= math.ceil((8 * 16 + C.GROUPS_WRAP_GAP) / C.GROUPS_WRAP_GAP), "конвертов правок: " .. wraps)
+	T.ok(worst < C.RELAY_PER_MIN, "через реле за минуту не больше " .. worst)
+	T.eq(c.K.ns.Relay.stats.dropped, 0, "реле ничего не отбросило")
+	for i = 2, 8, 2 do
+		T.eq(Lines(c.B, "строка " .. i), 1, "строка " .. i .. " дошла")
+	end
+	local last = c.A.ns.Groups.Mine().roles
+	T.same(Seen(c.B, c.A).roles, last, "последняя правка дошла")
+	T.ok(Seen(c.B, c.A).wrapped, "и в конверте")
+	T.same(c.A.ns.Codec.DecodeGroup(Seen(c.B, c.A).text).roles, last)
+end)
+
+T.test("groups: в блокировке сообщений правка и её конверт ждут её конца", function()
+	local w, c = Build()
+	local outs = Outs(c.A)
+	T.ok(c.A.ns.Groups.Raise(Spec()))
+	w:Run(30)
+	T.eq(#outs, 2)
+	c.A.lockdown = true
+	c.A.ns.Groups.SetNeed("d", 0)
+	w:Run(c.A.ns.Config.GROUPS_WRAP_GAP + 60)
+	T.eq(#outs, 2, "в блокировке через реле ничего не ушло")
+	c.A.lockdown = false
+	w:Run(30)
+	local kinds = {}
+	for i = 3, #outs do kinds[#kinds + 1] = outs[i].kind end
+	T.same(kinds, { "G1", "M1G1" }, "после блокировки — правка и её конверт")
+	local reader = select(2, North(c))
+	T.eq(Seen(reader, c.A).roles.d, 0, "правка дошла")
+end)
+
+-- Гибрид tests/wow.lua: Security, Relay и Census версии 0.9 G1 не пересылают, а строку чата — да.
+-- Чат и Comm у гибрида новые, поэтому то, что старый чат конверт молча отбрасывает, проверяет
+-- только сценарий с клиентами из тегов (вне репозитория: CI тегов не видит).
+T.test("groups: реле и репортёр прежней версии пересылают объявление в конверте", function()
+	math.randomseed(tonumber(os.getenv("CZ_SEED") or "") or 7)
+	local w = Wow.World()
+	w:Guild("Чиллзон")
+	w:Guild("Чиллзон Север")
+	w:Guild("Орден Чиллзона")
+	local c = {}
+	-- Автор не в главной гильдии: иначе он сам реле и шлёт объявление репортёрам напрямую.
+	-- Все начинают на 0.9: состав объединения обновлённые автор и читатель берут из своих
+	-- сохранений, ведь глава на 0.9 нового решения о составе не подпишет.
+	c.K = w:Client({ first = "Карл", surname = "Великий", guild = "Чиллзон", rank = 0, legacy = true })
+	c.G = w:Client({ first = "Глеб", surname = "Гордый", guild = "Орден Чиллзона", rank = 0, class = "HUNTER", level = 24, legacy = true })
+	c.V = w:Client({ first = "Вера", surname = "Верная", guild = "Чиллзон Север", rank = 0, legacy = true })
+	c.B = w:Client({ first = "Борис", surname = "Быстрый", guild = "Чиллзон Север", rank = 3, class = "PRIEST", level = 21, legacy = true })
+	w:Run(30)
+	w:Init(c.K, c.V, c.G)
+	w:Pair(c.V, c.K)
+	w:Pair(c.G, c.K)
+	w:Run(400)
+	for _, id in ipairs({ "G", "B" }) do
+		local old = c[id]
+		old:Logout()
+		c[id] = w:Client({ first = old.first, surname = old.surname, guild = old.guild, rank = old.rank, class = old.class,
+			level = old.level, db = old.ns.db })
+		for _, other in ipairs(w.clients) do other.ns.Roster.Scan() end
+		w:Run(1)
+	end
+	w:Run(200)
+	T.ok(c.V.ns.Census.IsReporter(), "репортёр Севера — глава на 0.9")
+	T.ok(c.B.ns.Util.IsMemberGuild("Орден Чиллзона"), "читатель знает гильдию автора")
+	local outs = Outs(c.G)
+	c.G:Hardware(function() T.ok(c.G.ns.Groups.Raise(Spec({ announce = true }))) end)
+	w:Run(60)
+	T.eq(#outs, 3, "через реле — родной пакет, строка чата и конверт")
+	local e = Seen(c.B, c.G)
+	T.ok(e, "объявление дошло через 0.9")
+	T.ok(e and e.wrapped and not e.native, "только в конверте")
+	T.eq(e and e.title, "Мёртвые копи")
+	T.eq(Logged(c.B, "группы: объявление Глеб Гордый <Орден Чиллзона> принято (реле, в конверте чата)"), 1)
+	T.eq(Lines(c.B, "Мёртвые копи"), 1, "строка о группе одна")
+	T.ok(c.B.ns.Groups.Apply(Key(c.G), { t = 0, h = 1, d = 0 }))
+	w:Run(15)
+	T.eq(#c.G.ns.Groups.Applicants(), 1, "заявка дошла напрямую")
+	T.ok(c.G.ns.Groups.Lower())
+	w:Run(60)
+	T.no(Seen(c.B, c.G), "снятие дошло")
+	T.eq(Logged(c.B, "группы: Глеб Гордый <Орден Чиллзона> снял объявление (реле, в конверте чата)"), 1)
+	for _, cl in pairs(c) do
+		T.eq(#cl.ns.db.errors, 0, cl:Name() .. ": ошибки " .. table.concat(cl.ns.db.errors, " | "))
+		T.eq(#cl:Leaks(), 0, cl:Name() .. ": глобалы")
+		T.eq(cl:Saw("G1~"), 0, cl:Name() .. ": конверт в чате")
+	end
 end)
 
 ---------------------------------------------------------------------------

@@ -6,6 +6,12 @@
 -- старый пакет срок не продлевает. Порядок пакетов автора — по времени и номеру из конверта
 -- S1: снятое объявление (X) старым пакетом не вернуть.
 --
+-- Реле и репортёры 0.13.1 и старше G1 не пересылают. Поэтому через реле объявление уходит ещё
+-- и второй подписью в конверте строки чата (Codec.WrapGroup): его они пересылают как строку, а
+-- их чат его молча отбрасывает. Своей гильдии по GUILD уходит только родной G1. Конверт
+-- подписывается после родного пакета, и на доске получателя остаётся он; родной пакет с тем же
+-- текстом запоминается отдельно: им репортёр отвечает на GQ, его читают и клиенты 0.14.0.
+--
 -- Заявки (GA), их отзыв (GW) и ответ автора (GR) идут шёпотом напрямую. Отправителя шёпота
 -- подтверждает сервер, принадлежность к объединению — сертификат по отпечатку (как OQ в
 -- Online.lua). Класс и уровень в заявке — слова просящего.
@@ -44,13 +50,15 @@ local applicants = {} -- заявки ко мне по порядку: { key, na
 local declined = {} -- [ключ] = true: кому я отказал по этому объявлению
 local myWire -- последний подписанный пакет моего объявления: им же отвечаю на GQ
 local sealing, dirty = false, false
+local wrapMsg, wrapFor -- конверт, ещё не отданный в подпись: текст G1 и номер объявления
+local wrapAt, wrapId = -1e9, nil -- когда и для какого объявления подписан последний конверт
 local lastSent, nextBeat, sentSize = -1e9, 0, nil
 local lastRaise, raises = -1e9, {}
 local lastAsk, lastServe, lastServeMine = -1e9, -1e9, -1e9
 local askAt -- когда после входа просить объявления; nil — уже просили
 local rosterPending = false
 
-Groups.stats = { heard = 0, stale = 0, served = 0 }
+Groups.stats = { heard = 0, stale = 0, served = 0, wrapped = 0 }
 
 ---------------------------------------------------------------------------
 -- Игрок и его группа
@@ -157,8 +165,17 @@ local function Every()
 	return math.max(C.GROUPS_EVERY_MIN, math.min(C.GROUPS_EVERY_MAX, math.ceil((Count() + 1) / C.GROUPS_PER_MIN)))
 end
 
-local function Expired(e, now)
-	return now >= e.raised + C.GROUPS_LIFE + 60 or now >= e.at + (2 * e.every + 2) * 60
+-- at — время подписи пакета, по которому судить (по умолчанию пакета на доске).
+local function Expired(e, now, at)
+	return now >= e.raised + C.GROUPS_LIFE + 60 or now >= (at or e.at) + (2 * e.every + 2) * 60
+end
+
+-- Родной пакет записи доски и время его подписи или nil. Родной пакет с тем же текстом G1, что
+-- и конверт на доске, — то же объявление в том же виде, даже если подписан раньше (конверт правки
+-- ждёт GROUPS_WRAP_GAP). Срок родного пакета считается по его собственному времени.
+local function Native(e)
+	if e.native then return e.native, e.nativeAt end
+	if not e.wrapped then return e.wire, e.at end
 end
 
 local function Stamp(wire)
@@ -190,26 +207,51 @@ function Groups.Receive(msg, _, dist, ctx)
 	if dist == "RELAY" and theirs == own then return end -- своя гильдия приходит напрямую
 	local at, seq = Stamp(ctx.wire)
 	if not at then return end
+	-- Конверт строки чата (Codec.WrapGroup): Comm.Dispatch уже достал из него G1.
+	local wrapped = ctx.wrapped == true
 	Groups.stats.heard = Groups.stats.heard + 1
+	if wrapped then Groups.stats.wrapped = Groups.stats.wrapped + 1 end
 	local old = board[key]
 	if not Newer(at, seq, closed[key]) or not Newer(at, seq, old) then
+		-- Родная копия пришла позже конверта с тем же текстом: на доске остаётся конверт, а
+		-- родной пакет нужен для ответа на GQ.
+		if not wrapped and old and old.wrapped and old.text == msg and (not old.nativeAt or at > old.nativeAt) then
+			old.native, old.nativeAt = ctx.wire, at
+		end
 		Groups.stats.stale = Groups.stats.stale + 1
 		return
 	end
+	-- Журнал: по нему видно, дошло ли объявление и каким путём. Повторы того же объявления
+	-- и вторая копия той же рассылки не пишутся.
+	local via = (dist == "GUILD" and "своя гильдия" or "реле") .. (wrapped and ", в конверте чата" or "")
 	if l.mode == "X" then
 		closed[key] = { at = at, seq = seq }
-		if Drop(key) then ns.Fire("GROUPS") end
+		if Drop(key) then
+			ns.Log("группы: %s <%s> снял объявление (%s)", U.Display(c.name), l.guild, via)
+			ns.Fire("GROUPS")
+		end
 		return
 	end
 	l.key, l.name, l.at, l.seq, l.wire, l.cert = key, U.Display(c.name), at, seq, ctx.wire, c.raw
+	l.text, l.wrapped = msg, wrapped or nil
 	l.raised = math.min(l.id, at) -- размещено не позже, чем подписано
+	-- Конверт с тем же текстом сменяет родную копию на доске, но родной пакет остаётся при записи.
+	if wrapped and old and old.text == msg then l.native, l.nativeAt = Native(old) end
 	local ignored = ns.store and ns.store.ignore[key]
-	if ignored or Expired(l, ns.ServerTime()) or (not old and Count() >= C.GROUPS_MAX) then
+	local late = Expired(l, ns.ServerTime())
+	if ignored or late or (not old and Count() >= C.GROUPS_MAX) then
+		if not ignored then
+			ns.Log("группы: объявление %s <%s> не принято: %s (%s)", l.name, l.guild,
+				late and "пришло просроченным" or "доска полна", via)
+		end
 		if Drop(key) then ns.Fire("GROUPS") end
 		return
 	end
 	-- Новое объявление того же автора: прежняя заявка к нему уже не относится.
 	if old and old.id ~= l.id then applied[key] = nil end
+	if not old or old.id ~= l.id then
+		ns.Log("группы: объявление %s <%s> принято (%s)", l.name, l.guild, via)
+	end
 	board[key] = l
 	ns.Fire("GROUPS")
 end
@@ -254,13 +296,57 @@ local LOWERED = {
 	expired = "GROUPS_LOWERED_EXPIRED", full = "GROUPS_LOWERED_FULL",
 	notleader = "GROUPS_LOWERED_NOT_LEADER", joined = "GROUPS_LOWERED_JOINED",
 }
+local LOWERED_LOG = {
+	expired = "вышел срок", full = "группа полна", notleader = "я больше не лидер", joined = "я вошёл в группу",
+}
 
 local function Forget()
 	mine, myWire, dirty, sentSize = nil, nil, false, nil
+	wrapMsg, wrapFor = nil, nil
 	wipe(applicants)
 	wipe(declined)
 	wipe(lastHeard)
 	if saved then saved.mine = nil end
+end
+
+-- Отложенный конверт моего объявления — в подпись и через реле, если пауза GROUPS_WRAP_GAP прошла.
+-- Своей гильдии конверт не нужен: она читает родной пакет по GUILD.
+local function SendWrapped()
+	if not wrapMsg then return end
+	if not mine or mine.id ~= wrapFor then
+		wrapMsg, wrapFor = nil, nil
+		return
+	end
+	if wrapId == wrapFor and ns.Now() - wrapAt < C.GROUPS_WRAP_GAP then return end
+	local id, inner = wrapFor, Codec.WrapGroup(wrapMsg)
+	if not inner then
+		wrapMsg, wrapFor = nil, nil
+		return
+	end
+	local ok, why = ns.Security.Seal(inner, function(wire, failed)
+		if not wire then
+			ns.Log("группы: конверт объявления не подписан: %s", tostring(failed))
+			return
+		end
+		if mine and mine.id == id then ns.Relay.Out("P", wire) end
+	end)
+	if not ok then
+		-- Очередь подписей полна — повтор в следующий тик. Без сертификата ждать нечего.
+		if why ~= "busy" then
+			wrapMsg, wrapFor = nil, nil
+			ns.Log("группы: конверт объявления не подписан: %s", tostring(why))
+		end
+		return
+	end
+	wrapMsg, wrapFor, wrapAt, wrapId = nil, nil, ns.Now(), id
+end
+
+-- Конверт для читателей за реле и репортёрами 0.13.1 и старше. Отдаётся в подпись из обратного
+-- вызова родного пакета: строка в общий чат, которую Raise подписывает сразу за родным пакетом,
+-- уходит раньше конверта. Отказ родной подписи конверту не мешает, и наоборот.
+local function Wrap(msg, id)
+	wrapMsg, wrapFor = msg, id
+	SendWrapped()
 end
 
 local function Broadcast(prio)
@@ -279,13 +365,21 @@ local function Broadcast(prio)
 	local ok, why = ns.Security.Seal(msg, function(wire)
 		sealing = false
 		if not mine or mine.id ~= id then return end -- сняли, пока шла подпись
-		if not wire then
+		if wire then
+			local first = myWire == nil
+			myWire = wire
+			ns.Comm.Send("GUILD", wire, { prio = prio, key = "groups:mine" })
+			local relayed = ns.Relay.Out("P", wire)
+			-- Повторы в журнал не идут, пока реле отвечает: иначе запись раз в every минут.
+			if not relayed then
+				ns.Log("группы: своё объявление ушло гильдии, отвечающего реле нет: остальным уйдёт после его ответа")
+			elseif first then
+				ns.Log("группы: своё объявление ушло гильдии и реле")
+			end
+		else
 			dirty = true
-			return
 		end
-		myWire = wire
-		ns.Comm.Send("GUILD", wire, { prio = prio, key = "groups:mine" })
-		ns.Relay.Out("P", wire)
+		Wrap(msg, id)
 	end)
 	if not ok then
 		sealing, dirty = false, true
@@ -314,8 +408,17 @@ function Groups.Lower(reason)
 			ns.Comm.Send("GUILD", wire, { prio = true, key = "groups:mine" })
 			ns.Relay.Out("P", wire)
 		end)
+		-- Снятие — и в конверте, сразу и своей подписью: без него за реле 0.13.1 объявление
+		-- провисело бы до конца срока.
+		local wrapped = Codec.WrapGroup(msg)
+		if wrapped then
+			ns.Security.Seal(wrapped, function(wire)
+				if wire then ns.Relay.Out("P", wire) end
+			end)
+		end
 	end
 	if reason and LOWERED[reason] then ns.Print(L[LOWERED[reason]]) end
+	ns.Log("группы: своё объявление снято (%s)", LOWERED_LOG[reason] or "сам автор")
 	ns.Fire("GROUPS")
 	return true
 end
@@ -636,6 +739,7 @@ function Groups.Ask()
 	if now - lastAsk < C.GROUPS_ASK_GAP then return false end
 	lastAsk = now
 	ns.Comm.Send("GUILD", "GQ~", { key = "groups-ask" })
+	ns.Log("группы: запрос объявлений у своей гильдии")
 	return true
 end
 
@@ -659,11 +763,20 @@ ns.Comm.On("GQ", function(_, sender, dist)
 		if a.at ~= b.at then return a.at > b.at end
 		return a.key < b.key
 	end)
+	local wrapped = 0
 	for i = 1, math.min(#list, C.GROUPS_SERVE_MAX) do
 		local e = list[i]
+		-- Родной пакет понимают и клиенты 0.14.0; конверт — только если родного нет.
+		local native, nativeAt = Native(e)
+		local wire = native and not Expired(e, time, nativeAt) and native or e.wire
+		if wire ~= native then wrapped = wrapped + 1 end
 		ns.Security.Introduce("GUILD", e.cert)
-		ns.Comm.Send("GUILD", Codec.EncodeRM("RG", "P", e.name, e.wire), { key = "gq:" .. e.key })
+		ns.Comm.Send("GUILD", Codec.EncodeRM("RG", "P", e.name, wire), { key = "gq:" .. e.key })
 		Groups.stats.served = Groups.stats.served + 1
+	end
+	if #list > 0 then
+		ns.Log("группы: на запрос %s отдано чужих объявлений: %d%s", U.Display(sender), math.min(#list, C.GROUPS_SERVE_MAX),
+			wrapped > 0 and (", из них в конверте чата: " .. wrapped) or "")
 	end
 end)
 
@@ -734,6 +847,8 @@ local function Tick()
 	local time, now, changed = ns.ServerTime(), ns.Now(), false
 	for key, e in pairs(board) do
 		if Expired(e, time) then
+			ns.Log("группы: объявление %s <%s> пропало с доски: %s", e.name, e.guild,
+				time >= e.raised + C.GROUPS_LIFE + 60 and "вышел срок" or "автор его не повторил")
 			Drop(key)
 			changed = true
 		end
@@ -766,6 +881,8 @@ local function Tick()
 			and ((dirty and now - lastSent >= C.GROUPS_UPDATE_GAP) or now >= nextBeat) then
 			Broadcast(false)
 		end
+		-- Отложенный конверт: пауза между правками прошла или подпись была занята.
+		if not ns.Comm.InLockdown() then SendWrapped() end
 	end
 	if changed then ns.Fire("GROUPS") end
 end

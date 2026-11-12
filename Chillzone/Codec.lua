@@ -32,6 +32,10 @@
 --           every  через сколько минут автор повторит объявление
 --           title  и note — свободный текст автора без "~" и "|"
 --         Подписывается и идёт как чат: S1 по GUILD своей гильдии и через реле (режим P).
+--         Через реле — ещё и второй подписью в конверте строки чата (после 0.14.0):
+--           M1~A~guild~G1~...   guild — та же, что внутри G1. Реле и репортёры 0.13.1 и
+--                               старше пересылают его как строку чата и сами отбрасывают
+--                               (третье поле не номер), а новые клиенты читают вложенное G1.
 --         GQ~ по GUILD — вошедший просит объявления заново.
 --         GA~id~fp~guild~class~level~t.h.d~note (заявка) · GW~id (отзыв) · GR~id~I|D (ответ:
 --         приглашён, отказ) — шёпотом напрямую, без реле.
@@ -559,6 +563,22 @@ function Codec.DecodeGroup(s)
 		min = bounded(min, 0, 255), every = bounded(every, 1, Codec.GROUP_EVERY_MAX),
 		title = title, note = Codec.GroupText(note, Codec.GROUP_NOTE),
 	}
+end
+
+-- Объявление в конверте строки чата: M1~A~guild~<G1 целиком>. Реле и репортёры 0.13.1 и старше
+-- пересылают подписанное M1, а G1 отбрасывают. Третье поле — не номер строки, поэтому их чат
+-- (DecodeChat) такой пакет молча пропускает. Гильдия конверта равна гильдии объявления.
+function Codec.WrapGroup(msg)
+	local guild = type(msg) == "string" and #msg <= 255 and msg:match("^G1~[GPX]~%d+~([^~|]+)")
+	if not guild then return nil end
+	return "M1~A~" .. guild .. "~" .. msg
+end
+
+-- Вложенное G1 и гильдия или nil: это не конверт объявления.
+function Codec.UnwrapGroup(s)
+	local guild, msg = (type(s) == "string" and s or ""):match("^M1~A~([^~|]+)~(G1~.+)$")
+	if not guild or #msg > 255 or msg:match("^G1~[GPX]~%d+~([^~|]+)") ~= guild then return nil end
+	return msg, guild
 end
 
 -- Заявка в группу: шёпотом автору объявления. fp — отпечаток сертификата просящего.
