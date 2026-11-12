@@ -210,7 +210,6 @@ local function Census(lines, now)
 	end
 	Add(lines, {
 		text = L.DBG_REPORTER:format(who),
-		right = Paint(GREY, L.DBG_ZONES:format(YesNo(ns.char and ns.char.shareZones))),
 	})
 	local peers = {}
 	for key, p in pairs(ns.Census.Peers()) do peers[#peers + 1] = { key = key, p = p } end

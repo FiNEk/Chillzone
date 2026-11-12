@@ -253,19 +253,26 @@ T.test("relay: выборы репортёра одинаковы у всех", 
 	T.no(c.B.ns.Relay.IAmRelay(), "Борис не реле")
 end)
 
-T.test("relay: согласие делиться зонами переключает репортёра", function()
+T.test("relay: зонами делятся все, а привет старого клиента без зон уступает выборы", function()
 	local w, c = Build()
-	for _, cl in pairs(c) do cl:Slash("/chillzone", "zones off") end
+	-- Арагорн — клиент прежней версии с выключенной настройкой: его привет без зон.
+	Wow.ZonesOff(c.A)
 	w:Run(200)
-	c.V:Slash("/chillzone", "zones on")
-	w:Run(200)
-	T.eq(c.B.ns.Census.Reporter(), Key(c.B, "Вера Верная"), "у Бориса")
-	T.eq(c.V.ns.Census.Reporter(), Key(c.V, "Вера Верная"), "у Веры")
+	for _, n in ipairs({ "K", "A", "M" }) do
+		T.eq(c[n].ns.Census.Reporter(), Key(c[n], "Карл Великий"), n .. ": репортёр главной — Карл, он делится зонами")
+	end
 	w:Run(200)
 	local row = c.G.ns.Data.Row("Чиллзон Север")
-	T.ok(row and next(row.r.zones), "зоны Севера видны после согласия")
+	T.ok(row and next(row.r.zones), "зоны Севера видны")
+	-- Оба офицера главной — старые клиенты без зон: офицер важнее рядовой, отчёт главной без зон.
+	Wow.ZonesOff(c.K)
+	w:Run(400)
+	for _, n in ipairs({ "K", "A", "M" }) do
+		T.eq(c[n].ns.Census.Reporter(), Key(c[n], "Арагорн Светлый"), n .. ": репортёр главной — снова Арагорн")
+	end
 	local main = c.G.ns.Data.Row("Чиллзон")
-	T.eq(next(main.r.zones), nil, "зон главной гильдии без согласия нет")
+	T.ok(c.G.ns.Util.SameName(main.origin, "Арагорн Светлый"), "у Глеба отчёт Арагорна")
+	T.eq(next(main.r.zones), nil, "зон главной гильдии от старого клиента нет")
 end)
 
 T.test("relay: перепись сходится у всех", function()
@@ -313,12 +320,10 @@ T.test("relay: без проверки звания любой участник 
 	T.ok(c.M.ns.Relay.IAmRelay(), "«Рядовой» главной — реле")
 	T.eq(c.A.ns.Relay.TrustOf("Мира Тихая"), "member", "согильдийцы — по ростеру")
 	T.eq(c.B.ns.Relay.TrustOf("Мира Тихая"), "member", "member credential verified independently of gossip")
-	-- Рядовой Севера с зонами — единственный, кто делится зонами, поэтому репортёр он.
+	-- Рядовой Аким по имени раньше Бориса: пока в игре Вера, репортёр она, после её ухода — Аким.
 	local Ak = w:Client({ first = "Аким", surname = "Альфа", guild = "Чиллзон Север", rank = 3 })
-	c.B:Slash("/chillzone", "zones off")
-	Ak:Slash("/chillzone", "zones on")
 	w:Run(200)
-	T.eq(Ak.ns.Census.Reporter(), Key(Ak, "Вера Верная"), "zone sharing does not preempt an officer")
+	T.eq(Ak.ns.Census.Reporter(), Key(Ak, "Вера Верная"), "name order does not preempt an officer")
 	c.V:Logout()
 	w:Run(220)
 	for _, cl in ipairs({ c.B, Ak }) do
@@ -515,20 +520,27 @@ T.test("relay: регистрация уходит, даже если реле �
 	T.eq(#V.ns.db.errors, 0, "без ошибок")
 end)
 
-T.test("relay: зоны включаются один раз, дальше решает игрок", function()
+T.test("relay: зоны отправляются всегда, даже у выключившего их раньше", function()
 	local w = Wow.World()
 	w:Guild("Чиллзон")
-	local fresh = w:Client({ first = "Новый", surname = "Игрок", guild = "Чиллзон", rank = 3 })
-	local db = { chars = { [Key(fresh, "Старый Игрок")] = { shareZones = false } } }
+	local fresh = w:Client({ first = "Новый", surname = "Игрок", guild = "Чиллзон", rank = 1 })
+	-- Сохранения прежней версии, где игрок выключил зоны.
+	local db = { chars = { [Key(fresh, "Старый Игрок")] = { shareZones = false, zonesDefaulted = true } } }
 	local old = w:Client({ first = "Старый", surname = "Игрок", guild = "Чиллзон", rank = 3, db = db })
-	w:Run(1)
-	T.eq(fresh.ns.char.shareZones, true, "новый персонаж")
-	T.eq(old.ns.char.shareZones, true, "заходивший раньше персонаж")
+	w:Run(30)
+	w:Init(fresh)
+	w:Run(70)
+	T.ok(fresh.ns.Census.Peers()[old.ns.myKey].z, "привет выключавшего — с зонами")
+	T.ok(old.ns.Census.Peers()[fresh.ns.myKey].z, "привет нового — тоже")
 	old:Slash("/chillzone", "zones off")
-	old:Logout()
-	local back = w:Client({ first = "Старый", surname = "Игрок", guild = "Чиллзон", rank = 3, db = db })
-	w:Run(1)
-	T.eq(back.ns.char.shareZones, false, "отказ после включения сохраняется")
+	T.eq(old:Saw("зоны своей гильдии теперь отправляются всегда"), 1, "команда только объясняет")
+	old:Slash("/chillzone", "help")
+	T.eq(old:Saw("/chillzone zones"), 0, "в справке её нет")
+	w:Run(70)
+	T.ok(fresh.ns.Census.Peers()[old.ns.myKey].z, "и ничего не выключает")
+	local r = old.ns.Roster.report
+	T.ok(r and next(r.zones), "в ростере есть зоны")
+	T.ok(next(old.ns.Codec.DecodeReport(old.ns.Codec.EncodeReport(old.ns.Codec.Shareable(r, true))).zones), "и в отчёте")
 end)
 
 T.test("relay: уровни чата — офицеры и главы", function()
@@ -831,7 +843,6 @@ end)
 T.test("relay: рядовой не становится репортёром — ни с первым именем, ни с зонами", function()
 	local w, c = Build({ config = RANKS })
 	local Ak = w:Client({ first = "Аким", surname = "Альфа", guild = "Чиллзон Север", rank = 3, config = RANKS })
-	Ak:Slash("/chillzone", "zones on")
 	w:Run(200)
 	for _, cl in ipairs({ c.B, c.V, Ak }) do
 		T.eq(cl.ns.Census.Reporter(), Key(cl, "Вера Верная"), cl:Name() .. ": officer has priority over veteran")
@@ -1380,7 +1391,7 @@ T.test("relay: новая гильдия узнаёт общую тройку о
 end)
 
 T.test("relay: автор после долгого молчания пишет через общую тройку", function()
-	-- Общая тройка — молчащие офицеры, зонами они не делятся. Репортёр главной гильдии — четвёртый
+	-- Общая тройка — молчащие офицеры прежней версии, зоны у них выключены. Репортёр главной гильдии — четвёртый
 	-- офицер: только его сертификат расходится с отчётами, но аренд других гильдий у него нет.
 	local w, c = PartialNetwork({
 		root = { "Ярослав", "Старший", 0 }, O1 = { "Богдан", "Бравый", 1 },
@@ -1388,10 +1399,7 @@ T.test("relay: автор после долгого молчания пишет 
 		O4 = { "Дмитрий", "Четвёртый", 1 },
 		R1 = { "Адам", "Рядовой", 3 }, R2 = { "Алина", "Рядовая", 3 },
 	}, { "O1", "O2", "O3" })
-	for _, id in ipairs({ "O1", "O2", "O3" }) do
-		c[id].ns.char.shareZones = false
-		c[id].ns.Census.SendHello()
-	end
+	for _, id in ipairs({ "O1", "O2", "O3" }) do Wow.ZonesOff(c[id]) end
 	w:Run(240)
 	T.ok(c.O4.ns.Census.IsReporter(), "репортёр главной — четвёртый офицер")
 	local author = c.B
@@ -1806,17 +1814,15 @@ end)
 ---------------------------------------------------------------------------
 
 -- Запасное реле — глава Ярослав (корень) с большим ключом, вне общей тройки офицеров. Юг
--- зарегистрирован только у тройки. Зонами делится один reporter: он репортёр главной гильдии.
+-- зарегистрирован только у тройки. Зонами делится один reporter: остальные — клиенты прежней версии
+-- с выключенными зонами (Wow.ZonesOff), и репортёр главной гильдии — он.
 local function SpareRelay(reporter)
 	local w, c = PartialNetwork({
 		root = { "Ярослав", "Старший", 0 }, O1 = { "Богдан", "Бравый", 1 },
 		O2 = { "Виктор", "Верный", 1 }, O3 = { "Глафира", "Гордая", 1 },
 	}, { "O1", "O2", "O3" })
 	for _, id in ipairs({ "root", "O1", "O2", "O3" }) do
-		if id ~= reporter then
-			c[id].ns.char.shareZones = false
-			c[id].ns.Census.SendHello()
-		end
+		if id ~= reporter then Wow.ZonesOff(c[id]) end
 	end
 	ConnectSouth(w, c)
 	for _, id in ipairs({ "O1", "O2", "O3" }) do

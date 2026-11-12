@@ -82,7 +82,9 @@ function Census.Reporter(withoutMe)
 		if not Trusted(key) then return false end
 		return not officers or ns.Roster.IsOfficerRank(ns.Roster.byKey[key])
 	end
-	return Codec.PickReporter(me, ns.char and ns.char.shareZones or false, live, now, C.PEER_WINDOW, eligible)
+	-- Зонами я делюсь всегда; флаг зон из чужих приветов по-прежнему важен: старые клиенты с
+	-- выключенной настройкой выборы уступают.
+	return Codec.PickReporter(me, true, live, now, C.PEER_WINDOW, eligible)
 end
 
 local acting, handingUntil = false, nil -- я репортёр; до каких пор я передаю аренду
@@ -211,7 +213,7 @@ function Census.Helpers(except)
 	end
 	if not Helps(ns.VERSION) then return list end
 	if helloReady ~= false and ns.Security.MyCertificate() and Settled(listenSince, now) then
-		add(ns.myKey, ns.Roster.IsOfficerRank(ns.Roster.RankOf(ns.me)), ns.char and ns.char.shareZones)
+		add(ns.myKey, ns.Roster.IsOfficerRank(ns.Roster.RankOf(ns.me)), true)
 	end
 	for key, p in pairs(Live(now)) do
 		if not p.unready and Settled(p.since, now) and Helps(p.version)
@@ -241,7 +243,7 @@ function Census.SendHello()
 	if not ns.IsMember() then return end
 	local R = ns.Relay
 	local ready = ns.Security.MyCertificate() ~= nil
-	local hello = Codec.EncodeHello(ns.VERSION, ns.char.shareZones, R and R.IAmRelay() or false, not ready)
+	local hello = Codec.EncodeHello(ns.VERSION, true, R and R.IAmRelay() or false, not ready)
 	if ns.Comm.Send("GUILD", hello, { prio = ns.Comm.PRIO_CONTROL, key = "hello" }) then helloReady = ready end
 end
 
@@ -280,7 +282,7 @@ function Census.MaybeReport(force)
 	if not force and now - lastSentAt < C.REPORT_EVERY - 5 then return end
 	r.users = Census.Users()
 	r.version = ns.VERSION
-	local shareable = Codec.Shareable(r, ns.char.shareZones)
+	local shareable = Codec.Shareable(r, true)
 	local raw = Codec.EncodeReport(shareable)
 	-- Время исключаем только из сравнения, не из отправляемого отчёта.
 	-- Shareable вернул копию: время ростера и все поля (включая связных) сохраняются.
@@ -526,26 +528,14 @@ ns.On("GUILD_CHANGED", function()
 	ns.After(3, "hello after guild change", Census.SendHello)
 end)
 
-ns.Command("zones", function(arg)
-	arg = U.Fold(U.Trim(arg))
-	if arg == "on" or arg == "вкл" then
-		ns.char.shareZones = true
-	elseif arg == "off" or arg == "выкл" then
-		ns.char.shareZones = false
-	else
-		ns.Print(ns.char.shareZones and L.ZONES_IS_ON or L.ZONES_IS_OFF)
-		return
-	end
-	ns.Print(ns.char.shareZones and L.ZONES_ON or L.ZONES_OFF)
-	Census.SendHello()
-	lastSent = nil
-	ns.Fire("DATA")
-end, L.HELP_ZONES)
+-- Настройки «делиться зонами» больше нет: зоны своей гильдии отправляются всегда. Команда
+-- осталась, чтобы привычное /chillzone zones on|off не называлось неизвестным; в справке её нет.
+ns.Command("zones", function() ns.Print(L.ZONES_ALWAYS) end)
 
 ns.Status(function()
 	local n = 0
 	for _ in pairs(Live(ns.Now())) do n = n + 1 end
-	return L.STATUS_CENSUS:format(Census.ReporterName() or "—", Census.IsReporter() and L.YES or L.NO, n, ns.char.shareZones and L.YES or L.NO)
+	return L.STATUS_CENSUS:format(Census.ReporterName() or "—", Census.IsReporter() and L.YES or L.NO, n)
 end)
 
 ns.Status(function()

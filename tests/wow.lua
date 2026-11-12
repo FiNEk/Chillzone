@@ -639,6 +639,9 @@ function World:Client(opts)
 	self.clients[#self.clients + 1] = c
 	c:Fire("ADDON_LOADED", "Chillzone")
 	c:Fire("PLAYER_LOGIN")
+	-- Клиент 0.9 читает настройку «делиться зонами»; у вышедших версий она включена, пока игрок её
+	-- не выключил. Новый Core её больше не заводит.
+	if opts.legacy and c.ns.char and c.ns.char.shareZones == nil then c.ns.char.shareZones = true end
 	-- Вход персонажа или перезагрузка интерфейса (opts.reload).
 	c:Fire("PLAYER_ENTERING_WORLD", not opts.reload, opts.reload == true)
 	return c
@@ -743,6 +746,18 @@ function Wow.CertRank(ns, guild, name)
 end
 
 Wow.SERVER0 = SERVER0
+
+-- Клиент прежней версии с выключенной настройкой «делиться зонами»: привет без флага зон, в
+-- выборах репортёра себя считает не делящимся, отчёт без зон. Новые клиенты зонами делятся всегда,
+-- а такой привет по-прежнему уступает выборы.
+function Wow.ZonesOff(cl)
+	local Codec = cl.ns.Codec
+	local hello, pick, shareable = Codec.EncodeHello, Codec.PickReporter, Codec.Shareable
+	Codec.EncodeHello = function(version, _, ...) return hello(version, false, ...) end
+	Codec.PickReporter = function(me, _, ...) return pick(me, false, ...) end
+	Codec.Shareable = function(r) return shareable(r, false) end
+	cl.ns.Census.SendHello()
+end
 
 -- Номер вышедшей версии без помощников репортёра (Config.LAST_WITHOUT_HELPERS) и следующий за ним.
 -- Номер аддона в ветке может совпадать с вышедшим: тогда помощников нет, и тестам помощников нужны

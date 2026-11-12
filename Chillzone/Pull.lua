@@ -231,7 +231,7 @@ local function Seal(sender, own, st)
 		return
 	end
 	local r = ns.Roster.report
-	local copy = Codec.Shareable(r, ns.char.shareZones)
+	local copy = Codec.Shareable(r, true)
 	copy.users = ns.Census.Users()
 	copy.version = ns.VERSION
 	local job = { at = ns.Now(), waiters = { waiter }, epoch = epoch }
