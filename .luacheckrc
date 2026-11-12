@@ -37,6 +37,7 @@ read_globals = {
 	"C_GuildInfo",
 	"C_FriendList",
 	"C_InputInterfaceStyle",
+	"C_LFGList",
 	"C_Map",
 	"C_PartyInfo",
 	"C_Timer",
@@ -62,6 +63,7 @@ read_globals = {
 	"GetGuildRosterInfo",
 	"GetGuildRosterLastOnline",
 	"GetNormalizedRealmName",
+	"GetNumGroupMembers",
 	"GetNumGuildMembers",
 	"GetNumWhoResults",
 	"GetPlayerInfoByGUID",
@@ -83,6 +85,8 @@ read_globals = {
 	"debugstack",
 	"GuildRoster",
 	"IsInGuild",
+	"IsInGroup",
+	"IsInRaid",
 	"IsBuiltinChatWindow",
 	"InCombatLockdown",
 	"IsShiftKeyDown",
@@ -93,6 +97,7 @@ read_globals = {
 	"UnitFactionGroup",
 	"UnitFullName",
 	"UnitGUID",
+	"UnitIsGroupLeader",
 	"UnitLevel",
 
 	-- фреймы, шрифты и константы

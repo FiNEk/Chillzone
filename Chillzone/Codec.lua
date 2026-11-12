@@ -22,6 +22,19 @@
 -- Онлайн: OQ~guild~fp · OL~guild~fp~st~i~n~имя:класс:уровень[:1],...  (шёпотом напрямую, без реле; 1 — есть аддон)
 -- Отчёт напрямую: RQ~guild~fp~st · RA~guild~<S1 с R1>  (шёпотом напрямую, без реле; st — base36 времени отчёта
 --         у спрашивающего, 0 — нет; RA — отчёт гильдии ответившего, подписанный им самим; 0.13.1 и более ранние версии их не знают)
+-- Группы: G1~mode~id~guild~class~level~kind~t.h.d~size~cap~min~every~title~note   (после 0.13.1)
+--           mode   G — собирают группу, P — игрок ищет группу, X — объявление снято
+--                  (у X только G1~X~id~guild)
+--           id     серверное время размещения: по нему заявка находит объявление
+--           kind   D подземелья, R рейды, P PvP, Q задания, O прочее
+--           t.h.d  G: сколько ещё нужно танков, лекарей и бойцов; P: кем может идти автор
+--           size   сколько уже в группе, cap — сколько всего мест, min — уровень от (0 — любой)
+--           every  через сколько минут автор повторит объявление
+--           title  и note — свободный текст автора без "~" и "|"
+--         Подписывается и идёт как чат: S1 по GUILD своей гильдии и через реле (режим P).
+--         GQ~ по GUILD — вошедший просит объявления заново.
+--         GA~id~fp~guild~class~level~t.h.d~note (заявка) · GW~id (отзыв) · GR~id~I|D (ответ:
+--         приглашён, отказ) — шёпотом напрямую, без реле.
 local ADDON, ns = ...
 
 local Codec = {}
@@ -308,7 +321,7 @@ end
 -- Конверты реле
 ---------------------------------------------------------------------------
 Codec.RELAY_MODES = { L = true, P = true } -- L: новый заменяет старый того же автора; P: каждое
-Codec.INNER = { R1 = true, M1 = true, S1 = true }
+Codec.INNER = { R1 = true, M1 = true, S1 = true, G1 = true }
 
 function Codec.InnerType(inner)
 	local t = type(inner) == "string" and inner:sub(1, 2)
@@ -451,6 +464,139 @@ function Codec.DecodeOnlinePage(s)
 		out[#out + 1] = { name = name, class = classFile(code), level = num(level), addon = flag == "1" or nil }
 	end
 	return { guild = guild, fp = fp, st = st, i = i, n = n, people = out }
+end
+
+---------------------------------------------------------------------------
+-- Поиск групп (Groups.lua). Название и примечание — свободный текст автора: списка мест
+-- в аддоне нет, поэтому поле ничего не проверяет, кроме длины и запрещённых знаков.
+---------------------------------------------------------------------------
+Codec.GROUP_KINDS = { D = true, R = true, P = true, Q = true, O = true }
+Codec.GROUP_TITLE = 64 -- байт: 32 буквы кириллицы
+Codec.GROUP_NOTE = 100
+Codec.GROUP_APPLY_NOTE = 80
+Codec.GROUP_CAP = 40 -- мест в рейде
+Codec.GROUP_EVERY_MAX = 60
+local GROUP_TIME_MAX = 4102444800 -- 2100 год: серверное время размещения
+
+local function IsTail(b)
+	return b ~= nil and b >= 128 and b < 192
+end
+
+-- Свободный текст объявления: без "|", "~" и управляющих байтов, пробелы схлопнуты,
+-- не длиннее max байт и не полбуквы. Идемпотентно.
+function Codec.GroupText(s, max)
+	s = tostring(s or ""):gsub("[|~%c]", " "):gsub("%s%s+", " "):gsub("^%s+", ""):gsub("%s+$", "")
+	max = max or Codec.GROUP_TITLE
+	if #s > max then
+		local n = math.max(0, max)
+		while n > 0 and IsTail(s:byte(n + 1)) do n = n - 1 end
+		s = s:sub(1, n):gsub("%s+$", "")
+	end
+	return s
+end
+
+local function bounded(v, lo, hi)
+	local n = floor(tonumber(v) or lo)
+	if n ~= n or n < lo then return lo end
+	if n > hi then return hi end
+	return n
+end
+
+local function encRoles(r)
+	r = r or {}
+	return ("%d.%d.%d"):format(bounded(r.t, 0, Codec.GROUP_CAP), bounded(r.h, 0, Codec.GROUP_CAP), bounded(r.d, 0, Codec.GROUP_CAP))
+end
+
+local function decRoles(t, h, d)
+	return { t = bounded(t, 0, Codec.GROUP_CAP), h = bounded(h, 0, Codec.GROUP_CAP), d = bounded(d, 0, Codec.GROUP_CAP) }
+end
+
+local function groupId(v)
+	local n = type(v) == "string" and #v <= 10 and v:find("^%d+$") and tonumber(v) or nil
+	return (n and n >= 1 and n <= GROUP_TIME_MAX) and n or nil
+end
+
+-- l: { mode, id, guild, class, level, kind, roles = { t, h, d }, size, cap, min, every, title, note }.
+-- nil — нет номера, гильдии или (у группы) названия. Примечание укорачивается, чтобы всё
+-- сообщение уместилось в 255 байт.
+function Codec.EncodeGroup(l)
+	local guild = clean(l.guild)
+	local id = groupId(tostring(floor(tonumber(l.id) or 0)))
+	if not id or guild == "" or LongGuild(guild) then return nil end
+	if l.mode == "X" then return ("G1~X~%d~%s"):format(id, guild) end
+	if l.mode ~= "G" and l.mode ~= "P" then return nil end
+	local title = Codec.GroupText(l.title, Codec.GROUP_TITLE)
+	if title == "" and l.mode == "G" then return nil end
+	local head = ("G1~%s~%d~%s~%s~%d~%s~%s~%d~%d~%d~%d~"):format(l.mode, id, guild, classCode(l.class),
+		bounded(l.level, 0, 255), Codec.GROUP_KINDS[l.kind] and l.kind or "O", encRoles(l.roles),
+		bounded(l.size, 1, Codec.GROUP_CAP), bounded(l.cap, 0, Codec.GROUP_CAP), bounded(l.min, 0, 255),
+		bounded(l.every, 1, Codec.GROUP_EVERY_MAX))
+	local note = Codec.GroupText(l.note, math.min(Codec.GROUP_NOTE, 255 - #head - #title - 1))
+	return head .. title .. "~" .. note
+end
+
+-- Таблица как у EncodeGroup или nil. Незнакомый вид места читается как «прочее», поля после
+-- примечания не мешают: их добавят следующие версии.
+function Codec.DecodeGroup(s)
+	if type(s) ~= "string" or #s > 255 then return nil end
+	local mode, rawId, rest = s:match("^G1~([GPX])~(%d+)~(.+)$")
+	local id = groupId(rawId)
+	if not id then return nil end
+	if mode == "X" then
+		local guild = rest:match("^([^~|]+)")
+		if not guild or LongGuild(guild) then return nil end
+		return { mode = "X", id = id, guild = guild }
+	end
+	local guild, class, level, kind, t, h, d, size, cap, min, every, title, note = rest:match(
+		"^([^~|]+)~(%u?%u?)~(%d%d?%d?)~(%u)~(%d%d?)%.(%d%d?)%.(%d%d?)~(%d%d?)~(%d%d?)~(%d%d?%d?)~(%d%d?)~([^~]*)~([^~]*)")
+	if not guild or LongGuild(guild) then return nil end
+	title = Codec.GroupText(title, Codec.GROUP_TITLE)
+	if title == "" and mode == "G" then return nil end
+	return {
+		mode = mode, id = id, guild = guild, class = classFile(class), level = bounded(level, 0, 255),
+		kind = Codec.GROUP_KINDS[kind] and kind or "O", roles = decRoles(t, h, d),
+		size = bounded(size, 1, Codec.GROUP_CAP), cap = bounded(cap, 0, Codec.GROUP_CAP),
+		min = bounded(min, 0, 255), every = bounded(every, 1, Codec.GROUP_EVERY_MAX),
+		title = title, note = Codec.GroupText(note, Codec.GROUP_NOTE),
+	}
+end
+
+-- Заявка в группу: шёпотом автору объявления. fp — отпечаток сертификата просящего.
+function Codec.EncodeGroupApply(id, fp, guild, class, level, roles, note)
+	return ("GA~%d~%s~%s~%s~%d~%s~"):format(id, fp, clean(guild), classCode(class), bounded(level, 0, 255), encRoles(roles))
+		.. Codec.GroupText(note, Codec.GROUP_APPLY_NOTE)
+end
+
+function Codec.DecodeGroupApply(s)
+	if type(s) ~= "string" or #s > 255 then return nil end
+	local rawId, fp, guild, class, level, t, h, d, note = s:match(
+		"^GA~(%d+)~([%w_-]+)~([^~|]+)~(%u?%u?)~(%d%d?%d?)~(%d%d?)%.(%d%d?)%.(%d%d?)~([^~]*)")
+	local id = groupId(rawId)
+	if not id or LongGuild(guild) then return nil end
+	return {
+		id = id, fp = fp, guild = guild, class = classFile(class), level = bounded(level, 0, 255),
+		roles = decRoles(t, h, d), note = Codec.GroupText(note, Codec.GROUP_APPLY_NOTE),
+	}
+end
+
+function Codec.EncodeGroupWithdraw(id)
+	return ("GW~%d"):format(id)
+end
+
+function Codec.DecodeGroupWithdraw(s)
+	return groupId(type(s) == "string" and s:match("^GW~(%d+)"))
+end
+
+-- Ответ автора объявления: I — приглашён, D — отказ.
+function Codec.EncodeGroupReply(id, answer)
+	return ("GR~%d~%s"):format(id, answer)
+end
+
+function Codec.DecodeGroupReply(s)
+	local rawId, answer = (type(s) == "string" and s or ""):match("^GR~(%d+)~([ID])")
+	local id = groupId(rawId)
+	if not id then return nil end
+	return id, answer
 end
 
 ---------------------------------------------------------------------------

@@ -1244,7 +1244,7 @@ ns.Comm.On("KQ", function(msg, sender, dist)
     served[key] = now
     ns.Comm.Send("WHISPER", "KP~" .. Ed.ToB64(raw), { target = sender, prio = true, key = "kp:" .. key })
 end)
--- Подписать своё M1 или R1. done(wire) — подписано; done(nil, why) — не вышло уже после
+-- Подписать своё M1, R1 или G1. done(wire) — подписано; done(nil, why) — не вышло уже после
 -- постановки в очередь. Возвращает true (подпись в очереди) или false, why.
 -- why: "nocert" — нет действующего сертификата, "busy" — очередь подписей полна,
 -- "failed" — подпись не удалась или сертификат сменился, пока она шла, "long" — пакет велик.
@@ -1252,7 +1252,7 @@ function S.Seal(inner, done)
     local c, saved = S.MyCertificate(), identity
     if not c or not saved or not ns.IsMember() then return false, "nocert" end
     local kind = inner:sub(1, 2)
-    if kind ~= "M1" and kind ~= "R1" then return false, "failed" end
+    if kind ~= "M1" and kind ~= "R1" and kind ~= "G1" then return false, "failed" end
     saved.sequence = saved.sequence + 1
     local at, sequence = tostring(ns.ServerTime()), tostring(saved.sequence)
     local body = Pack("MESSAGE", { ns.group, ns.faction, c.raw, at, sequence, inner })
@@ -1286,11 +1286,15 @@ function S.Open(wire, sender, done, viaGuild, quiet)
     if not fp or #fp ~= FP_LEN or not stamp or not sequence or not sig or #sig ~= 64 then return false end
     local kind = inner:sub(1, 2)
     local guild = inner:match("^M1~[ACL]~([^~]+)~") or inner:match("^R1~([^~]+)~")
-    if (kind ~= "M1" and kind ~= "R1") or not guild or not U.IsMemberGuild(guild) then return false end
+        or inner:match("^G1~[GPX]~%d+~([^~]+)")
+    if (kind ~= "M1" and kind ~= "R1" and kind ~= "G1") or not guild or not U.IsMemberGuild(guild) then return false end
+    -- Объявление о группе живёт до следующего повтора автора: его же пакет репортёр отдаёт
+    -- вошедшим позже. Порядок пакетов автора и снятые объявления помнит Groups.lua.
+    local keep = kind == "M1" and C.CHAT_DEDUPE or kind == "G1" and C.GROUPS_WINDOW or C.TOTAL_KEEP
     local function Check(c)
         local now = ns.ServerTime()
         if not c or not c.approvedRoot or not Current(c) or U.GuildKey(guild) ~= U.GuildKey(c.guild) or stamp > now + 30
-            or now - stamp > (kind == "M1" and C.CHAT_DEDUPE or C.TOTAL_KEEP) then return false end
+            or now - stamp > keep then return false end
         local tier = inner:match("^M1~([ACL])~")
         if tier and S.Level(c) < ({ A = 1, C = 2, L = 3 })[tier] then return false end
         local cached = cachedOpens[wire]

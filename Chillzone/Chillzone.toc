@@ -37,6 +37,7 @@ Census.lua
 Relay.lua
 Online.lua
 Pull.lua
+Groups.lua
 Channel.lua
 Chat.lua
 ChatConfig.lua
@@ -52,6 +53,7 @@ Views.lua
 ChatPane.lua
 RecruitPane.lua
 CensusPane.lua
+GroupsPane.lua
 Debug.lua
 JournalPane.lua
 UnionPane.lua

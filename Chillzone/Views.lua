@@ -667,3 +667,217 @@ function Views.MinimapTip(tt)
 	tt:AddLine(L.MINIMAP_RIGHT, 0.6, 0.6, 0.6)
 	tt:AddLine(L.MINIMAP_DRAG, 0.6, 0.6, 0.6)
 end
+
+---------------------------------------------------------------------------
+-- Вкладка «Группы»: строки доски, подсказки, причины отказа
+---------------------------------------------------------------------------
+-- Значки ролей — обычные значки умений из самой первой версии игры: они есть в любом клиенте.
+Views.ROLE_ICON = {
+	t = "Interface\\Icons\\Ability_Defend",
+	h = "Interface\\Icons\\Spell_Holy_Heal",
+	d = "Interface\\Icons\\Ability_DualWield",
+}
+
+function Views.RoleIcon(role, size)
+	size = size or 14
+	return ("|T%s:%d:%d:0:0:64:64:5:59:5:59|t"):format(Views.ROLE_ICON[role] or Views.ROLE_ICON.d, size, size)
+end
+
+-- Роли значками: counts — с числами (кого ищет группа), иначе только значки (кем может идти игрок).
+function Views.GroupRoles(roles, counts)
+	local out = {}
+	for _, k in ipairs(ns.Groups.ROLES) do
+		local n = type(roles) == "table" and roles[k] or 0
+		if n > 0 then out[#out + 1] = Views.RoleIcon(k) .. (counts and (WHITE .. n .. "|r") or "") end
+	end
+	return table.concat(out, " ")
+end
+
+-- Почему не получилось разместить объявление или подать заявку.
+function Views.GroupWhy(why, arg)
+	if why == "nocert" then return ns.Security.NotReadyReason() end
+	if why == "wait" then
+		-- С числом — лимит размещений (секунды), без числа — пауза между заявками одному автору.
+		if not arg then return L.GROUPS_WHY_SOON end
+		if arg >= 90 then return L.GROUPS_WHY_WAIT_MIN:format(math.ceil(arg / 60)) end
+		return L.GROUPS_WHY_WAIT:format(arg)
+	end
+	return rawget(L, "GROUPS_WHY_" .. tostring(why):upper()) or L.GROUPS_WHY_FAILED
+end
+
+-- Сколько минут объявлению осталось до снятия.
+function Views.GroupLeft(l)
+	return math.max(1, math.ceil((l.id + C.GROUPS_LIFE - ns.ServerTime()) / 60))
+end
+
+local function GroupTip(e, own)
+	return function(tt)
+		tt:AddLine(Views.Name(e.name, e.class))
+		local who = Codec.Plain(e.guild)
+		if e.level and e.level > 0 then who = who .. ", " .. L.TIP_LEVEL:format(e.level) end
+		if e.class and L.CLASS[e.class] then who = who .. ", " .. L.CLASS[e.class] end
+		tt:AddLine(who, 0.8, 0.8, 0.8)
+		tt:AddLine(" ")
+		if e.mode == "G" then
+			tt:AddLine(e.title, 1, 1, 1, true)
+			local need = ns.Groups.RoleText(e.roles, true)
+			tt:AddLine(need ~= "" and L.GROUPS_TIP_NEED:format(need) or L.GROUPS_TIP_NEED_ANY, 1, 0.82, 0, true)
+			tt:AddLine(L.GROUPS_TIP_SIZE:format(e.size, e.cap), 0.8, 0.8, 0.8)
+			if e.min > 0 then tt:AddLine(L.GROUPS_TIP_MIN:format(e.min), 0.8, 0.8, 0.8) end
+		else
+			tt:AddLine(e.title ~= "" and e.title or L.GROUPS_ANYWHERE, 1, 1, 1, true)
+			tt:AddLine(L.GROUPS_TIP_ROLES:format(ns.Groups.RoleText(e.roles)), 1, 0.82, 0, true)
+		end
+		if e.note ~= "" then tt:AddLine(e.note, 0.8, 0.8, 0.8, true) end
+		tt:AddLine(L.GROUPS_TIP_KIND:format(L["GROUPS_KIND_" .. e.kind]), 0.6, 0.6, 0.6)
+		if not own then
+			tt:AddLine(L.GROUPS_TIP_AGE:format(Views.Ago(ns.ServerTime() - e.raised)), 0.6, 0.6, 0.6)
+			tt:AddLine(L.GROUPS_TIP_WHISPER, 0.5, 0.83, 0.76)
+		end
+	end
+end
+
+-- Одна запись доски. action: "apply", "withdraw", "invite" или nil; status — что написать
+-- вместо кнопки или под ней.
+local function GroupRow(e, own)
+	local level = (e.level and e.level > 0) and (", " .. e.level) or ""
+	local row = {
+		key = e.key, e = e, own = own,
+		name = Views.Name(e.name, e.class) .. "  " .. GREY .. Codec.Plain(e.guild) .. level .. "|r",
+		tip = GroupTip(e, own),
+	}
+	local note = e.note ~= "" and (GREY .. " — " .. e.note .. "|r") or ""
+	if e.mode == "G" then
+		local need = Views.GroupRoles(e.roles, true)
+		row.sub = WHITE .. e.title .. "|r" .. note
+		row.right = need ~= "" and need or (GREY .. L.GROUPS_NEED_ANY .. "|r")
+		row.detail = e.size .. "/" .. e.cap .. (e.min > 0 and (", " .. L.GROUPS_FROM_LEVEL:format(e.min)) or "")
+	else
+		row.sub = WHITE .. (e.title ~= "" and e.title or L.GROUPS_ANYWHERE) .. "|r" .. note
+		row.right = Views.GroupRoles(e.roles)
+		row.detail = e.class and L.CLASS[e.class] or ""
+	end
+	if own then
+		row.status = GOLD .. L.GROUPS_YOURS .. "|r"
+	elseif e.mode == "P" then
+		row.action, row.actionText = "invite", L.GROUPS_INVITE
+	elseif e.applied == "sent" then
+		row.action, row.actionText = "withdraw", L.GROUPS_WITHDRAW
+		row.status = GREEN .. L.GROUPS_APPLIED .. "|r"
+	elseif e.applied == "invited" then
+		row.status = GREEN .. L.GROUPS_YOU_INVITED .. "|r"
+	elseif e.applied == "declined" then
+		row.status = GREY .. L.GROUPS_YOU_DECLINED .. "|r"
+	elseif e.short then
+		row.status = ORANGE .. L.GROUPS_NEED_LEVEL:format(e.min) .. "|r"
+	else
+		row.action, row.actionText = "apply", L.GROUPS_APPLY
+	end
+	return row
+end
+
+-- Моё объявление в том же виде, в каком его видят остальные.
+local function OwnEntry()
+	local mine = ns.Groups.Mine()
+	if not mine then return nil end
+	local _, class = UnitClass("player")
+	local size = mine.mode == "G" and math.max(1, GetNumGroupMembers and GetNumGroupMembers() or 0) or 1
+	return {
+		key = ns.myKey, name = U.Display(ns.me), guild = ns.MyGuild() or "", class = class, level = UnitLevel("player") or 0,
+		mode = mine.mode, id = mine.id, raised = mine.id, kind = mine.kind, title = mine.title, note = mine.note,
+		roles = mine.roles, size = size, cap = mine.cap, min = mine.min,
+	}
+end
+
+-- Строки доски: { header = текст } перед разделом и записи GroupRow. kind — только этот вид
+-- мест (nil — все). Второе значение — сколько объявлений всего, без учёта фильтра.
+function Views.GroupRows(kind)
+	local groups, players = ns.Groups.List(kind)
+	local own = OwnEntry()
+	local rows = {}
+	local function Section(list, mode, title)
+		local mine = own and own.mode == mode and (not kind or own.kind == kind) and own or nil
+		local n = #list + (mine and 1 or 0)
+		if n == 0 then return end
+		rows[#rows + 1] = { header = title:format(n) }
+		if mine then rows[#rows + 1] = GroupRow(mine, true) end
+		for _, e in ipairs(list) do rows[#rows + 1] = GroupRow(e, false) end
+	end
+	Section(groups, "G", L.GROUPS_SECTION_GROUPS)
+	Section(players, "P", L.GROUPS_SECTION_PLAYERS)
+	return rows, ns.Groups.Count()
+end
+
+-- Заявки ко мне: { key, who, name, sub, tip, invited }; who — имя для шёпота, name — с цветом класса.
+function Views.GroupApplicants()
+	local out = {}
+	for _, a in ipairs(ns.Groups.Applicants()) do
+		local who = Codec.Plain(a.guild or "")
+		if a.level and a.level > 0 then who = who .. ", " .. a.level end
+		local roles = Views.GroupRoles(a.roles)
+		out[#out + 1] = {
+			key = a.key, who = a.name, name = Views.Name(a.name, a.class), invited = a.state == "invited",
+			sub = (roles ~= "" and (roles .. " ") or "") .. GREY .. who .. "|r",
+			tip = function(tt)
+				tt:AddLine(Views.Name(a.name, a.class))
+				local line = Codec.Plain(a.guild or "")
+				if a.level and a.level > 0 then line = line .. ", " .. L.TIP_LEVEL:format(a.level) end
+				if a.class and L.CLASS[a.class] then line = line .. ", " .. L.CLASS[a.class] end
+				tt:AddLine(line, 0.8, 0.8, 0.8)
+				tt:AddLine(L.GROUPS_TIP_ROLES:format(ns.Groups.RoleText(a.roles)), 1, 0.82, 0, true)
+				if a.note and a.note ~= "" then tt:AddLine(a.note, 0.8, 0.8, 0.8, true) end
+				tt:AddLine(L.GROUPS_TIP_CLAIM, 0.6, 0.6, 0.6, true)
+				tt:AddLine(L.GROUPS_TIP_WHISPER, 0.5, 0.83, 0.76)
+			end,
+		}
+	end
+	return out
+end
+
+-- Ключ для поиска по названию: нижний регистр с кириллицей, «ё» как «е» (в названиях игры
+-- пишут «Черной горы», игрок может набрать «чёрной») и без пробелов и знаков ASCII — остаются
+-- латинские буквы, цифры и все старшие байты (кириллица в UTF-8). «Зул'Фаррак» → «зулфаррак».
+local function SearchKey(s)
+	s = U.Fold(s):gsub("\209\145", "\208\181")
+	return (s:gsub("[^%w\128-\255]", ""))
+end
+
+-- Список занятий игры для «Из списка»: { header = текст } перед разделом и { activity, name,
+-- right } — занятия, у которых каждое слово запроса — подстрока ключа названия (SearchKey,
+-- без шаблонов). Слова делятся по пробелам и приводятся к тому же ключу, порядок слов не
+-- важен, так что «глубинычернойгоры» и «горы глубины» находят «Глубины Черной горы». Слова из
+-- одних знаков отбрасываются; без слов — весь список. Второе значение — сколько занятий в
+-- списке без учёта запроса (0 — игра списка не даёт).
+function Views.GroupPicks(query)
+	local catalog = ns.Groups.Catalog()
+	if not catalog then return {}, 0 end
+	local words = {}
+	for word in tostring(query or ""):gmatch("%S+") do
+		word = SearchKey(word)
+		if word ~= "" then words[#words + 1] = word end
+	end
+	local out, kind = {}, nil
+	for _, a in ipairs(catalog) do
+		local fit = true
+		if #words > 0 then
+			local name = SearchKey(a.name)
+			for _, word in ipairs(words) do
+				if not name:find(word, 1, true) then
+					fit = false
+					break
+				end
+			end
+		end
+		if fit then
+			if a.kind ~= kind then
+				kind = a.kind
+				out[#out + 1] = { header = GOLD .. L["GROUPS_KIND_" .. kind] .. "|r" }
+			end
+			local parts = {}
+			if a.min > 1 then parts[#parts + 1] = L.GROUPS_PICK_LEVEL:format(a.min) end
+			if a.cap > 1 then parts[#parts + 1] = L.GROUPS_PICK_CAP:format(a.cap) end
+			out[#out + 1] = { activity = a, name = a.name, right = table.concat(parts, ", ") }
+		end
+	end
+	return out, #catalog
+end
