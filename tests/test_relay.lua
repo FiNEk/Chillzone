@@ -538,9 +538,36 @@ T.test("relay: зоны отправляются всегда, даже у вы�
 	T.eq(old:Saw("/chillzone zones"), 0, "в справке её нет")
 	w:Run(70)
 	T.ok(fresh.ns.Census.Peers()[old.ns.myKey].z, "и ничего не выключает")
-	local r = old.ns.Roster.report
-	T.ok(r and next(r.zones), "в ростере есть зоны")
-	T.ok(next(old.ns.Codec.DecodeReport(old.ns.Codec.EncodeReport(old.ns.Codec.Shareable(r, true))).zones), "и в отчёте")
+end)
+
+T.test("relay: офицер, выключавший зоны в прежней версии, — репортёр, и его отчёт с зонами", function()
+	local w, c = Build()
+	local guild = c.G.guild
+	-- Аким входит с сохранениями прежней версии, где выключил зоны. По имени он раньше Глеба, и
+	-- выбрать его должны все, включая его самого.
+	local db = { chars = { [Key(c.G, "Аким Альфа")] = { shareZones = false, zonesDefaulted = true } } }
+	local Ak = w:Client({ first = "Аким", surname = "Альфа", guild = guild, rank = 1, db = db, config = { CHANNEL_CHAT = false } })
+	T.eq(Ak.ns.char.shareZones, false, "сохранённое «выключено» на месте")
+	w:Run(300)
+	for _, cl in ipairs({ Ak, c.G }) do
+		T.eq(cl.ns.Census.Reporter(), Key(cl, "Аким Альфа"), cl:Name() .. ": репортёр Ордена — Аким")
+	end
+	T.ok(Ak.ns.Census.IsReporter() and not c.G.ns.Census.IsReporter(), "отчитывается Аким, а не Глеб")
+	-- Отчёт Акима, принятый другими гильдиями, — с зонами.
+	local function Got(cl)
+		local row = cl.ns.Data.Row(guild)
+		return row and cl.ns.Util.SameName(row.origin, "Аким Альфа") and row or nil
+	end
+	for _ = 1, 600 do
+		if Got(c.V) and Got(c.K) then break end
+		w:Run(1)
+	end
+	for _, cl in ipairs({ c.V, c.K }) do
+		local row = Got(cl)
+		T.ok(row, cl:Name() .. ": отчёт Ордена от Акима")
+		T.ok(row and next(row.r.zones), cl:Name() .. ": с зонами")
+	end
+	T.eq(#Ak.ns.db.errors, 0, "без ошибок")
 end)
 
 T.test("relay: уровни чата — офицеры и главы", function()

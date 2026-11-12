@@ -21,7 +21,9 @@ local function Build(opts)
 	c.V = w:Client({ first = "Вера", surname = "Верная", guild = "Чиллзон Север", rank = 0, realm = "CAMWOWUS2Realm5PvE", class = "DRUID", config = cfg })
 	c.G = w:Client({ first = "Глеб", surname = "Гордый", guild = "Орден Чиллзона", rank = 0, class = "HUNTER", config = cfg })
 	if opts.order2 then
-		c.Y = w:Client({ first = "Ян", surname = "Ясный", guild = "Орден Чиллзона", rank = 1, class = "MAGE", config = cfg })
+		-- opts.yOff: у Яна сохранения прежней версии, где он выключил зоны.
+		local db = opts.yOff and { chars = { [c.G.ns.Util.Key("Ян Ясный")] = { shareZones = false, zonesDefaulted = true } } } or nil
+		c.Y = w:Client({ first = "Ян", surname = "Ясный", guild = "Орден Чиллзона", rank = 1, class = "MAGE", config = cfg, db = db })
 	end
 	for i = 1, opts.extra or 0 do
 		c["R" .. i] = w:Client({ first = ("Рядовой%02d"):format(i), surname = "Чиллзонов", guild = "Чиллзон", rank = 3, config = cfg })
@@ -85,6 +87,18 @@ local function LoseRequests(w, cl)
 	local deliver = w.Deliver
 	w.Deliver = function(self, from, dist, prefix, msg, target, logged)
 		if from == cl and dist == "WHISPER" and type(msg) == "string" and msg:find("RQ~", 1, true) then
+			self.log[#self.log + 1] = { t = self.now, from = from:Name(), dist = dist, msg = msg, target = target }
+			return 0
+		end
+		return deliver(self, from, dist, prefix, msg, target, logged)
+	end
+end
+
+-- Запросы RQ к клиенту cl теряются по дороге: он в игре и с аддоном, но их не получает.
+local function LoseRequestsTo(w, cl)
+	local deliver = w.Deliver
+	w.Deliver = function(self, from, dist, prefix, msg, target, logged)
+		if target == cl:Name() and dist == "WHISPER" and type(msg) == "string" and msg:find("RQ~", 1, true) then
 			self.log[#self.log + 1] = { t = self.now, from = from:Name(), dist = dist, msg = msg, target = target }
 			return 0
 		end
@@ -326,14 +340,7 @@ T.test("pull: запросы к репортёру теряются — отве
 	local G, Y, V = c.G, c.Y, c.V
 	local guild = G.guild
 	-- Запросы к Глебу теряются по дороге: он остаётся репортёром, но не отвечает.
-	local deliver = w.Deliver
-	w.Deliver = function(self, from, dist, prefix, msg, target, logged)
-		if target == G:Name() and dist == "WHISPER" and type(msg) == "string" and msg:find("RQ~", 1, true) then
-			self.log[#self.log + 1] = { t = self.now, from = from:Name(), dist = dist, msg = msg, target = target }
-			return 0
-		end
-		return deliver(self, from, dist, prefix, msg, target, logged)
-	end
+	LoseRequestsTo(w, G)
 	local broadcast, relayed = WatchOwnBroadcast(Y), WatchRelayOut(Y)
 	local old = V.ns.Data.Row(guild).st
 	local from = #w.log
@@ -356,6 +363,23 @@ T.test("pull: запросы к репортёру теряются — отве
 	row = V.ns.Data.Row(guild)
 	T.eq(row.st, freshSt, "Вера приняла отчёт Глеба")
 	T.eq(row.conflict, nil, "состав главы и офицеров у Глеба и Яна одинаков")
+	NoErrors(c)
+end)
+
+T.test("pull: отвечающий, выключавший зоны в прежней версии, подписывает отчёт с зонами", function()
+	local w, c = Build({ order2 = true, yOff = true })
+	SilenceRelays(c)
+	NoMainPull(c)
+	local G, Y, V = c.G, c.Y, c.V
+	local guild = G.guild
+	T.eq(Y.ns.char.shareZones, false, "у Яна сохранено «выключено» прежней версии")
+	LoseRequestsTo(w, G)
+	local old = V.ns.Data.Row(guild).st
+	T.ok(Until(w, function() return Has(V, guild, old + 1) end, 1500), "Вера получила новый отчёт Ордена")
+	T.no(Y.ns.Census.IsReporter(), "Ян не репортёр")
+	local row = V.ns.Data.Row(guild)
+	T.ok(V.ns.Util.SameName(row.origin, Y:Name()), "отчёт подписан Яном ради ответа")
+	T.ok(next(row.r.zones), "и он с зонами")
 	NoErrors(c)
 end)
 
