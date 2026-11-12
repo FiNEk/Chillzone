@@ -2113,3 +2113,237 @@ T.test("relay: команды, окно и вкладки без ошибок", 
 		T.eq(#errors, 0, name .. ": ошибки " .. table.concat(errors, " | "))
 	end
 end)
+
+---------------------------------------------------------------------------
+-- Отчёт — двум реле (Relay.Out).
+---------------------------------------------------------------------------
+
+-- Репортёр Севера.
+local function NorthReporter(c)
+	local rep = c.V.ns.Census.IsReporter() and c.V or c.B
+	T.ok(rep.ns.Census.IsReporter(), "у Севера есть репортёр")
+	return rep
+end
+
+-- Шёпоты RL клиента cl: список { target, mode, inner }.
+local function WatchRL(cl)
+	local list, send = {}, cl.ns.Comm.Send
+	cl.ns.Comm.Send = function(dist, payload, opts)
+		if dist == "WHISPER" and type(payload) == "string" and payload:sub(1, 3) == "RL~" then
+			local _, mode, _, inner = cl.ns.Codec.DecodeRelay(payload)
+			list[#list + 1] = { target = opts and opts.target, mode = mode, inner = inner }
+		end
+		return send(dist, payload, opts)
+	end
+	return list
+end
+
+local function RLOf(list, inner)
+	local out = {}
+	for _, m in ipairs(list) do
+		if m.inner == inner then out[#out + 1] = m.target end
+	end
+	return out
+end
+
+local function ClientByKey(c, key)
+	for _, cl in pairs(c) do
+		if cl.ns.myKey == key then return cl end
+	end
+end
+
+-- Аддон выключен, персонаж в игре: ростер видит его в игре, шёпот принимается молча, без
+-- «игрок не найден», в гильдию он ничего не пишет.
+local function SilentAddon(w, cl)
+	cl:Logout()
+	w:AddOnline(cl.guild, cl:Name() .. "-" .. cl.realm, cl.rank, cl.level, cl.class)
+	local find, name = w.FindByTell, cl:Name()
+	w.FindByTell = function(self, target)
+		if target == name then return { faction = cl.faction, online = true, Fire = function() end } end
+		return find(self, target)
+	end
+end
+
+-- Новый отчёт гильдии репортёра cl обычным путём (Census.MaybeReport, затем Relay.Out).
+-- before() — прямо перед отправкой. Возвращает пакет и время отчёта.
+local function NewReport(w, cl, before)
+	local old = cl.ns.Census.lastRaw
+	w:Run(65)
+	cl.ns.Roster.Scan()
+	local st = cl.ns.Roster.report.st
+	if before then before() end
+	cl.ns.Census.MaybeReport(true)
+	for _ = 1, 40 do
+		if cl.ns.Census.lastRaw ~= old then break end
+		w:Run(0.25)
+	end
+	local wire = cl.ns.Census.lastRaw
+	T.ok(wire ~= old, "новый отчёт подписан")
+	return wire, st
+end
+
+local function Has(cl, guild, st)
+	local row = cl.ns.Data.Row(guild)
+	return row ~= nil and row.st ~= nil and row.st >= st
+end
+
+local function Until(w, check, limit)
+	for _ = 1, limit or 60 do
+		if check() then return true end
+		w:Run(1)
+	end
+	return check()
+end
+
+-- Сколько раз каждый клиент принял отчёт (Data.Take) и отдал его гильдии (RG). Считается
+-- пакет seen.marker.
+local function WatchPath(c)
+	local seen = { marker = nil, taken = {}, given = {} }
+	for id, cl in pairs(c) do
+		local take, send = cl.ns.Data.Take, cl.ns.Comm.Send
+		cl.ns.Data.Take = function(r, raw, ...)
+			local ok, why = take(r, raw, ...)
+			if ok and seen.marker and seen.marker:sub(-#raw) == raw then seen.taken[id] = (seen.taken[id] or 0) + 1 end
+			return ok, why
+		end
+		cl.ns.Comm.Send = function(dist, payload, ...)
+			if seen.marker and dist == "GUILD" and type(payload) == "string" and payload:sub(1, 3) == "RG~"
+				and payload:find(seen.marker, 1, true) then seen.given[id] = (seen.given[id] or 0) + 1 end
+			return send(dist, payload, ...)
+		end
+	end
+	return seen
+end
+
+T.test("relay: отчёт уходит и второму реле — молчащее первое его не теряет", function()
+	local w, c = Build()
+	local rep = NorthReporter(c)
+	local rl = WatchRL(rep)
+	local silent
+	local wire, st = NewReport(w, rep, function()
+		local pick = rep.ns.Relay.Pick()
+		T.ok(pick, "у репортёра Севера есть реле")
+		silent = ClientByKey(c, pick.key)
+		T.ok(silent, "его реле — клиент главной гильдии")
+		SilentAddon(w, silent)
+	end)
+	T.ok(Until(w, function() return Has(c.G, rep.guild, st) end, 15), "Орден получил отчёт Севера сразу, без тайм-аута")
+	for _, cl in pairs(c) do
+		if cl ~= silent and cl.guild == "Чиллзон" then T.ok(Has(cl, rep.guild, st), cl:Name() .. ": главная гильдия получила отчёт") end
+	end
+	local targets = RLOf(rl, wire)
+	T.eq(#targets, 2, "отчёт ушёл двум реле")
+	T.ok(targets[1] ~= targets[2], "реле разные")
+	T.ok(targets[1] == silent:Name() or targets[2] == silent:Name(), "одно из них молчит")
+	for id, cl in pairs(c) do
+		if cl ~= silent then T.eq(#cl.ns.db.errors, 0, id .. ": ошибки " .. table.concat(cl.ns.db.errors, " | ")) end
+	end
+end)
+
+T.test("relay: отчёт через два реле — каждый принимает и отдаёт гильдии один раз", function()
+	local w, c = Build()
+	local rep = NorthReporter(c)
+	local rl = WatchRL(rep)
+	local seen = WatchPath(c)
+	-- Пакет известен только после подписи, а уходит сразу: считаем всё, что содержит отчёт
+	-- Севера с новым временем, и сверяем с пакетом потом.
+	local relay = rep.ns.Relay
+	local out = relay.Out
+	relay.Out = function(mode, inner)
+		if mode == "L" then seen.marker = inner end
+		return out(mode, inner)
+	end
+	local wire, st = NewReport(w, rep)
+	relay.Out = out
+	T.eq(seen.marker, wire, "считается новый пакет")
+	T.ok(Until(w, function() return Has(c.G, rep.guild, st) and Has(c.M, rep.guild, st) end, 30), "отчёт дошёл")
+	w:Run(30)
+	local targets = RLOf(rl, wire)
+	T.eq(#targets, 2, "отчёт ушёл двум реле")
+	T.ok(targets[1] ~= targets[2], "реле разные")
+	for id, cl in pairs(c) do
+		if cl.guild ~= rep.guild then T.eq(seen.taken[id] or 0, 1, id .. ": отчёт принят один раз") end
+		T.ok((seen.given[id] or 0) <= 1, id .. ": отдал гильдии " .. (seen.given[id] or 0) .. " раз")
+	end
+	T.eq(seen.given.G or 0, 1, "репортёр Ордена отдал отчёт гильдии один раз")
+	NoErrors(c)
+end)
+
+T.test("relay: строка чата по-прежнему уходит одному реле", function()
+	local w, c = Build()
+	local rep = NorthReporter(c)
+	local rl = WatchRL(rep)
+	local text = "строка одному реле"
+	rep:Slash("/cz1", text)
+	w:Run(20)
+	local chat = 0
+	for _, m in ipairs(rl) do
+		if m.mode == "P" then chat = chat + 1 end
+	end
+	T.eq(chat, 1, "строка ушла одному реле")
+	T.eq(c.G:Saw(text), 1, "Орден видит строку один раз")
+	T.eq(c.M:Saw(text), 1, "главная гильдия видит строку один раз")
+	NoErrors(c)
+end)
+
+T.test("relay: без второго отвечающего реле отчёт уходит одному", function()
+	local w, c = Build()
+	local rep = NorthReporter(c)
+	local rl = WatchRL(rep)
+	local wire, st = NewReport(w, rep, function()
+		local pick = rep.ns.Relay.Pick()
+		for key, e in pairs(rep.ns.Relay.Known()) do
+			if key ~= pick.key then e.verified = nil end
+		end
+	end)
+	T.ok(Until(w, function() return Has(c.G, rep.guild, st) end, 15), "Орден получил отчёт")
+	T.eq(#RLOf(rl, wire), 1, "отчёт ушёл одному реле")
+	NoErrors(c)
+end)
+
+T.test("relay: отчёт из очереди ожидания уходит после ответа реле", function()
+	local w, c = Build()
+	local rep = NorthReporter(c)
+	local rl = WatchRL(rep)
+	local wire, st = NewReport(w, rep, function()
+		for _, e in pairs(rep.ns.Relay.Known()) do e.verified, e.asked, e.probe = nil, nil, nil end
+	end)
+	-- Реле, ответившее этому репортёру меньше PONG_GAP назад, на новый вопрос молчит, и опрос может
+	-- уйти в тайм-аут: тогда отчёт ждёт повторной проверки через RELAY_RETRY.
+	local C = rep.ns.Config
+	T.ok(Until(w, function() return Has(c.G, rep.guild, st) end, C.RELAY_TIMEOUT + C.RELAY_RETRY + 20), "Орден получил отчёт после ответа реле")
+	local n = #RLOf(rl, wire)
+	T.ok(n >= 1 and n <= 2, "отчёт ушёл " .. n .. " реле")
+	NoErrors(c)
+end)
+
+T.test("relay: реле из тройки пишет отчёт само, без шёпота RL", function()
+	local w, c = Build()
+	local reporter = MainRoles(c)
+	w:Run(reporter.ns.Config.RELAY_SETTLE)
+	T.ok(reporter.ns.Relay.InTop(), "репортёр главной гильдии — реле из тройки")
+	T.ok(reporter.ns.Relay.Serving(), "у него аренды других гильдий")
+	local rl = WatchRL(reporter)
+	local _, st = NewReport(w, reporter)
+	T.ok(Until(w, function() return Has(c.G, reporter.guild, st) and Has(c.B, reporter.guild, st) end, 60), "другие гильдии получили отчёт")
+	T.eq(#rl, 0, "шёпота RL нет")
+	NoErrors(c)
+end)
+
+-- Дефект Ask из прогона 2026-11-10: повтор опроса на 30-й секунде сдвигал e.asked, и таймер
+-- ответа не срабатывал никогда. Исправлен в c7993f9 (маркер e.probe); тест его держит.
+T.test("relay: молчащее реле репортёр исключает за один тайм-аут опроса", function()
+	local w, c = Build()
+	local rep = NorthReporter(c)
+	local pick = rep.ns.Relay.Pick()
+	T.ok(pick, "у репортёра Севера есть реле")
+	local e = rep.ns.Relay.Known()[pick.key]
+	SilentAddon(w, ClientByKey(c, pick.key))
+	local C = rep.ns.Config
+	-- Опрос раз в 15 секунд, первый может прийтись на паузу после ответа, затем тайм-аут.
+	T.ok(Until(w, function() return e.down ~= nil and e.down > w.now end, C.RELAY_TIMEOUT + 2 * 15 + 5), "молчащее реле исключено")
+	local now = rep.ns.Relay.Pick()
+	T.ok(now and now.key ~= pick.key, "репортёр перешёл на другое реле")
+	w:Run(5 * 60)
+	T.ok(e.down ~= nil, "и не вернул молчащее за пять минут")
+end)

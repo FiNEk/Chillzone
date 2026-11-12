@@ -438,13 +438,14 @@ end
 -- Реле, через которое пойдёт сообщение моей гильдии сейчас: запись known или nil. Только
 -- из тройки Top (у других реле репортёры не зарегистрированы) и только отвечающее; глава и
 -- офицеры главной — первыми, остальные — если ни один из них не отвечает. Внутри группы
--- реле меняется раз в RELAY_WINDOW (по хешу гильдии).
-function Relay.Pick()
+-- реле меняется раз в RELAY_WINDOW (по хешу гильдии). except — ключ реле, которое не брать:
+-- так выбирается второе реле для отчёта.
+function Relay.Pick(except)
 	local now = Now()
 	local officers, others = {}, {}
 	local p = Pool()
 	for _, e in ipairs(Top()) do
-		if Verified(e, now) and p.trust[e.key] then
+		if e.key ~= except and Verified(e, now) and p.trust[e.key] then
 			local list = p.officer[e.key] and officers or others
 			list[#list + 1] = e.key
 		end
@@ -497,11 +498,26 @@ function Out(mode, inner)
 		Relay.PingAll()
 		return false
 	end
-	local key = mode == "L" and ("rl:" .. Codec.InnerType(inner) .. ":" .. (Relay.InnerGuild(inner) or "")) or nil
+	local slot = Codec.InnerType(inner) .. ":" .. (Relay.InnerGuild(inner) or "")
 	ns.Security.Introduce(e.name)
 	ns.Security.IntroduceWire(e.name, inner)
-	ns.Comm.Send("WHISPER", Codec.EncodeRL(mode, inner), { target = e.name, key = key, prio = mode == "P", logged = Logged(inner) })
+	ns.Comm.Send("WHISPER", Codec.EncodeRL(mode, inner), { target = e.name, key = mode == "L" and ("rl:" .. slot) or nil,
+		prio = mode == "P", logged = Logged(inner) })
 	Remember(e.key, mode, inner)
+	-- Отчёт уходит и второму отвечающему реле из тройки. Первое могло замолчать, не выйдя из игры
+	-- (аддон выключен, шёпот не доходит), а узнаётся это только по тайм-ауту опроса, и к тому
+	-- времени отчёт уже не переотправить. Повторы у реле и получателей отсекают отметки relayed,
+	-- got и settled (Codec.DedupeKey). Строки чата идут через одно реле: их много, и второе
+	-- удвоило бы шёпот на каждую строку.
+	if mode == "L" then
+		local spare = Relay.Pick(e.key)
+		if spare and spare.key ~= e.key then
+			ns.Security.Introduce(spare.name)
+			ns.Security.IntroduceWire(spare.name, inner)
+			ns.Comm.Send("WHISPER", Codec.EncodeRL(mode, inner), { target = spare.name, key = "rl2:" .. slot, logged = Logged(inner) })
+			Remember(spare.key, mode, inner)
+		end
+	end
 	return true
 end
 Relay.Out = Out
