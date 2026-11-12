@@ -10,6 +10,9 @@
 -- Исключение — отчёт переписи новее сохранённого: его приносит любой согильдиец, а реле
 -- главной гильдии отдаёт чужой отчёт своей гильдии само. Иначе отчёт, дошедший до живого реле,
 -- терялся бы, пока репортёр гильдии молчит или не зарегистрирован у этого реле.
+-- Повторы отсекаются по исходному пакету, но раздельно: обработал ли я его у себя, разослал ли
+-- как реле и получила ли его моя гильдия. Реле получает пакет и как читатель (RG, RM), и на
+-- рассылку (RL); первое не отменяет второго, иначе аренды только этого реле пакета не получат.
 -- Аренда репортёра у реле (RR) уступается заявителю со званием выше или преемнику, которого
 -- назвал сам держатель (RU). Рядовой не перехватит аренду офицера, посторонний — ничью.
 local ADDON, ns = ...
@@ -46,7 +49,11 @@ ns.On("UNION_POLICY", function(guild, wire)
 			key = "union-reporter:" .. U.GuildKey(guild) })
 	end
 end)
-local seen = {} -- [ключ дедупа] = время
+-- Отметки повторов по пакету: [вид][Codec.DedupeKey] = время первой отметки. Пакет приходит реле
+-- и как читателю (RG, RM), и как реле (RL), поэтому у каждой обязанности своя отметка:
+-- got — пакет обработан у меня (показан, сохранён); relayed — я разослал его как реле;
+-- shared — моя гильдия его уже получила: RG отправил я или я слышал RG её репортёра.
+local marks = { got = {}, relayed = {}, shared = {} }
 local rate = {} -- [Key автора] = { n, t0 }
 local sideRate = {} -- [Key согильдийца] = { n, t0 }: его отчёты, принятые не от репортёра
 local hold = {} -- сообщения, пока ни одно реле не ответило
@@ -499,10 +506,16 @@ Relay.Out = Out
 ---------------------------------------------------------------------------
 -- Работа реле
 ---------------------------------------------------------------------------
-local function Seen(dk, now, remember)
-	if seen[dk] and now - seen[dk] <= C.RELAY_DEDUPE then return true end
-	if remember ~= false then seen[dk] = now end
-	return false
+local function Marked(kind, dk, now)
+	local t = marks[kind][dk]
+	return t ~= nil and now - t <= C.RELAY_DEDUPE
+end
+
+-- Ставит отметку. true — её ещё не было.
+local function Mark(kind, dk, now)
+	if Marked(kind, dk, now) then return false end
+	marks[kind][dk] = now
+	return true
 end
 
 local function RateOk(okey, now)
@@ -525,22 +538,28 @@ function Relay.Forward(origin, mode, inner, clear, certificate)
 	local ig = Relay.InnerGuild(inner)
 	if not okey or not ig or not U.IsMemberGuild(ig) then return end
 	local dk = Codec.DedupeKey(okey, inner)
-	-- Дубли не расходуют лимит автора. Отказ по лимиту ещё не означает доставку:
-	-- такой пакет можно повторить после восстановления лимита.
-	if Seen(dk, now, false) then return end
+	-- Повтор не рассылаю. Важна только моя рассылка: пакет, уже полученный мной как читателем
+	-- (RG, RM), я всё равно раздаю по арендам, иначе гильдии, зарегистрированные только у меня,
+	-- его не получат. Дубли не расходуют лимит автора. Отказ по лимиту ещё не означает
+	-- рассылку: такой пакет можно повторить после восстановления лимита.
+	if Marked("relayed", dk, now) then return end
 	if not RateOk(okey, now) then
 		Relay.stats.dropped = Relay.stats.dropped + 1
 		return
 	end
-	Seen(dk, now)
+	Mark("relayed", dk, now)
 	local igk = U.GuildKey(ig)
 	local mine = MyGuildKey()
 	local ctx = { via = "RL", authenticated = true, certificate = certificate, wire = inner }
-	if igk ~= mine then ns.Comm.Inject(clear, certificate.name, ctx) end
-	local shared = false
+	-- Как в Deliver: полученное мной как читателем второй раз не показываю, а отчёт обрабатываю
+	-- и повторно, пока его, может быть, ещё отдавать гильдии: так известно, не устарел ли он.
+	local fresh = Mark("got", dk, now)
+	if igk ~= mine and (fresh or (mode == "L" and not Marked("shared", dk, now))) then
+		ns.Comm.Inject(clear, certificate.name, ctx)
+	end
+	-- Гильдии — один раз и не устаревший отчёт: он заменил бы в очереди ещё не ушедший новый.
 	local function ToGuild(key)
-		if shared then return end
-		shared = true
+		if ctx.outdated or not Mark("shared", dk, now) then return end
 		ns.Security.Introduce("GUILD", certificate.raw)
 		ns.Comm.Send("GUILD", Codec.EncodeRM("RG", mode, U.Display(origin), inner), { key = key, prio = mode == "P", logged = Logged(inner) })
 	end
@@ -606,16 +625,26 @@ local function Deliver(mode, origin, inner, ctx, toGuild)
 	local now = Now()
 	local okey = U.Key(origin)
 	if not okey then return end
-	-- Отчёт не от репортёра в дедуп не попадает: тот же пакет ещё придёт мне по аренде (RM) или
-	-- как реле (RL), и его нужно будет раздать дальше. Повтор отсеет Data.Take.
-	if not ctx.side and Seen(Codec.DedupeKey(okey, inner), now) then return end
+	local dk = Codec.DedupeKey(okey, inner)
+	-- RG репортёра гильдия уже получила: второй RG ей не нужен. Отчёт, который принёс не репортёр
+	-- (ctx.side), так не считается: клиенты старых версий берут RG только у репортёра, и ему
+	-- отчёт ещё придёт по аренде (RM). Как реле (RL) я раздаю пакет независимо от этих отметок.
+	if ctx.via == "RG" and not ctx.side then Mark("shared", dk, now) end
+	local fresh = Mark("got", dk, now)
+	local share = toGuild and not Marked("shared", dk, now)
+	if not fresh and not share then return end
 	local ig = Relay.InnerGuild(inner)
 	if not ig or U.GuildKey(ig) == MyGuildKey() then return end -- своя гильдия приходит напрямую
-	Relay.stats.delivered = Relay.stats.delivered + 1
-	ctx.authenticated, ctx.certificate, ctx.wire = true, certificate, inner
-	ns.Comm.Inject(clear, certificate.name, ctx)
+	-- Строку чата второй раз не показываю. Отчёт, который ещё отдавать гильдии, обрабатываю и
+	-- повторно: Data.Take отсеет повтор и скажет, не устарел ли он, пока шёл ко мне.
+	if fresh or mode == "L" then
+		Relay.stats.delivered = Relay.stats.delivered + 1
+		ctx.authenticated, ctx.certificate, ctx.wire = true, certificate, inner
+		ns.Comm.Inject(clear, certificate.name, ctx)
+	end
 	-- У всех отчётов автора один ключ очереди: устаревший заменил бы ещё не ушедший новый.
-	if toGuild and ns.MyGuild() and not ctx.outdated then
+	if share and ns.MyGuild() and not ctx.outdated then
+		Mark("shared", dk, now)
 		local key = mode == "L" and ("rg:" .. okey .. ":" .. Codec.InnerType(inner)) or nil
 		ns.Security.Introduce("GUILD", certificate.raw)
 		ns.Comm.Send("GUILD", Codec.EncodeRM("RG", mode, origin, inner), { key = key, prio = mode == "P", logged = Logged(inner) })
@@ -881,8 +910,10 @@ ns.On("LOGIN", function()
 	end)
 	ns.Every(60, "relay gc", function()
 		local now = Now()
-		for k, t in pairs(seen) do
-			if now - t > C.RELAY_DEDUPE then seen[k] = nil end
+		for _, list in pairs(marks) do
+			for k, t in pairs(list) do
+				if now - t > C.RELAY_DEDUPE then list[k] = nil end
+			end
 		end
 		for k, t in pairs(lastPong) do
 			if now - t > 60 then lastPong[k] = nil end
