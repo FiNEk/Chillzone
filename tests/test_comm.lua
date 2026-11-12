@@ -428,3 +428,129 @@ T.test("comm: полосы — «сервер просит подождать»,
 	T.eq(comm.QueueSize("GUILD"), 1)
 	T.no(Throttled(), "пустая полоса на паузе не выдаётся за ожидание")
 end)
+
+---------------------------------------------------------------------------
+-- Снятие ненужного (opts.skip) и наблюдение за GUILD (Comm.Watch): на них стоит каталог доверия
+---------------------------------------------------------------------------
+T.test("comm: skip — ненужное задание снимается тихо и не тратит квоту полосы", function()
+	local _, c, comm, sent = Lanes()
+	local results, dropped, log = {}, comm.stats.dropped, #c.ns.db.log
+	comm.Send("GUILD", "KT~a", { skip = function() return true end,
+		done = function(ok, why) results.a = { ok = ok, why = why } end })
+	comm.Send("GUILD", "KT~b", { done = function(ok, why) results.b = { ok = ok, why = why } end })
+	comm.Pump()
+	T.same(results.a, { ok = false, why = "skipped" }, "снятое получает done(false, \"skipped\")")
+	T.same(results.b, { ok = true }, "следующее ушло")
+	T.eq(#sent, 1, "в тот же тик: снятое квоту не тратит")
+	T.eq(sent[1].msg, "KT~b")
+	T.eq(comm.stats.dropped, dropped, "снятое не считается выброшенным")
+	T.eq(#c.ns.db.log, log, "и не пишется в журнал")
+	T.eq(comm.QueueSize(), 0)
+end)
+
+T.test("comm: skip — проверка перед первым куском, начатое досылается", function()
+	local w, _, comm, sent = Lanes()
+	local skip, result, checks = false, nil, 0
+	comm.Send("GUILD", "KD~" .. string.rep("x", 600), { skip = function() checks = checks + 1; return skip end,
+		done = function(ok, why) result = why or ok end })
+	comm.Pump()
+	T.eq(#sent, 1, "первый кусок ушёл")
+	skip = true
+	for _ = 1, 5 do
+		w.now = w.now + comm.SEND_INTERVAL
+		comm.Pump()
+	end
+	T.eq(result, true, "начатое сообщение досылается, хотя стало ненужным")
+	T.ok(#sent >= 3, "все куски")
+	T.eq(checks, 1, "проверка — только перед первым куском")
+end)
+
+T.test("comm: skip — снятый корень отпускает KP, ждавший его (before)", function()
+	local _, _, comm, sent = Lanes()
+	local kt
+	comm.Send("WHISPER", "KP~a", { target = TARGET, prio = true, key = "kp-own:a" })
+	comm.Send("GUILD", "KT~root", { prio = true, key = "root:g", before = "kp-own:a",
+		skip = function() return true end, done = function(ok, why) kt = why or ok end })
+	comm.Pump()
+	T.eq(kt, "skipped", "корень снят: гильдия его только что слышала")
+	T.eq(#sent, 1, "KP не повис")
+	T.eq(sent[1].msg, "KP~a")
+	T.eq(comm.QueueSize(), 0)
+	-- Flush тоже не держит KP за снятым корнем.
+	comm.Send("WHISPER", "KP~b", { target = TARGET, prio = true, key = "kp-own:b" })
+	comm.Send("GUILD", "KT~root", { prio = true, key = "root:g", before = "kp-own:b", skip = function() return true end })
+	comm.Flush(1)
+	T.eq(#sent, 2)
+	T.eq(sent[2].msg, "KP~b")
+end)
+
+T.test("comm: Watch — своё GUILD после всех кусков и с временем первого, шёпот — нет", function()
+	local w, c, comm = Lanes()
+	local seen = {}
+	comm.Watch(function(msg, sender, prefix, started)
+		seen[#seen + 1] = { msg = msg, sender = sender, prefix = prefix, started = started }
+	end)
+	local long = "KD~" .. string.rep("y", 600)
+	comm.Send("GUILD", long)
+	comm.Send("WHISPER", "KP~a", { target = TARGET })
+	local t0 = w.now
+	comm.Pump()
+	T.eq(#seen, 0, "сообщение ещё не ушло целиком")
+	for _ = 1, 5 do
+		w.now = w.now + comm.SEND_INTERVAL
+		comm.Pump()
+	end
+	T.eq(comm.QueueSize(), 0)
+	T.eq(#seen, 1, "шёпот не в счёт")
+	T.eq(seen[1].msg, long)
+	T.eq(seen[1].sender, nil, "своё — без отправителя")
+	T.eq(seen[1].prefix, c.ns.PREFIX)
+	T.eq(seen[1].started, t0, "время — первого куска")
+	-- Выброшенное и снятое — не разослано.
+	comm.Send("GUILD", "KT~skip", { skip = function() return true end })
+	c.lockdown = true
+	comm.Send("GUILD", "KT~stale")
+	comm.Pump()
+	w.now = w.now + comm.HOLD_MAX + 10
+	c.lockdown = false
+	comm.Pump()
+	T.eq(#seen, 1)
+end)
+
+T.test("comm: Watch — игра возвращает своё GUILD и мне, разбор его отбрасывает", function()
+	local w = Wow.World()
+	w:Guild("Чиллзон Север")
+	local a = w:Client({ first = "Борис", surname = "Быстрый", guild = "Чиллзон Север", rank = 1 })
+	local b = w:Client({ first = "Вера", surname = "Верная", guild = "Чиллзон Север", rank = 3 })
+	w:Run(30)
+	local long = "KD~" .. string.rep("z", 600)
+	local echoes = 0
+	local fire = a.Fire
+	a.Fire = function(self, event, prefix, msg, dist, sender, ...)
+		if event == "CHAT_MSG_ADDON" and dist == "GUILD" and type(sender) == "string" and sender:find("^Борис Быстрый") then
+			echoes = echoes + 1
+		end
+		return fire(self, event, prefix, msg, dist, sender, ...)
+	end
+	local mine, heard = {}, {}
+	a.ns.Comm.Watch(function(msg, sender, _, started)
+		if msg == long then mine[#mine + 1] = { sender = sender, started = started } end
+	end)
+	b.ns.Comm.Watch(function(msg, sender, _, started)
+		if msg == long then heard[#heard + 1] = { sender = sender, started = started, at = w.now } end
+	end)
+	local log0 = #w.log
+	a.ns.Comm.Send("GUILD", long)
+	w:Run(10)
+	T.ok(echoes >= 3, "в симуляторе, как в игре, свои куски GUILD приходят и отправителю")
+	T.eq(#mine, 1, "своё сообщение учтено один раз — по отправке, эхо не удваивает")
+	T.eq(mine[1].sender, nil)
+	T.eq(#heard, 1, "согильдиец услышал сообщение целиком")
+	T.eq(b.ns.Util.Key(heard[1].sender), b.ns.Util.Key("Борис Быстрый"))
+	local first
+	for i = log0 + 1, #w.log do
+		if w.log[i].dist == "GUILD" and w.log[i].from == "Борис Быстрый" then first = first or w.log[i].t end
+	end
+	T.ok(first and heard[1].started > first and heard[1].started < first + 1, "время — прихода первого куска")
+	T.ok(heard[1].at > heard[1].started, "а не последнего")
+end)

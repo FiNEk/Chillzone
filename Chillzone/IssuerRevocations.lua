@@ -102,16 +102,52 @@ local function CertificateAt(c, at)
     end
     return Ed.ValidPublicKey(c.pk) and Ed.Verify(c.issuerPK, c.body, c.sig)
 end
+-- Действующие отзывы: разобранное доказательство, пока байты те же (разбор не бесплатен,
+-- а каталог доверия собирается часто). Запоминается только удачный разбор; срок и
+-- полномочия (CurrentAuthority) проверяются каждый раз.
+local proofs, proofCount = {}, 0
+local function Proof(raw)
+    local proof = proofs[raw]
+    if proof and proof.expires > ns.ServerTime() then return proof end
+    proof = Read(raw)
+    if proof then
+        if proofCount >= 128 then proofs, proofCount = {}, 0 end
+        proofs[raw], proofCount = proof, proofCount + 1
+    end
+    return proof
+end
+local function Shareable(r)
+    local root = Root(r.guild)
+    local proof = root and root.public == r.root and Proof(r.raw)
+    return proof and CurrentAuthority(proof) and proof or nil
+end
+-- Записи каталога доверия своей гильдии (Issuers.Records, TrustCatalog.lua).
+function R.Records()
+    local list = {}
+    for gk, l in pairs(Store()) do
+        for key, r in pairs(l) do
+            local proof = Shareable(r)
+            if proof then
+                list[#list + 1] = ns.TrustCatalog.Record("KV", "KV:" .. gk .. ":" .. key, proof.wire, ns.PREFIX,
+                    "issuer-revoke:GUILD:" .. U.GuildKey(r.guild) .. ":" .. r.key)
+            end
+        end
+    end
+    return list
+end
+-- В гильдию — сразу (TrustCatalog.Direct): новый отзыв без окна каталога, а услышанный от
+-- офицера меньше окна назад не повторяется. Шёпот — как прежде.
 function R.Share(target, priority)
-    for _, list in pairs(Store()) do
-        for _, r in pairs(list) do
-            local root, key = Root(r.guild), target .. ":" .. U.GuildKey(r.guild) .. ":" .. r.key
+    for gk, list in pairs(Store()) do
+        for k, r in pairs(list) do
+            local key = target .. ":" .. U.GuildKey(r.guild) .. ":" .. r.key
             local old = shared[key]
-            local proof = Read(r.raw)
-            if root and root.public == r.root and proof and CurrentAuthority(proof) and (target == "GUILD" or not old or old.raw ~= r.raw
-                or ns.Now() - old.at >= C.AUTH_INTRODUCE) then
-                if ns.Comm.Send(target == "GUILD" and "GUILD" or "WHISPER", proof.wire,
-                    { target = target ~= "GUILD" and target or nil, prio = priority, key = "issuer-revoke:" .. key }) then
+            local proof = Shareable(r)
+            if proof and target == "GUILD" then
+                ns.TrustCatalog.Direct(ns.TrustCatalog.Record("KV", "KV:" .. gk .. ":" .. k, proof.wire, ns.PREFIX,
+                    "issuer-revoke:" .. key), priority)
+            elseif proof and (not old or old.raw ~= r.raw or ns.Now() - old.at >= C.AUTH_INTRODUCE) then
+                if ns.Comm.Send("WHISPER", proof.wire, { target = target, prio = priority, key = "issuer-revoke:" .. key }) then
                     shared[key] = { raw = r.raw, at = ns.Now() }
                 end
             end

@@ -31,6 +31,7 @@ Security.lua
 Issuers.lua
 IssuerRevocations.lua
 UnionAuthority.lua
+TrustCatalog.lua
 Data.lua
 Update.lua
 Census.lua

@@ -45,6 +45,7 @@ local RETRY_MAX = 5
 
 local queue = {}
 local handlers = {}
+local watchers = {} -- Comm.Watch: целые сообщения GUILD, услышанные и свои отправленные
 local assemblers = {}
 local nextId = math.random(0, 1000)
 -- Полосы по dist: refused — отказов подряд, waitUntil — пауза после отказа, held — полоса
@@ -72,6 +73,19 @@ local PLAIN = { H1 = true, Q1 = true, RP = true, RY = true, RR = true, RU = true
 
 function Comm.On(kind, fn)
 	handlers[kind] = fn
+end
+
+-- fn(msg, sender, prefix, started): целое сообщение по GUILD — услышанное от согильдийца
+-- (sender — его имя, started — когда пришёл его первый кусок) или моё, все куски которого
+-- приняла игра (sender = nil, started — когда ушёл первый кусок). Свои сообщения GUILD игра
+-- возвращает и мне, но разбор их отбрасывает (OnAddon), поэтому своя отправка — отсюда.
+-- Так каталог доверия (TrustCatalog.lua) видит, что уже разослано.
+function Comm.Watch(fn)
+	watchers[#watchers + 1] = fn
+end
+
+local function Notify(msg, sender, prefix, started)
+	for _, fn in ipairs(watchers) do ns.SafeCall("guild watch", fn, msg, sender, prefix, started) end
 end
 
 local function NewId()
@@ -134,7 +148,8 @@ function Comm.SendNow(dist, msg, target, logged, prefix, kind, source)
 	return false, "error"
 end
 
-local function Finish(job, ok, why)
+-- quiet — задание снято как ненужное (opts.skip): это не потеря, в счётчик выброшенных не идёт.
+local function Finish(job, ok, why, quiet)
 	if job.finished then return end
 	job.finished = true
 	for i, j in ipairs(queue) do
@@ -143,7 +158,8 @@ local function Finish(job, ok, why)
 			break
 		end
 	end
-	if not ok then Comm.stats.dropped = Comm.stats.dropped + 1 end
+	if not ok and not quiet then Comm.stats.dropped = Comm.stats.dropped + 1 end
+	if ok and job.dist == "GUILD" then Notify(job.payload, nil, job.prefix, job.started) end
 	if job.done then ns.SafeCall("send done", job.done, ok, why) end
 end
 
@@ -231,6 +247,9 @@ end
 -- будет поставлено, пока это не завершено. Действует и между полосами; в своей полосе
 -- задание того же приоритета ещё и ставится прямо перед ним.
 -- prefix — явно старый транспорт для каталогов 0.8; новые KA/UQ по умолчанию отделены.
+-- skip() — проверка прямо перед первым куском: true — сообщение уже не нужно (его разослал
+-- другой), задание тихо снимается: done(false, "skipped"), без счёта выброшенных и записи в
+-- журнал. Начатое сообщение досылается. guard() ложь — полномочия пропали: это выброс.
 function Comm.Send(dist, payload, opts)
 	opts = opts or {}
 	if type(payload) ~= "string" or payload == "" then return false end
@@ -245,7 +264,7 @@ function Comm.Send(dist, payload, opts)
 		for i, job in ipairs(queue) do
 			if job.key == opts.key and job.prefix == prefix and job.dist == dist and job.i == 1 then
 				job.parts, job.at, job.target, job.done = Codec.Pack(payload, NewId()), now, opts.target, opts.done
-				job.guard = opts.guard
+				job.payload, job.guard, job.skip = payload, opts.guard, opts.skip
 				job.kind, job.source = kind, source
 				AddBefore(job, opts.before)
 				-- Ответ на срочный запрос мог заменить ещё не отправленное объявление.
@@ -263,8 +282,9 @@ function Comm.Send(dist, payload, opts)
 	local job = {
 		kind = kind, source = source,
 		prefix = prefix,
-		dist = dist, target = opts.target, parts = Codec.Pack(payload, NewId()), i = 1,
+		dist = dist, target = opts.target, parts = Codec.Pack(payload, NewId()), i = 1, payload = payload,
 		key = opts.key, prio = opts.prio, logged = opts.logged, at = now, tries = 0, done = opts.done, guard = opts.guard,
+		skip = opts.skip,
 	}
 	AddBefore(job, opts.before)
 	Enqueue(job, opts.before)
@@ -340,8 +360,16 @@ local function SendPart(job)
 		Finish(job, false, why or "failed")
 		return false
 	end
+	if job.i == 1 then job.started = ns.Now() end
 	job.i = job.i + 1
 	if job.i > #job.parts then Finish(job, true) end
+	return true
+end
+
+-- Ещё не начатое задание, которое уже не нужно (opts.skip): снять тихо. true — снято.
+local function Skipped(job)
+	if job.i ~= 1 or not job.skip or not job.skip() then return false end
+	Finish(job, false, "skipped", true)
 	return true
 end
 
@@ -383,8 +411,11 @@ function Comm.Pump()
 	while true do
 		local job = Next(Open)
 		if not job then return end
-		local lane = lanes[job.dist]
-		left[lane] = SendPart(job) and left[lane] - 1 or 0
+		-- Снятое как ненужное квоту полосы не тратит.
+		if not Skipped(job) then
+			local lane = lanes[job.dist]
+			left[lane] = SendPart(job) and left[lane] - 1 or 0
+		end
 	end
 end
 
@@ -396,11 +427,15 @@ function Comm.Flush(n)
 	local function Open(lane)
 		return now >= lane.waitUntil
 	end
-	for _ = 1, n or 1 do
+	local parts = 0
+	while parts < (n or 1) do
 		local job = Next(Open)
 		if not job or not job.prio then return end
 		-- Отказ ставит на паузу только полосу этого задания: следующий кусок — из другой.
-		SendPart(job)
+		if not Skipped(job) then
+			SendPart(job)
+			parts = parts + 1
+		end
 	end
 end
 
@@ -442,6 +477,7 @@ local function OnAddon(prefix, msg, dist, sender)
 	if dist == "GUILD" and (not ns.Roster.Fresh() or ns.Roster.RankOf(sender) == nil) then return end
 	local senderKey = U.Key(sender)
 	if senderKey then unavailable[senderKey] = nil end
+	local started = ns.Now()
 	if msg:byte(1) == 67 then -- "C": кусок
 		local key = prefix .. ":" .. dist
 		local a = assemblers[key]
@@ -449,13 +485,14 @@ local function OnAddon(prefix, msg, dist, sender)
 			a = Codec.NewAssembler()
 			assemblers[key] = a
 		end
-		msg = Codec.Feed(a, U.Key(sender), msg, ns.Now())
+		msg, started = Codec.Feed(a, U.Key(sender), msg, ns.Now())
 		if not msg then return end
 	end
 	local kind = msg:sub(1, 2)
 	if control and kind ~= "KA" and kind ~= "UQ" and kind ~= "UO" then return end
 	if (kind == "UQ" or kind == "UO") and not control then return end
 	local ctx = (kind == "KA" or kind == "UQ" or kind == "UO") and { unionControl = control and true or false } or nil
+	if dist == "GUILD" then Notify(msg, sender, prefix, started) end
 	Comm.Dispatch(msg, sender, dist, ctx)
 end
 

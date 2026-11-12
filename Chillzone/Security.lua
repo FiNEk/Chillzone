@@ -27,10 +27,6 @@ local policySigning = {}
 local policySent = {}
 local pendingPolicies = {}
 local lastLegacyProbe = -1e9
-local lastNativeHello = -1e9
-local nativeTrustPending = false
-local nativeUnionPending = false
-local nativeUnionBootstrap = false
 local unionQueries = {}
 local unionQueryAt, unionQueryDelay = -1e9, 0
 local MAX_CERT, MAX_WIRE, MAX_PENDING, FP_LEN = 1800, 7000, 32, 16
@@ -561,20 +557,51 @@ local function PolicyCurrent(p)
     end
     return p.expires > ns.ServerTime() and not Store().owner and not (p.legacy and Store().governed)
 end
-function S.ShareTrust(bootstrap)
-    if not S.CanAdmin() then return false end
-    if ns.Census then ns.Census.SendHello() end
-    -- При первом входе корни и состав обгоняют чат; обычная догоняющая рассылка
-    -- остаётся наравне с ним, как и сертификаты.
-    local priority = bootstrap and ns.Comm.PRIO_BOOTSTRAP or true
-    for _, root in pairs(S.Roots()) do
-        if LocalOrMember(root.guild) then ShareRoot(root.guild, root, priority) end
+-- Каталог доверия своей гильдии: корни своей гильдии и объединения, владелец объединения,
+-- действующие решения главы, допуски издателей и отзывы. Рассылает его TrustCatalog.lua —
+-- один раз на всех офицеров, а не по копии от каждого. Записи — TrustCatalog.Record.
+function S.Catalog()
+    local list, TC = {}, ns.TrustCatalog
+    if not S.CanAdmin() or not Store() then return list end
+    for gk, root in pairs(S.Roots()) do
+        if LocalOrMember(root.guild) then
+            list[#list + 1] = TC.Record("KT", "KT:" .. gk, "KT~" .. root.guild .. "~" .. root.name .. "~" .. root.public,
+                ns.PREFIX, "root:" .. gk)
+        end
     end
-    ns.UnionAuthority.Share("GUILD", priority)
-    ns.Issuers.Share("GUILD", priority)
-    for _, p in pairs(Store().policies) do
-        if PolicyCurrent(p) then ns.Comm.Send("GUILD", p.wire,
-            { prio = priority, key = "union:" .. U.GuildKey(p.guild), prefix = PolicyPrefix(p) }) end
+    list[#list + 1] = ns.UnionAuthority.Record()
+    for _, r in ipairs(ns.Issuers.Records()) do list[#list + 1] = r end
+    for gk, p in pairs(Store().policies) do
+        if PolicyCurrent(p) then
+            list[#list + 1] = TC.Record("KA", "KA:" .. gk, p.wire, PolicyPrefix(p), "union:" .. U.GuildKey(p.guild))
+        end
+    end
+    return list
+end
+-- Офицеры, которые делят рассылку каталога: объявили ключ (K1) за PEER_WINDOW, не вышли из
+-- игры по ростеру, и я сам. У всех клиентов список примерно один и тот же.
+function S.ShareOfficers()
+    local list = {}
+    local now = ns.Now()
+    for key, peer in pairs(keys) do
+        if key ~= ns.myKey and now - peer.at <= C.PEER_WINDOW and not ns.Roster.LeftGame(key, peer.at)
+            and ns.Roster.IsOfficerRank(ns.Roster.RankOf(peer.name)) then
+            list[#list + 1] = key
+        end
+    end
+    if S.CanAdmin() then list[#list + 1] = ns.myKey end
+    return list
+end
+-- Согильдиец попросил каталог (UQ, первый K1; asker — его ключ). Каталог уходит через окно
+-- TrustCatalog, привет — не чаще того же окна. bootstrap — первый запрос вошедшего: записи
+-- обгоняют чат. urgent — ответ репортёра на Q1: каталог раньше отчётов, без окна.
+function S.ShareTrust(bootstrap, asker, urgent)
+    if not S.CanAdmin() then return false end
+    if ns.Census then ns.Census.Hello(C.TRUST_SHARE_WINDOW) end
+    if urgent then
+        ns.TrustCatalog.Urgent(asker)
+    else
+        ns.TrustCatalog.Request(asker, false, bootstrap)
     end
     return true
 end
@@ -731,7 +758,8 @@ local function BuildPolicies()
                 s.policies[gk] = { wire = wire, issued = now, revision = revision,
                     expires = 0, durable = true, owner = owner.public, generation = owner.generation, guild = entry.guild }
                 entry.generation = owner.generation
-                ns.UnionAuthority.Share("GUILD", ns.Comm.PRIO_BOOTSTRAP)
+                -- Владелец — прямо перед новым решением, без окна каталога: решение без него ждут лишь 30 с.
+                ns.UnionAuthority.Share("GUILD", ns.Comm.PRIO_BOOTSTRAP, true)
                 ns.Fire("UNION_POLICY", entry.guild, wire)
                 ns.Comm.Send("GUILD", wire, { key = "root-policy:" .. gk, guard = S.CanManageUnion })
                 -- Подключаемая гильдия пока не зарегистрирована у реле. Её представитель
@@ -1145,36 +1173,24 @@ ns.Comm.On("KT", function(msg, sender, dist)
     -- Pin потом не заменяет: настоящий корень при её подключении был бы отвергнут.
     if guild then Pin(guild, name, public) end
 end)
-local function NativeTrustReply(union, bootstrap)
+-- Запрос вошедшего: весь каталог (union) или только корни. Запрос запоминается временем
+-- прихода, а сами записи уходят через окно TrustCatalog: одна копия на всех спросивших и на
+-- всех офицеров. Привет — не чаще того же окна.
+local function NativeTrustReply(union, bootstrap, key)
     if not S.CanAdmin() then return end
     if union then
-        nativeUnionPending = true
-        nativeUnionBootstrap = nativeUnionBootstrap or bootstrap ~= false
+        S.ShareTrust(bootstrap, key)
+    else
+        ns.TrustCatalog.Request(key, true)
+        if ns.Census then ns.Census.Hello(C.TRUST_SHARE_WINDOW) end
     end
-    if nativeTrustPending then return end
-    nativeTrustPending = true
-    ns.After(math.max(0, 5 - (ns.Now() - lastNativeHello)), "доверие новым участникам", function()
-        nativeTrustPending = false
-        if not S.CanAdmin() then return end
-        lastNativeHello = ns.Now()
-        if nativeUnionPending then
-            nativeUnionPending = false
-            local priority = nativeUnionBootstrap
-            nativeUnionBootstrap = false
-            S.ShareTrust(priority)
-        else
-            local root = Root(ns.MyGuild())
-            if root then ShareRoot(root.guild, root) end
-            if ns.Census then ns.Census.SendHello() end
-        end
-    end)
 end
 ns.Comm.On("UQ", function(msg, sender, dist, ctx)
     if msg == "UQ~1" and dist == "GUILD" and ctx and ctx.unionControl and NativeRole(sender) then
         local key = U.Key(sender)
         local first = not unionQueries[key]
         unionQueries[key] = ns.Now()
-        NativeTrustReply(true, first)
+        NativeTrustReply(true, first, key)
     end
 end)
 ns.Comm.On("K1", function(msg, sender, dist)
@@ -1206,7 +1222,7 @@ ns.Comm.On("K1", function(msg, sender, dist)
     local requested = flag:find("~u", 1, true) ~= nil
     -- Вошедший офицер мог принести каталог с другого персонажа своего аккаунта.
     -- Первый K1 соседа запускает доставку, даже если его UQ уже ждёт длинного повтора.
-    NativeTrustReply(requested or (firstPeer and Store().owner ~= nil), requested)
+    NativeTrustReply(requested or (firstPeer and Store().owner ~= nil), requested, k)
 end)
 ns.Comm.On("KP", function(msg, sender, dist)
     if dist ~= "GUILD" and dist ~= "WHISPER" then return end
@@ -1399,11 +1415,11 @@ local function Tick()
     TickLinks()
     if not identity or not ns.MyGuild() or not ns.Roster.Fresh() then return end
     local now = ns.Now()
+    -- Плановое объявление корней: запрос в окно каталога. Одна копия корня на всех офицеров не
+    -- чаще раза в TRUST_SHARE_ROOTS, а не по копии от каждого раз в 30 секунд.
     if S.CanAdmin() and now - lastPolicy >= 30 then
         lastPolicy = now
-        for _, root in pairs(S.Roots()) do
-            if LocalOrMember(root.guild) then ShareRoot(root.guild, root) end
-        end
+        ns.TrustCatalog.Request(nil, true)
     end
     if now - lastHello >= 60 then S.Say() end
     ns.UnionAuthority.Tick(keys)
