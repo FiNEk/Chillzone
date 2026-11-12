@@ -1222,7 +1222,11 @@ ns.Comm.On("K1", function(msg, sender, dist)
     local requested = flag:find("~u", 1, true) ~= nil
     -- Вошедший офицер мог принести каталог с другого персонажа своего аккаунта.
     -- Первый K1 соседа запускает доставку, даже если его UQ уже ждёт длинного повтора.
-    NativeTrustReply(requested or (firstPeer and Store().owner ~= nil), requested, k)
+    -- Но если его UQ пришёл меньше окна назад, K1 — тот же вход: копии после UQ сосед уже
+    -- слышал, а новый запрос сдвинул бы его запрос за них, и каталог ушёл бы повторно.
+    -- Тогда K1 просит только корни. Если UQ не дошёл или был давно, весь каталог просит K1.
+    local sameEntry = unionQueries[k] and ns.Now() - unionQueries[k] < C.TRUST_SHARE_WINDOW
+    NativeTrustReply(requested or (firstPeer and not sameEntry and Store().owner ~= nil), requested, k)
 end)
 ns.Comm.On("KP", function(msg, sender, dist)
     if dist ~= "GUILD" and dist ~= "WHISPER" then return end

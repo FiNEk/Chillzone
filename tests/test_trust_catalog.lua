@@ -131,8 +131,11 @@ local function Errors(w)
 	for _, c in ipairs(w.clients) do T.eq(#c.ns.db.errors, 0, c:Name() .. ": без ошибок") end
 end
 
-T.test("trust-catalog: восемь офицеров и один вошедший — каждая запись примерно один раз", function()
-	local w, k, _, m, officers = Build(8)
+-- Порядок офицеров и паузы зависят от случайных чисел симулятора, а последовательность
+-- math.random у Lua 5.1 и LuaJIT разная: на одном seed удачный порядок скрывал лишнюю копию.
+-- Поэтому сценарий проверяется на нескольких seed.
+local function EightOfficers(seed)
+	local w, k, _, m, officers = Build(8, seed)
 	local senders = Keys(officers)
 	senders[k.ns.myKey] = true
 	local heard = Listen(m)
@@ -160,6 +163,66 @@ T.test("trust-catalog: восемь офицеров и один вошедши�
 		if r.kind == "KT" then T.ok((copies[r.id] or 0) <= 4, r.slot .. ": корней " .. tostring(copies[r.id])) end
 	end
 	T.eq(k.ns.Comm.stats.dropped + m.ns.Comm.stats.dropped, dropped, "ничего не выброшено")
+	Errors(w)
+end
+
+for _, seed in ipairs({ 3, 4, 6, 9, 11, 15 }) do
+	T.test(("trust-catalog: восемь офицеров и один вошедший — каждая запись примерно один раз, seed %d"):format(seed),
+		function() EightOfficers(seed) end)
+end
+
+-- UQ и первый K1 одного входа приходят порознь: между ними куски привета вошедшего. Первый K1
+-- засчитывался вторым запросом всего каталога, и его запрос сдвигался за уже разосланное:
+-- офицеры повторяли каталог после окна, а репортёр на Q1 — сразу. Здесь K1 ждёт, пока гильдия
+-- не разошлёт по UQ хотя бы UO главы (с доказательством: копия без него запись главы не покрывает).
+T.test("trust-catalog: первый K1 вскоре после UQ того же входа не повторяет разосланное", function()
+	local w, k, _, m, officers = Build(3)
+	local senders = Keys(officers)
+	senders[k.ns.myKey] = true
+	local heard = Listen(m)
+	local t0 = w.now
+	local g = Join(w, "Первый")
+	local held, send = nil, g.ns.Comm.Send
+	g.ns.Comm.Send = function(dist, msg, opts)
+		if dist == "GUILD" and msg:find("^K1~") then
+			held = held or { msg = msg, opts = opts }
+			return true
+		end
+		return send(dist, msg, opts)
+	end
+	-- Окно отсчитывается от входа, а UQ уходит позже: K1 уходит меньше окна после UQ.
+	local window, owner = k.ns.Config.TRUST_SHARE_WINDOW, k.ns.UnionAuthority.Record().id
+	T.ok(RunUntil(w, function() return Copies(heard, t0, senders)[owner] ~= nil end, window), "владелец разослан по UQ")
+	T.ok(held ~= nil and not g.ns.Security.MyCertificate(), "K1 ещё не ушёл")
+	g.ns.Comm.Send = send
+	local t1 = w.now
+	send("GUILD", held.msg, held.opts)
+	T.ok(RunUntil(w, function() return g.ns.Security.MyCertificate() ~= nil end, 20), "K1 дошёл: сертификат выдан")
+	w:Run(2 * window)
+	T.ok(HasCatalog(k, g), "вошедший получил весь каталог")
+	-- Разосланное между UQ и K1 после K1 не повторяется. Остальное — ответ на UQ, оно уходит после K1.
+	local all, after, checked = Copies(heard, t0, senders), Copies(heard, t1, senders), 0
+	for _, r in ipairs(k.ns.Security.Catalog()) do
+		if r.kind ~= "KT" and (all[r.id] or 0) > (after[r.id] or 0) then
+			checked = checked + 1
+			T.eq((after[r.id] or 0) + (r.base and after[r.base] or 0), 0, r.slot .. ": копий после K1")
+		end
+	end
+	T.ok(checked > 0, "до K1 разослан хотя бы владелец")
+	Errors(w)
+end)
+
+-- UQ не дошёл (например, отказ сервера): первый K1 соседа сам запускает доставку всего
+-- каталога. Q1 тоже не уходит: на него каталог шлёт репортёр.
+T.test("trust-catalog: без UQ первый K1 вошедшего запускает доставку каталога", function()
+	local w, k = Build(3)
+	local g = Join(w, "Первый")
+	local send = g.ns.Comm.Send
+	g.ns.Comm.Send = function(dist, msg, opts)
+		if dist == "GUILD" and (msg == "UQ~1" or msg:find("^Q1~")) then return true end
+		return send(dist, msg, opts)
+	end
+	T.ok(RunUntil(w, function() return HasCatalog(k, g) end, 50), "каталог пришёл по K1")
 	Errors(w)
 end)
 
@@ -278,9 +341,12 @@ T.test("trust-catalog: новая запись и явное действие у
 	local g = Join(w, "Первый")
 	local t0 = w.now
 	local owner
+	-- Ждать именно UO главы с доказательством. Репортёр на Q1 вошедшего может успеть раньше со
+	-- своим UO без доказательства, а он запись главы не покрывает: глава шлёт её всё равно.
+	local id = k.ns.UnionAuthority.Record().id
 	T.ok(RunUntil(w, function()
 		for _, e in ipairs(heard) do
-			if e.kind == "UO" and e.started >= t0 then owner = e; return true end
+			if e.id == id and e.started >= t0 then owner = e; return true end
 		end
 	end, 60), "владелец разослан для вошедшего")
 	-- Гильдия только что слышала владельца: тот же UO не повторяется, а явное действие — да.
@@ -405,15 +471,21 @@ end)
 -- Допуск, пришедший раньше корня, вошедший отбрасывает. Такая копия его не обслужила: новые
 -- офицеры повторяют допуск после корня, а не считают его разосланным. Прежний офицер здесь
 -- отвечает один раз: иначе вошедший взял бы допуск из его следующей пачки.
-T.test("trust-catalog: допуск раньше корня не засчитывается — вошедший получает его следующей копией", function()
-	local w, k, _, m, officers = Build(3)
+-- Придёт ли его допуск раньше корня, решают паузы офицеров (случайные числа симулятора, у Lua 5.1
+-- и LuaJIT разные) и плановое объявление корня незадолго до запроса: корень мог прийти первым,
+-- тогда допуск принят и повторять нечего. Поэтому вход проверяется на нескольких seed: весь
+-- каталог вошедший получает всегда, а где допуск пришёл раньше корня, его повторяет новый офицер.
+-- Возвращает, пришёл ли допуск раньше корня.
+local function EarlyPermit(seed)
+	local w, k, _, m, officers = Build(3, seed)
 	local old = officers[1]
 	OldOfficer(old, true, true)
 	local heard = Listen(m)
 	local t0 = w.now
 	local g = Join(w, "Первый")
 	local window = k.ns.Config.TRUST_SHARE_WINDOW
-	T.ok(RunUntil(w, function() return HasCatalog(k, g) end, 2 * window + 30), "вошедший получил весь каталог")
+	T.ok(RunUntil(w, function() return HasCatalog(k, g) end, 2 * window + 30),
+		("seed %d: вошедший получил весь каталог"):format(seed))
 	-- Прежний прислал допуск раньше корня; новый повторил его после корня.
 	local fresh = Keys(officers)
 	fresh[old.ns.myKey], fresh[k.ns.myKey] = nil, true
@@ -432,7 +504,15 @@ T.test("trust-catalog: допуск раньше корня не засчиты�
 			if fresh[e.from] and firstRoot and e.started > firstRoot then late = true end
 		end
 	end
-	T.ok(early, "прежний прислал допуск раньше корня")
-	T.ok(late, "новый офицер повторил допуск после корня")
+	if early then T.ok(late, ("seed %d: новый офицер повторил допуск после корня"):format(seed)) end
 	Errors(w)
+	return early
+end
+
+T.test("trust-catalog: допуск раньше корня не засчитывается — вошедший получает его следующей копией", function()
+	local early = 0
+	for _, seed in ipairs({ 11, 1, 2, 3, 4 }) do
+		if EarlyPermit(seed) then early = early + 1 end
+	end
+	T.ok(early > 0, "хотя бы на одном seed прежний прислал допуск раньше корня")
 end)
