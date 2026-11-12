@@ -834,26 +834,33 @@ function Views.GroupApplicants()
 	return out
 end
 
--- Вид для поиска по названию: нижний регистр с кириллицей и «ё» как «е» (в названиях игры
--- пишут «Черной горы», игрок может набрать «чёрной»).
-local function SearchFold(s)
-	return (U.Fold(s):gsub("\209\145", "\208\181"))
+-- Ключ для поиска по названию: нижний регистр с кириллицей, «ё» как «е» (в названиях игры
+-- пишут «Черной горы», игрок может набрать «чёрной») и без пробелов и знаков ASCII — остаются
+-- латинские буквы, цифры и все старшие байты (кириллица в UTF-8). «Зул'Фаррак» → «зулфаррак».
+local function SearchKey(s)
+	s = U.Fold(s):gsub("\209\145", "\208\181")
+	return (s:gsub("[^%w\128-\255]", ""))
 end
 
 -- Список занятий игры для «Из списка»: { header = текст } перед разделом и { activity, name,
--- right } — занятия, в названии которых есть каждое слово запроса (подстрокой, без шаблонов).
--- Пустой запрос — весь список. Второе значение — сколько занятий в списке без учёта запроса
--- (0 — игра списка не даёт).
+-- right } — занятия, у которых каждое слово запроса — подстрока ключа названия (SearchKey,
+-- без шаблонов). Слова делятся по пробелам и приводятся к тому же ключу, порядок слов не
+-- важен, так что «глубинычернойгоры» и «горы глубины» находят «Глубины Черной горы». Слова из
+-- одних знаков отбрасываются; без слов — весь список. Второе значение — сколько занятий в
+-- списке без учёта запроса (0 — игра списка не даёт).
 function Views.GroupPicks(query)
 	local catalog = ns.Groups.Catalog()
 	if not catalog then return {}, 0 end
 	local words = {}
-	for word in SearchFold(query):gmatch("%S+") do words[#words + 1] = word end
+	for word in tostring(query or ""):gmatch("%S+") do
+		word = SearchKey(word)
+		if word ~= "" then words[#words + 1] = word end
+	end
 	local out, kind = {}, nil
 	for _, a in ipairs(catalog) do
 		local fit = true
 		if #words > 0 then
-			local name = SearchFold(a.name)
+			local name = SearchKey(a.name)
 			for _, word in ipairs(words) do
 				if not name:find(word, 1, true) then
 					fit = false
