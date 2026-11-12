@@ -87,6 +87,26 @@ function World:AddOnline(guild, full, rank, level, class)
 	g.members[#g.members + 1] = { full = full, rank = rank, level = level or 60, class = class or "WARRIOR", online = true }
 end
 
+-- Исключение (GuildUninvite): клиент теряет гильдию, строка ростера пропадает. name — «Имя Фамилия».
+function World:Uninvite(guild, name)
+	local short = name:gsub("%-.*$", "")
+	for _, o in ipairs(self.clients) do
+		if o.guild == guild and (o.first .. " " .. o.surname) == short then
+			o.guild = nil
+			if o.online then o:Fire("PLAYER_GUILD_UPDATE", "player") end
+			return true
+		end
+	end
+	local g = self.guilds[guild]
+	for i, m in ipairs(g and g.members or {}) do
+		if m.full:gsub("%-.*$", "") == short then
+			table.remove(g.members, i)
+			return true
+		end
+	end
+	return false
+end
+
 local CLASS_LOCAL = { WARRIOR = "Воин", MAGE = "Маг", PRIEST = "Жрец", PALADIN = "Паладин", DRUID = "Друид", ROGUE = "Разбойник", HUNTER = "Охотник", WARLOCK = "Чернокнижник", SHAMAN = "Шаман" }
 
 ---------------------------------------------------------------------------
@@ -403,6 +423,16 @@ local function Env(c)
 		assert(env.CanGuildInvite(), "нет права приглашать")
 		c.invites[#c.invites + 1] = name
 	end
+	c.uninvites = {}
+	env.CanGuildRemove = function()
+		if c.canRemove ~= nil then return c.canRemove end
+		return c.guild ~= nil and c.rank <= 1
+	end
+	env.GuildUninvite = function(name)
+		assert(env.CanGuildRemove(), "нет права исключать")
+		c.uninvites[#c.uninvites + 1] = name
+		w:Uninvite(c.guild, name)
+	end
 	env.C_FriendList = {
 		SetWhoToUi = function(on) c.whoToUi = on end,
 		SendWho = function(query)
@@ -478,6 +508,7 @@ local function Env(c)
 	end
 	env.C_GuildInfo = {
 		Invite = env.GuildInvite,
+		Uninvite = env.GuildUninvite,
 		GuildRoster = function() w:Schedule(w.now + 0.2, function() c:Fire("GUILD_ROSTER_UPDATE") end, c) end,
 		-- Права звания rankOrder (с 1): таблица из 24 флагов, [22] — «офицер».
 		GuildControlGetRankFlags = function(order)

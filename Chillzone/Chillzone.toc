@@ -49,6 +49,7 @@ GuildChat.lua
 Who.lua
 Recruit.lua
 RecruitSync.lua
+Transfer.lua
 Refresh.lua
 Views.lua
 ChatPane.lua
@@ -58,6 +59,7 @@ GroupsPane.lua
 Debug.lua
 JournalPane.lua
 UnionPane.lua
+TransferPane.lua
 UI.lua
 Map.lua
 MapControls.lua

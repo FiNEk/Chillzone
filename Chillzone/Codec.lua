@@ -39,6 +39,14 @@
 --         GQ~ по GUILD — вошедший просит объявления заново.
 --         GA~id~fp~guild~class~level~t.h.d~note (заявка) · GW~id (отзыв) · GR~id~I|D (ответ:
 --         приглашён, отказ) — шёпотом напрямую, без реле.
+-- Кадры (Transfer.lua, после 0.14.2; прежние версии их не знают): шёпотом напрямую, без реле.
+--         TQ~1~id~K|I~guild~имя~другая~fp~st   просьба офицерам guild: K — исключить имя из неё,
+--                                              I — пригласить в неё; другая — вторая гильдия
+--                                              переноса или пусто; fp — отпечаток сертификата
+--                                              просящего (0 — нет); st — base36 серверного времени
+--         TA~1~id~R|D|N|O                      ответ просящему: получено, сделано (по ростеру),
+--                                              отклонено, игрока нет в гильдии
+--         TC~1~id                              просьба отозвана
 local ADDON, ns = ...
 
 local Codec = {}
@@ -427,6 +435,51 @@ function Codec.DecodePullAnswer(s)
 	local guild, wire = s:match("^RA~([^~]+)~(S1~.+)$")
 	if not guild or LongGuild(guild) or not wire:find("^S1~[%w_-]+~%d+~%d+~[%w_-]+~R1~") then return nil end
 	return guild, wire
+end
+
+---------------------------------------------------------------------------
+-- Кадры (Transfer.lua): просьба офицерам гильдии исключить или пригласить игрока, ответ и отзыв.
+-- Имя и гильдии — слова просящего; права получатель проверяет по сертификату и своему ростеру.
+---------------------------------------------------------------------------
+Codec.TRANSFER_ID = 24 -- длина номера просьбы
+
+-- q: { id, kind = "K"|"I", guild, name, other, fp, st }.
+function Codec.EncodeTransfer(q)
+	return ("TQ~1~%s~%s~%s~%s~%s~%s~%s"):format(q.id, q.kind, clean(q.guild), clean(q.name), clean(q.other or ""),
+		q.fp or "0", Codec.Base36(q.st) or "0")
+end
+
+-- Таблица как у EncodeTransfer (other без второй гильдии — nil) или nil.
+function Codec.DecodeTransfer(s)
+	if type(s) ~= "string" or #s > 400 then return nil end
+	local id, kind, guild, name, other, fp, stamp = s:match(
+		"^TQ~1~([0-9a-z.]+)~([KI])~([^~]+)~([^~]+)~([^~]*)~([%w_-]+)~([0-9a-z]+)$")
+	local st = unBase36(stamp)
+	if not id or #id > Codec.TRANSFER_ID or not st or LongGuild(guild) or (other ~= "" and LongGuild(other))
+		or #name > 64 or #fp > 24 then return nil end
+	return { id = id, kind = kind, guild = guild, name = name, other = other ~= "" and other or nil, fp = fp, st = st }
+end
+
+function Codec.EncodeTransferAnswer(id, state)
+	return "TA~1~" .. id .. "~" .. state
+end
+
+-- id, state или nil.
+function Codec.DecodeTransferAnswer(s)
+	if type(s) ~= "string" then return nil end
+	local id, state = s:match("^TA~1~([0-9a-z.]+)~([RDNO])$")
+	if not id or #id > Codec.TRANSFER_ID then return nil end
+	return id, state
+end
+
+function Codec.EncodeTransferCancel(id)
+	return "TC~1~" .. id
+end
+
+function Codec.DecodeTransferCancel(s)
+	if type(s) ~= "string" then return nil end
+	local id = s:match("^TC~1~([0-9a-z.]+)$")
+	return id and #id <= Codec.TRANSFER_ID and id or nil
 end
 
 -- people: { name, class, level, addon }. Без зон: другим гильдиям уходят только их числа.

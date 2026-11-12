@@ -1,7 +1,8 @@
 -- Chillzone: окно — как «Гильдия и сообщества»: рамка ButtonFrameTemplate с портретом, вкладки-
 -- значки на правом краю (Чат, Перепись, Королевство, Настройки, а главам и офицерам ещё Заявки и Отладка).
 -- Вкладка «Объединение» (UnionPane.lua): глава главной гильдии управляет составом,
--- офицер гильдии вне объединения запрашивает связь.
+-- офицер гильдии вне объединения запрашивает связь. «Кадры» (TransferPane.lua) — главам и
+-- офицерам гильдий объединения: исключение и перенос игроков между гильдиями.
 -- Чат рисует ChatPane.lua, Перепись — CensusPane.lua, остальные вкладки — список строк из Views.lua
 -- и Debug.lua во вставке окна. Кнопка у миникарты — LibDBIcon, объект запуска — LibDataBroker.
 local ADDON, ns = ...
@@ -22,6 +23,7 @@ local TABS = {
 	{ key = "groups", text = "TAB_GROUPS", icons = { "Interface\\Icons\\INV_Misc_GroupNeedMore", "Interface\\Icons\\Ability_Warrior_BattleShout" } },
 	{ key = "census", text = "TAB_CENSUS", icons = { "Interface\\Icons\\achievement_guildperk_everybodysfriend", "Interface\\Icons\\INV_Misc_Book_09" } },
 	{ key = "requests", text = "TAB_REQUESTS", icons = { "Interface\\Icons\\INV_Letter_15" } },
+	{ key = "transfer", text = "TAB_TRANSFER", icons = { "Interface\\Icons\\INV_Banner_02", "Interface\\Icons\\Ability_Warrior_Charge" } },
 	{ key = "kingdom", text = "TAB_KINGDOM", icons = { "Interface\\Icons\\achievement_guildperk_honorablemention", "Interface\\Icons\\INV_Misc_Note_01" } },
 	{ key = "settings", text = "TAB_SETTINGS", icons = { "Interface\\Icons\\INV_Misc_Gear_01" } },
 	{ key = "debug", text = "TAB_DEBUG", icons = { "Interface\\Icons\\Trade_Engineering", "Interface\\Icons\\INV_Misc_Spyglass_03" } },
@@ -528,6 +530,7 @@ end
 -- офицерам: звание могли поменять при открытом окне. Видимые вкладки идут подряд, без дыр.
 local function Allowed(key)
 	if key == "requests" then return ns.RecruitSync.IsOfficer() end
+	if key == "transfer" then return ns.Transfer.Rights() ~= nil end
 	if key == "debug" then return ns.Debug.Allowed() end
 	if key == "union" then return ns.Security.CanManageUnion() or ns.Security.CanRequestUnion() end
 	return true
@@ -556,6 +559,7 @@ function UI.Render()
 	if not frame or not frame:IsShown() then return end
 	SyncTabs()
 	if current ~= "union" then ns.UnionPane.Hide() end
+	if current ~= "transfer" then ns.TransferPane.Hide() end
 	if current ~= "journal" then ns.JournalPane.Hide() end
 	if not ns.IsMember() and current ~= "settings" and current ~= "union" and current ~= "journal" then current = "join"
 	elseif ns.IsMember() and current == "join" then current = "census" end
@@ -614,6 +618,12 @@ function UI.Render()
 		ns.UnionPane.Show()
 		return
 	end
+	if current == "transfer" then
+		scroll:Hide()
+		ns.CensusPane.Hide()
+		ns.TransferPane.Show()
+		return
+	end
 	if current == "groups" then
 		scroll:Hide()
 		ns.CensusPane.Hide()
@@ -666,6 +676,11 @@ local function SideTab(def)
 		if def.key == "groups" then
 			local count = ns.Groups.Count()
 			tt:AddLine(count > 0 and L.TAB_GROUPS_COUNT:format(count) or L[def.text], 1, 1, 1)
+			return
+		end
+		if def.key == "transfer" then
+			local count = ns.Transfer.Count()
+			tt:AddLine(count > 0 and L.TAB_TRANSFER_COUNT:format(count) or L[def.text], 1, 1, 1)
 			return
 		end
 		local count = def.key == "requests" and #ns.Recruit.Requests() or 0
@@ -794,6 +809,7 @@ local function Create()
 	ns.CensusPane.Build(body)
 	ns.GroupsPane.Build(body)
 	ns.UnionPane.Build(body)
+	ns.TransferPane.Build(body)
 	ns.JournalPane.Build(body)
 	body:Hide()
 
@@ -802,7 +818,7 @@ local function Create()
 	UI.tabs = tabs
 
 	f:SetScript("OnShow", function() UI.Render() end)
-	f:SetScript("OnHide", function() ns.ChatPane.Hide(); ns.Recruit.Cancel(); ns.UnionPane.Hide(); ns.JournalPane.Hide(); ns.GroupsPane.Hide() end)
+	f:SetScript("OnHide", function() ns.ChatPane.Hide(); ns.Recruit.Cancel(); ns.UnionPane.Hide(); ns.TransferPane.Hide(); ns.JournalPane.Hide(); ns.GroupsPane.Hide() end)
 	local elapsed, debugElapsed, activityElapsed, pulse = 0, 0, 0, 0
 	f:SetScript("OnUpdate", ns.Perf.Wrap("window update", function(_, dt)
 		elapsed, debugElapsed = elapsed + (dt or 0), debugElapsed + (dt or 0)
@@ -823,7 +839,7 @@ local function Create()
 		elseif elapsed >= 30 then
 			elapsed, debugElapsed = 0, 0
 			if current == "census" or current == "kingdom" or current == "join" or current == "requests" or current == "union"
-				or current == "groups" then
+				or current == "groups" or current == "transfer" then
 				UI.Render()
 			else UI.RenderStatus() end
 		end
@@ -933,6 +949,13 @@ ns.Command("requests", function()
 	end
 	UI.Toggle("requests")
 end, L.HELP_REQUESTS)
+ns.Command("transfer", function()
+	if not ns.Transfer.Rights() then
+		ns.Print(L.TRANSFER_ONLY_OFFICERS)
+		return
+	end
+	UI.Toggle("transfer")
+end, L.HELP_TRANSFER)
 ns.Command("settings", function() UI.Toggle("settings") end, L.HELP_SETTINGS)
 ns.Command("diag", function()
 	if not ns.Debug.Allowed() then

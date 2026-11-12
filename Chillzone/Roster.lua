@@ -213,6 +213,9 @@ function Roster.Scan()
 	Roster.byKey, Roster.rankNames, Roster.members, Roster.guild = byKey, rankNames, rows, guild
 	Roster.online = onlineByKey
 	Roster.rankKnown = rankKnown
+	-- Ростер целиком: игра отдала строку на каждого участника. Если строки не в игре скрыты,
+	-- отсутствие имени ничего не доказывает (Transfer.lua: исключение не считается сделанным).
+	Roster.complete = #rows == numTotal
 	Roster.scannedAt = ns.Now()
 	local r = Roster.Build(guild, rows, numOnline, ns.faction, ns.ServerTime())
 	if ns.Census then r.users = ns.Census.Users() end
@@ -258,7 +261,7 @@ ns.RegisterEvent("PLAYER_GUILD_UPDATE", function(unit)
 		guildChangeQueued = false
 		if not ns.MyGuild() then
 			Roster.byKey, Roster.rankNames, Roster.members, Roster.report, Roster.guild = {}, {}, {}, nil, nil
-			Roster.online = {}
+			Roster.online, Roster.complete = {}, nil
 			Roster.rankKnown = {}
 		end
 		rankOfficer = {}

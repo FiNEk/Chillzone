@@ -73,6 +73,8 @@ read_globals = {
 	"SetWhoToUI",
 	"CanGuildInvite",
 	"GuildInvite",
+	"CanGuildRemove",
+	"GuildUninvite",
 	"InviteUnit",
 	"IsMouseButtonDown",
 	"JoinChannelByName",
