@@ -57,6 +57,7 @@ end)
 local marks = { got = {}, relayed = {}, settled = {} }
 local rate = {} -- [Key автора] = { n, t0 }
 local sideRate = {} -- [Key согильдийца] = { n, t0 }: его отчёты, принятые не от репортёра
+local sideHeard = {} -- [Key согильдийца] = { время, ... }: все его RG отчётов не от репортёра за минуту
 local hold = {} -- сообщения, пока ни одно реле не ответило
 local recent = {} -- [Key реле] = { { mode, inner, t } }: что ему недавно ушло (на случай офлайна)
 local lastPong = {} -- [Key] = когда отвечали RY
@@ -329,6 +330,7 @@ function Relay.Register()
 			for _, c in ipairs(ns.Data.Cached()) do
 				ns.Security.IntroduceWire("GUILD", c.raw)
 				ns.Comm.Send("GUILD", Codec.EncodeRM("RG", "L", c.origin, c.raw), { key = "rg:" .. c.key })
+				ns.Census.Shown(c.raw, true)
 			end
 		end
 	end
@@ -566,6 +568,7 @@ function Relay.Forward(origin, mode, inner, clear, certificate)
 		if not Mark("settled", dk, now) then return end
 		ns.Security.Introduce("GUILD", certificate.raw)
 		ns.Comm.Send("GUILD", Codec.EncodeRM("RG", mode, U.Display(origin), inner), { key = key, prio = mode == "P", logged = Logged(inner) })
+		if mode == "L" then ns.Census.Shown(inner, true) end
 	end
 	-- Чужой отчёт, новый для меня самого, отдаю своей гильдии сразу: её репортёр может молчать
 	-- или быть зарегистрирован у другого реле. Согильдийцы примут его как отчёт новее
@@ -655,6 +658,7 @@ local function Deliver(mode, origin, inner, ctx, toGuild)
 		local key = mode == "L" and ("rg:" .. okey .. ":" .. Codec.InnerType(inner)) or nil
 		ns.Security.Introduce("GUILD", certificate.raw)
 		ns.Comm.Send("GUILD", Codec.EncodeRM("RG", mode, origin, inner), { key = key, prio = mode == "P", logged = Logged(inner) })
+		if mode == "L" then ns.Census.Shown(inner, true) end
 	end
 	end, ctx.via == "RG", ctx.side)
 end
@@ -824,6 +828,20 @@ local function SideOk(key, now)
 	return s.n <= C.RG_SIDE_PER_MIN, s.n == C.RG_SIDE_PER_MIN + 1
 end
 
+-- Сколько RG отчётов не от репортёра согильдиец прислал за последнюю минуту, вместе с этим.
+-- Считаются все, а не только новые для меня: у получателей без этого отчёта каждый шёл в лимит
+-- SideOk. Пока счёт не выше лимита, отчёт получили все, кому он был нужен, и он показан гильдии.
+-- Сверх лимита — нет: иначе согильдиец подделками выбрал бы свой лимит, а затем повтором
+-- настоящего пакета заглушил бы честные ответы на Q1.
+local function SideHeard(key, now)
+	local list = sideHeard[key] or {}
+	sideHeard[key] = list
+	while list[1] and now - list[1] > 60 do table.remove(list, 1) end
+	list[#list + 1] = now
+	while #list > C.RG_SIDE_PER_MIN + 1 do table.remove(list, 1) end
+	return #list
+end
+
 -- RG раздаёт репортёр (или реле-репортёр) своей гильдии. Пакет внутри подписан автором, но
 -- проверка подписи стоит каждому в гильдии, поэтому строки чата принимаются только от репортёра
 -- (Census.MayForward), а не от любого участника. Отчёт переписи принимается от любого
@@ -835,6 +853,11 @@ ns.Comm.On("RG", function(msg, sender, dist)
 	local kind, mode, origin, inner = Codec.DecodeRelay(msg)
 	local fresh = ns.Roster.Fresh()
 	local side = not (fresh and ns.Census.MayForward(U.Key(sender)))
+	-- Что показано гильдии после Q1 (Census.Shown): до проверок, ведь повтор моего отчёта дальше
+	-- сравнения времени не идёт, а совпадение пакета сверяется побайтно.
+	if fresh and kind == "RG" and mode == "L" and (not side or SideHeard(U.Key(sender), Now()) <= C.RG_SIDE_PER_MIN) then
+		ns.Census.Shown(inner)
+	end
 	if side then
 		local state = fresh and kind == "RG" and mode == "L" and ReportState(inner) or nil
 		if state == "old" then return end
@@ -927,6 +950,9 @@ ns.On("LOGIN", function()
 		end
 		for k, s in pairs(sideRate) do
 			if now - s.t0 > 60 then sideRate[k] = nil end
+		end
+		for k, list in pairs(sideHeard) do
+			if now - list[#list] > 60 then sideHeard[k] = nil end
 		end
 		for gk, claim in pairs(claims) do
 			if now - claim.t > REG_TTL then claims[gk] = nil end
