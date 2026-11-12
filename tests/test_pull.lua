@@ -8,6 +8,7 @@ local function Build(opts)
 	opts = opts or {}
 	math.randomseed(tonumber(os.getenv("CZ_SEED") or "") or 7)
 	local w = Wow.World()
+	w.version = Wow.HELPER_VERSION -- помощники есть только у версий новее вышедшей
 	w:Guild("Чиллзон")
 	w:Guild("Чиллзон Север")
 	w:Guild("Орден Чиллзона")
@@ -474,6 +475,7 @@ end)
 T.test("pull: клиент 0.9 запросы не знает — молчит без ошибок, а спрашивает за его гильдию помощник", function()
 	math.randomseed(tonumber(os.getenv("CZ_SEED") or "") or 37)
 	local w = Wow.World()
+	w.version = Wow.HELPER_VERSION -- обновлённые клиенты; 0.9 — свои
 	w:Guild("Чиллзон")
 	w:Guild("Чиллзон Север")
 	local c = {}

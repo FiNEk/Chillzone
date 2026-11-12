@@ -601,8 +601,16 @@ end
 
 -- opts: first, surname, realm, faction, guild, rank, class, level, zone, config (поля Config
 -- поверх Config.lua), chatFilterAPI ("modern" — только ChatFrameUtil, иначе старый API),
--- db (сохранения прежнего клиента), reload (перезагрузка интерфейса, а не вход персонажа)
+-- db (сохранения прежнего клиента), reload (перезагрузка интерфейса, а не вход персонажа),
+-- version (номер аддона вместо Config.VERSION; по умолчанию world.version, если он задан, —
+-- кроме клиентов 0.9).
 function World:Client(opts)
+	local version = opts.version or (not opts.legacy and self.version) or nil
+	if version then
+		local config = { VERSION = version }
+		for k, v in pairs(opts.config or {}) do config[k] = v end
+		opts = setmetatable({ config = config }, { __index = opts })
+	end
 	local c = setmetatable({
 		world = self, first = opts.first, surname = opts.surname, realm = opts.realm or "CAMWOWUS2Realm7PvE",
 		faction = opts.faction or "Alliance", guild = opts.guild, rank = opts.rank or 3, class = opts.class or "MAGE",
@@ -735,4 +743,15 @@ function Wow.CertRank(ns, guild, name)
 end
 
 Wow.SERVER0 = SERVER0
+
+-- Номер вышедшей версии без помощников репортёра (Config.LAST_WITHOUT_HELPERS) и следующий за ним.
+-- Номер аддона в ветке может совпадать с вышедшим: тогда помощников нет, и тестам помощников нужны
+-- клиенты с номером выше (World.version или opts.version).
+do
+	local config = T.load({ "Config.lua" }).Config
+	local head, tail = config.LAST_WITHOUT_HELPERS:match("^(.-)(%d+)$")
+	Wow.RELEASED_VERSION = config.LAST_WITHOUT_HELPERS
+	Wow.HELPER_VERSION = head .. (tonumber(tail) + 1)
+end
+
 return Wow

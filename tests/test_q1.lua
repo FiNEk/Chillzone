@@ -5,22 +5,26 @@ local Wow = assert(loadfile(T.ROOT .. "/tests/wow.lua"))(T)
 
 -- Три гильдии, как в test_relay: в главной глава Карл, офицер Арагорн и рядовая Мира; extra —
 -- столько ещё рядовых главной гильдии. Канал игры выключен: проверяется только путь через реле.
-local function Build(extra)
+-- versions: номер аддона клиента по его имени в c (A, K, R1...), all — у остальных; по умолчанию
+-- все — версия с помощниками (Wow.HELPER_VERSION).
+local function Build(extra, versions)
+	versions = versions or {}
 	math.randomseed(tonumber(os.getenv("CZ_SEED") or "") or 7)
 	local w = Wow.World()
+	w.version = versions.all or Wow.HELPER_VERSION
 	w:Guild("Чиллзон")
 	w:Guild("Чиллзон Север")
 	w:Guild("Орден Чиллзона")
 	local cfg = { CHANNEL_CHAT = false }
 	local c = {}
-	c.A = w:Client({ first = "Арагорн", surname = "Светлый", guild = "Чиллзон", rank = 1, config = cfg })
-	c.K = w:Client({ first = "Карл", surname = "Великий", guild = "Чиллзон", rank = 0, realm = "CAMWOWUS2Realm3PvE", class = "PALADIN", config = cfg })
-	c.M = w:Client({ first = "Мира", surname = "Тихая", guild = "Чиллзон", rank = 3, class = "PRIEST", config = cfg })
-	c.B = w:Client({ first = "Борис", surname = "Быстрый", guild = "Чиллзон Север", rank = 2, class = "WARRIOR", config = cfg })
-	c.V = w:Client({ first = "Вера", surname = "Верная", guild = "Чиллзон Север", rank = 0, realm = "CAMWOWUS2Realm5PvE", class = "DRUID", config = cfg })
-	c.G = w:Client({ first = "Глеб", surname = "Гордый", guild = "Орден Чиллзона", rank = 0, class = "HUNTER", config = cfg })
+	c.A = w:Client({ version = versions.A, first = "Арагорн", surname = "Светлый", guild = "Чиллзон", rank = 1, config = cfg })
+	c.K = w:Client({ version = versions.K, first = "Карл", surname = "Великий", guild = "Чиллзон", rank = 0, realm = "CAMWOWUS2Realm3PvE", class = "PALADIN", config = cfg })
+	c.M = w:Client({ version = versions.M, first = "Мира", surname = "Тихая", guild = "Чиллзон", rank = 3, class = "PRIEST", config = cfg })
+	c.B = w:Client({ version = versions.B, first = "Борис", surname = "Быстрый", guild = "Чиллзон Север", rank = 2, class = "WARRIOR", config = cfg })
+	c.V = w:Client({ version = versions.V, first = "Вера", surname = "Верная", guild = "Чиллзон Север", rank = 0, realm = "CAMWOWUS2Realm5PvE", class = "DRUID", config = cfg })
+	c.G = w:Client({ version = versions.G, first = "Глеб", surname = "Гордый", guild = "Орден Чиллзона", rank = 0, class = "HUNTER", config = cfg })
 	for i = 1, extra or 0 do
-		c["R" .. i] = w:Client({ first = ("Рядовой%02d"):format(i), surname = "Чиллзонов", guild = "Чиллзон", rank = 3, config = cfg })
+		c["R" .. i] = w:Client({ version = versions["R" .. i], first = ("Рядовой%02d"):format(i), surname = "Чиллзонов", guild = "Чиллзон", rank = 3, config = cfg })
 	end
 	w:Run(30)
 	w:Init(c.A, c.V, c.G)
@@ -257,12 +261,64 @@ T.test("q1: подделка под показанный отчёт не глу�
 	NoErrors(c)
 end)
 
+T.test("q1: под номером вышедшей версии помощников нет, отвечает только репортёр", function()
+	local w, c = Build(nil, { all = Wow.RELEASED_VERSION })
+	local reporter, officer, member = MainRoles(c)
+	Mute(reporter)
+	for _, id in ipairs({ "B", "V", "G" }) do c[id]:Logout() end
+	Settle(w, member)
+	T.eq(#officer.ns.Census.Helpers(), 0, "очередь помощников пуста")
+	Forget(member)
+	member.ns.Census.Refresh()
+	w:Run(120)
+	T.eq(member.ns.Data.Row("Чиллзон Север"), nil, "без репортёра отчёта нет")
+	T.eq(Logged(officer, "ответ на Q1 вместо репортёра"), 0, "офицер вместо репортёра не отвечал")
+	NoErrors(c)
+end)
+
+T.test("q1: клиент с номером вышедшей версии в очередь помощников не входит", function()
+	local w, c = Build(1, { K = Wow.RELEASED_VERSION })
+	local reporter, officer, member = MainRoles(c)
+	T.ok(officer == c.K, "второй офицер — Карл с номером вышедшей версии")
+	Mute(reporter)
+	local asker = Key(member, member:Name())
+	T.eq(c.K.ns.Census.HelperSlot(asker), nil, "Карл себя помощником не считает")
+	T.eq(c.R1.ns.Census.HelperSlot(asker), 1, "первый помощник — рядовой новой версии")
+	for _, cl in ipairs({ c.R1, member }) do
+		for _, key in ipairs(cl.ns.Census.Helpers()) do
+			T.ok(key ~= Key(cl, c.K:Name()), cl:Name() .. ": Карла нет в очереди")
+		end
+	end
+	local north = c.R1.ns.Data.Row("Чиллзон Север")
+	Forget(member)
+	member.ns.Census.Refresh()
+	T.ok(Until(w, function()
+		local row = member.ns.Data.Row("Чиллзон Север")
+		return row and row.st >= north.st
+	end), "рядовая получила перепись от помощника")
+	T.ok(Logged(c.R1, "ответ на Q1 вместо репортёра") >= 1, "ответил рядовой новой версии")
+	T.eq(Logged(c.K, "ответ на Q1 вместо репортёра"), 0, "Карл не отвечал")
+	NoErrors(c)
+end)
+
+T.test("q1: клиенты двух версий с помощниками считают очередь одинаково", function()
+	local newer = (Wow.HELPER_VERSION:gsub("(%d+)$", function(d) return tostring(tonumber(d) + 1) end))
+	local _, c = Build(3, { K = newer, R2 = newer })
+	local first = table.concat(c.A.ns.Census.Helpers(), ",")
+	T.ok(#c.A.ns.Census.Helpers() >= 4, "в очереди обе версии: " .. first)
+	for _, id in ipairs({ "K", "M", "R1", "R2", "R3" }) do
+		T.eq(table.concat(c[id].ns.Census.Helpers(), ","), first, id .. ": та же очередь")
+	end
+	NoErrors(c)
+end)
+
 ---------------------------------------------------------------------------
 -- Смешанная сеть: настоящие Security, Relay и Census версии 0.9 (tests/legacy/0.9).
 ---------------------------------------------------------------------------
 local function LegacyNetwork()
 	math.randomseed(tonumber(os.getenv("CZ_SEED") or "") or 37)
 	local w = Wow.World()
+	w.version = Wow.HELPER_VERSION -- обновлённые клиенты; 0.9 — свои
 	w:Guild("Чиллзон")
 	w:Guild("Чиллзон Север")
 	local c = {}

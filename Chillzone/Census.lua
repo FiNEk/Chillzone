@@ -180,12 +180,18 @@ end
 -- Помощники репортёра. Общие обязанности гильдии (ответ на Q1, прямой запрос отчёта) сначала
 -- выполняет репортёр, а если он молчит или знает меньше — следующие по очереди. Очередь у всех
 -- клиентов одна и та же, как и выборы: офицеры, затем делящиеся зонами, затем по ключу. В ней
--- только согильдийцы на связи с версией не старше моей, которые слушают гильдию дольше
--- HELPER_SETTLE: старые версии этих обязанностей не знают, а только что вошедший сам за них ещё
--- не берётся. except — кого не считать (спросивший сам себе не отвечает).
+-- только согильдийцы на связи новее Config.LAST_WITHOUT_HELPERS, которые слушают гильдию дольше
+-- HELPER_SETTLE: прежние версии этих обязанностей не знают, а только что вошедший сам за них ещё
+-- не берётся. Граница версии — общая постоянная, а не моя версия: иначе клиенты двух версий с
+-- помощниками считали бы очередь по-разному. except — кого не считать (спросивший сам себе не
+-- отвечает).
 ---------------------------------------------------------------------------
 local function Settled(since, now)
 	return since ~= nil and now - since >= C.HELPER_SETTLE
+end
+
+local function Helps(version)
+	return U.VersionNewer(version, C.LAST_WITHOUT_HELPERS)
 end
 
 function Census.Helpers(except)
@@ -198,11 +204,12 @@ function Census.Helpers(except)
 			list[#list + 1] = { key = key, officer = officer and true or false, zones = zones and true or false }
 		end
 	end
+	if not Helps(ns.VERSION) then return list end
 	if helloReady ~= false and ns.Security.MyCertificate() and Settled(listenSince, now) then
 		add(ns.myKey, ns.Roster.IsOfficerRank(ns.Roster.RankOf(ns.me)), ns.char and ns.char.shareZones)
 	end
 	for key, p in pairs(Live(now)) do
-		if not p.unready and Settled(p.since, now) and not U.VersionNewer(ns.VERSION, p.version)
+		if not p.unready and Settled(p.since, now) and Helps(p.version)
 			and not ns.Roster.LeftGame(key, p.t) then
 			add(key, ns.Roster.IsOfficerRank(ns.Roster.byKey[key]), p.z)
 		end
