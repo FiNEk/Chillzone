@@ -4,7 +4,7 @@
 -- Отчёт:  R1~guild~total~online~leader~leaderOn~leaderDays~leaderClass~leaderLevel~users
 --            ~zones~classes~levels~ranks~officers~inact7~inact30~avg10~faction~st
 --            ~veterans~version
---   zones    "m1453=20,tМёртвые копи=3" (m = uiMapID, t = текст зоны) — только по согласию
+--   zones    "m1453=20,tМёртвые копи=3" (m = uiMapID, t = текст зоны) — пусто у старых версий с выключенными зонами
 --   classes  "WA=4,MA=2" (двухбуквенные коды классов)
 --   levels   7 чисел: 1-9, 10-19, ..., 50-59, 60+
 --   ranks    "Глава=1,Офицер=3,..." по порядку рангов
@@ -275,7 +275,8 @@ function Codec.DecodeReport(s)
 	}
 end
 
--- Отчёт в том виде, в каком он может уйти: без зон, если репортёр не согласился.
+-- Копия отчёта для отправки; sharesZones = false — без зон. Новые клиенты зонами делятся всегда,
+-- без зон отчёт шлют только старые версии с выключенной настройкой.
 function Codec.Shareable(r, sharesZones)
 	local out = {}
 	for k, v in pairs(r) do out[k] = v end
