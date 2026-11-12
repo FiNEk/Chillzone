@@ -296,6 +296,113 @@ T.test("groups: заявку принимают только на текущее
 	T.eq(#c.A.ns.Groups.Applicants(), 0)
 end)
 
+-- Строка объявления author на вкладке viewer (данные Views).
+local function RowOf(viewer, author)
+	for _, row in ipairs(viewer.ns.Views.GroupRows()) do
+		if row.key == Key(author) then return row end
+	end
+end
+
+-- Ответ игры на шёпот клиента: code(msg, target) — код или nil (как обычно).
+local function WhisperCode(cl, code)
+	local send = cl.env.C_ChatInfo.SendAddonMessage
+	cl.env.C_ChatInfo.SendAddonMessage = function(prefix, msg, dist, target, ...)
+		local refused = dist == "WHISPER" and code(msg, target)
+		if refused then return refused end
+		return send(prefix, msg, dist, target, ...)
+	end
+end
+
+T.test("groups: заявка «отправляется», пока ждёт очереди, и «отправлена», когда сервер её принял", function()
+	local w, c = Build()
+	local L = c.V.ns.L
+	T.ok(c.A.ns.Groups.Raise(Spec()))
+	w:Run(30)
+	-- Сервер пока не принимает шёпот Веры: заявка лежит в очереди.
+	local until_ = w.now + 8
+	WhisperCode(c.V, function() return w.now < until_ and 9 or nil end)
+	T.ok(c.V.ns.Groups.Apply(Key(c.A), { t = 0, h = 1, d = 0 }))
+	local e = c.V.ns.Groups.List()[1]
+	T.eq(e.applied, "sent", "состояние заявки прежнее")
+	T.ok(e.sending, "но она ещё не отправлена")
+	local row = RowOf(c.V, c.A)
+	T.ok(row.status:find(L.GROUPS_APPLYING, 1, true), "строка: «заявка отправляется»")
+	T.eq(row.action, "withdraw", "отозвать можно и сейчас")
+	w:Run(5)
+	T.ok(RowOf(c.V, c.A).status:find(L.GROUPS_APPLYING, 1, true), "сервер отказывает — всё ещё отправляется")
+	T.eq(#c.A.ns.Groups.Applicants(), 0)
+	w:Run(25)
+	e = c.V.ns.Groups.List()[1]
+	T.eq(e.applied, "sent")
+	T.no(e.sending, "сервер принял заявку")
+	row = RowOf(c.V, c.A)
+	T.ok(row.status:find(L.GROUPS_APPLIED, 1, true), "строка: «заявка отправлена»")
+	T.no(row.status:find(L.GROUPS_APPLYING, 1, true))
+	T.eq(#c.A.ns.Groups.Applicants(), 1, "заявка дошла")
+	T.eq(c.V:Saw(L.GROUPS_APPLY_NOT_SENT:format("Арагорн Светлый")), 0, "отказ сервера не выдан за окончательный")
+end)
+
+-- Офицер-реле главной гильдии (Карл) и офицер другой гильдии (Борис): сервер режет их GUILD,
+-- а в очереди GUILD — поток управления с приоритетом выше заявки (как при входах новичков).
+for _, who in ipairs({ "K", "B" }) do
+	local id = who
+	T.test("groups: под лимитом GUILD и при занятой полосе GUILD заявка доходит за секунды — " .. id, function()
+		local w, c = Build()
+		local L = c.A.ns.L
+		T.ok(c.A.ns.Groups.Raise(Spec()))
+		w:Run(30)
+		local me = c[id]
+		T.ok(Seen(me, c.A), "объявление на доске просящего")
+		T.eq(me.ns.Relay.IAmRelay(), id == "K", "Карл — реле, Борис — нет")
+		me.guildLimit = true
+		local Comm = me.ns.Comm
+		for i = 1, 60 do Comm.Send("GUILD", "ZZ~" .. i, { prio = Comm.PRIO_CONTROL, key = "flood:" .. i }) end
+		w:Run(15)
+		-- Реле шлёт по 4 куска за тик и упирается в лимит; не реле лимит не задевает, но поток
+		-- с приоритетом выше прежде всё равно шёл бы впереди заявки.
+		if me.ns.Relay.IAmRelay() then T.ok((me.guildRefused or 0) > 0, "сервер уже отказывает по GUILD") end
+		T.ok(Comm.QueueSize("GUILD") > 20, "в полосе GUILD ждёт поток с приоритетом выше")
+		T.ok(me.ns.Groups.Apply(Key(c.A), { t = 0, h = 1, d = 0 }))
+		local took
+		for t = 1, 10 do
+			w:Run(1)
+			if #c.A.ns.Groups.Applicants() > 0 then took = t; break end
+		end
+		T.ok(took, "заявка дошла за 10 секунд")
+		T.ok(took and took <= 6, "за считаные секунды: " .. tostring(took))
+		T.no(me.ns.Groups.List()[1].sending, "у просящего — «заявка отправлена»")
+		T.ok(RowOf(me, c.A).status:find(L.GROUPS_APPLIED, 1, true))
+		T.ok(Comm.QueueSize("GUILD") > 0, "GUILD всё ещё занят: шёпот его не ждал")
+	end)
+end
+
+T.test("groups: отказ заявки — автор вышел из игры или заявка не ушла", function()
+	local w, c = Build()
+	local L = c.V.ns.L
+	T.ok(c.A.ns.Groups.Raise(Spec()))
+	w:Run(30)
+	-- Не ушла: сервер раз за разом не принимает именно заявку.
+	local refuse = true
+	WhisperCode(c.V, function(msg) return refuse and msg:sub(1, 3) == "GA~" and 9 or nil end)
+	T.ok(c.V.ns.Groups.Apply(Key(c.A), { t = 0, h = 1, d = 0 }))
+	w:Run(60)
+	T.eq(c.V:Saw(L.GROUPS_APPLY_NOT_SENT:format("Арагорн Светлый")), 1, "игрок узнал, что заявка не ушла")
+	T.eq(c.V:Saw(L.GROUPS_APPLY_FAILED:format("Арагорн Светлый")), 0, "и не услышал, что автор вышел")
+	T.no(c.V.ns.Groups.List()[1].applied, "заявка снята")
+	T.eq(RowOf(c.V, c.A).action, "apply", "можно записаться снова")
+	refuse = false
+	T.ok(c.V.ns.Groups.Apply(Key(c.A), { t = 0, h = 1, d = 0 }), "и сразу, без паузы между заявками")
+	w:Run(10)
+	T.eq(#c.A.ns.Groups.Applicants(), 1, "повторная заявка дошла")
+	-- Автор вышел: игра отвечает TargetOffline, прежний текст.
+	WhisperCode(c.B, function(_, target) return target == "Арагорн Светлый" and 12 or nil end)
+	T.ok(c.B.ns.Groups.Apply(Key(c.A), { t = 0, h = 1, d = 0 }))
+	w:Run(10)
+	T.eq(c.B:Saw(L.GROUPS_APPLY_FAILED:format("Арагорн Светлый")), 1, "игрок узнал, что автор вышел")
+	T.eq(c.B:Saw(L.GROUPS_APPLY_NOT_SENT:format("Арагорн Светлый")), 0)
+	T.no(c.B.ns.Groups.List()[1].applied, "заявка снята")
+end)
+
 T.test("groups: игрок ищет группу, его приглашают щелчком", function()
 	local w, c = Build()
 	local ok, why = c.B.ns.Groups.Raise({ mode = "P", kind = "D", title = "любые подземелья", roles = { t = 0, h = 1, d = 1 } })

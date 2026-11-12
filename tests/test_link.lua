@@ -80,7 +80,9 @@ T.test("link: три минуты подтверждения начинаютс�
     T.ok(king.ns.Security.Roots()[king.ns.Util.GuildKey(leader.guild)], "поздно отправленный запрос ещё действителен")
 end)
 
-T.test("link: запрос обгоняет повторяемые отправки GUILD после общей паузы", function()
+-- Раньше пауза после отказа по GUILD была общей, и запрос лишь обгонял повтор после неё;
+-- теперь у шёпота своя полоса, и отказ сервера по GUILD его не задерживает.
+T.test("link: запрос шёпотом не ждёт отказов сервера по GUILD", function()
     local w, king, leader = Build()
     local send = king.env.C_ChatInfo.SendAddonMessage
     king.env.C_ChatInfo.SendAddonMessage = function(prefix, msg, dist, ...)
@@ -90,8 +92,9 @@ T.test("link: запрос обгоняет повторяемые отправ�
     king.ns.Comm.Send("GUILD", "Q1~", { prio = king.ns.Comm.PRIO_CONTROL })
     king.ns.Comm.Flush(1)
     T.ok(king.ns.Security.Link(leader:Name()))
-    w:Run(6)
-    T.eq(leader:Saw("Запрос связи от"), 1, "после общей паузы сначала отправлен ручной запрос")
+    w:Run(1)
+    T.eq(leader:Saw("Запрос связи от"), 1, "отказ по GUILD не задержал ручной запрос")
+    T.ok(king.ns.Comm.QueueSize("GUILD") > 0, "GUILD всё ещё ждёт после отказа")
 end)
 
 T.test("link: неотправленный запрос не выдаётся за отправленный", function()

@@ -202,19 +202,49 @@ function I.Tick(keys)
         end
     end
 end
+-- Сообщение KD по байтам допуска: каталог доверия собирается часто, а кодирование не бесплатно.
+local wires, wireCount = {}, 0
+local function Wire(raw)
+    local wire = wires[raw]
+    if not wire then
+        if wireCount >= 256 then wires, wireCount = {}, 0 end
+        wire = "KD~" .. Ed.ToB64(raw)
+        wires[raw], wireCount = wire, wireCount + 1
+    end
+    return wire
+end
+-- Записи каталога доверия своей гильдии (Security.Catalog): допуски своей гильдии и все отзывы,
+-- те же, что прежде уходили в гильдию через I.Share, вместе с отзывами главы (KV).
+function I.Records()
+    local list, TC = {}, ns.TrustCatalog
+    for gk, l in pairs(Store()) do
+        for key, d in pairs(l) do
+            if Admissible(d) and (not d.active or (d.expires > ns.ServerTime()
+                and U.GuildKey(d.guild) == U.GuildKey(ns.MyGuild()))) then
+                list[#list + 1] = TC.Record("KD", "KD:" .. gk .. ":" .. key, Wire(d.raw), ns.PREFIX,
+                    "issuer-share:GUILD:" .. U.GuildKey(d.guild) .. ":" .. d.key)
+            end
+        end
+    end
+    if ns.IssuerRevocations then
+        for _, r in ipairs(ns.IssuerRevocations.Records()) do list[#list + 1] = r end
+    end
+    return list
+end
+-- В гильдию допуски и отзывы уходят каталогом доверия (TrustCatalog.lua) по запросу вошедших;
+-- здесь — шёпот одному адресату.
 function I.Share(target, priority)
+    if target == "GUILD" then return end
     for _, list in pairs(Store()) do
         for _, d in pairs(list) do
-            if Admissible(d) and (not d.active or (target == "GUILD" and d.expires > ns.ServerTime()
-                and U.GuildKey(d.guild) == U.GuildKey(ns.MyGuild()))
-                or (target ~= "GUILD" and d.active and d.expires > ns.ServerTime() and U.IsMainGuild(d.guild))) then
+            if Admissible(d) and (not d.active
+                or (d.active and d.expires > ns.ServerTime() and U.IsMainGuild(d.guild))) then
                 local key = target .. ":" .. U.GuildKey(d.guild) .. ":" .. d.key
                 local old = shared[key]
-                if target == "GUILD" or not old or old.raw ~= d.raw or ns.Now() - old.at >= C.AUTH_INTRODUCE then
+                if not old or old.raw ~= d.raw or ns.Now() - old.at >= C.AUTH_INTRODUCE then
                     shared[key] = { raw = d.raw, at = ns.Now() }
-                    ns.Comm.Send(target == "GUILD" and "GUILD" or "WHISPER", "KD~" .. Ed.ToB64(d.raw),
-                        { target = target ~= "GUILD" and target or nil, prio = priority,
-                          key = "issuer-share:" .. key })
+                    ns.Comm.Send("WHISPER", Wire(d.raw), { target = target, prio = priority,
+                        key = "issuer-share:" .. key })
                 end
             end
         end

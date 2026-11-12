@@ -14,6 +14,7 @@ ns.Census = Census
 local peers = {} -- [Key] = { t, since, z, r, name, version, unready }: согильдийцы с аддоном
 -- since — с какого привета согильдиец на связи без перерыва дольше PEER_WINDOW.
 local helloReady -- готовность, объявленная в последнем H1
+local helloAt = -1e9 -- когда последний H1 поставлен в очередь
 -- С какого момента слушаем приветы своей гильдии (вход, смена гильдии). Каждый клиент шлёт H1
 -- раз в HELLO_EVERY, поэтому через HEARD_ALL молчание согильдийца в игре значит: аддона нет.
 local listenSince
@@ -244,7 +245,16 @@ function Census.SendHello()
 	local R = ns.Relay
 	local ready = ns.Security.MyCertificate() ~= nil
 	local hello = Codec.EncodeHello(ns.VERSION, true, R and R.IAmRelay() or false, not ready)
-	if ns.Comm.Send("GUILD", hello, { prio = ns.Comm.PRIO_CONTROL, key = "hello" }) then helloReady = ready end
+	if ns.Comm.Send("GUILD", hello, { prio = ns.Comm.PRIO_CONTROL, key = "hello" }) then
+		helloReady, helloAt = ready, ns.Now()
+	end
+end
+
+-- Привет в ответ на запрос каталога доверия (Security.ShareTrust): не чаще раза в gap
+-- секунд. Сменилась готовность — сразу, как в Track. Плановый привет (HELLO_EVERY) и
+-- ответ новому соседу (H1) идут как прежде.
+function Census.Hello(gap)
+	if helloReady ~= (ns.Security.MyCertificate() ~= nil) or ns.Now() - helloAt >= gap then Census.SendHello() end
 end
 
 ns.Comm.On("H1", function(msg, sender, dist)
@@ -471,7 +481,8 @@ ns.Comm.On("Q1", function(_, sender, dist)
 	if not Census.IsReporter() or now - lastQ1Answer < C.Q1_GAP then return end
 	if #ns.Data.Cached() == 0 then return end
 	lastQ1Answer = now
-	ns.Security.ShareTrust() -- корни и ключ репортёра — раньше самих конвертов
+	-- Каталог доверия (корни, допуски) — раньше самих конвертов: срочно, без окна каталога.
+	ns.Security.ShareTrust(false, U.Key(sender), true)
 	for _, c in ipairs(ns.Data.Cached()) do
 		ns.Security.IntroduceWire("GUILD", c.raw, true) -- спросивший мог отбросить прежний KP
 		ns.Comm.Send("GUILD", Codec.EncodeRM("RG", "L", c.origin, c.raw), { key = "q1:" .. c.key })
@@ -518,7 +529,7 @@ end)
 
 ns.On("GUILD_CHANGED", function()
 	wipe(peers)
-	helloReady = nil
+	helloReady, helloAt = nil, -1e9
 	listenSince = ns.Now()
 	elected, previous, acting, handingUntil = nil, nil, false, nil
 	inheritedUntil = nil

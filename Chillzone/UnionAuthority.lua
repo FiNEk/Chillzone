@@ -57,17 +57,31 @@ local function Verify(raw, known, depth)
     if not Ed.ValidPublicKey(Ed.FromB64(owner.public)) or not Ed.Verify(Ed.FromB64(public), owner.body, owner.sig) then return end
     return owner
 end
-function A.Share(target, priority)
-    local owner = A.Current()
-    if not owner then return end
+local function Wire(owner)
     local cert = S.MyCertificate()
     local proof = cert and cert.public == owner.public and cert.role == "leader" and U.IsMainGuild(cert.guild)
         and ("~" .. Ed.ToB64(cert.raw)) or ""
     local wire = "UO~" .. Ed.ToB64(owner.raw)
     if #wire + #proof <= ns.Codec.CHUNK * ns.Codec.MAX_CHUNKS then wire = wire .. proof end
-    ns.Comm.Send(target == "GUILD" and "GUILD" or "WHISPER", wire,
-        { target = target ~= "GUILD" and target or nil, prio = priority,
-          key = "union-owner:" .. target, guard = function() return A.Current() == owner end })
+    return wire
+end
+-- Запись каталога доверия своей гильдии (Security.Catalog, TrustCatalog.lua).
+function A.Record()
+    local owner = A.Current()
+    return owner and ns.TrustCatalog.Record("UO", "UO", Wire(owner), ns.Config.UNION_PREFIX, "union-owner:GUILD") or nil
+end
+-- В гильдию — сразу (TrustCatalog.Direct): новый владелец уходит без окна каталога, а тот же,
+-- что гильдия только что слышала от офицера, не повторяется. force — и тогда тоже: перед новым
+-- решением главы. Шёпот — как прежде.
+function A.Share(target, priority, force)
+    local owner = A.Current()
+    if not owner then return end
+    local guard = function() return A.Current() == owner end
+    if target == "GUILD" then
+        return ns.TrustCatalog.Direct(A.Record(), priority, force, guard)
+    end
+    ns.Comm.Send("WHISPER", Wire(owner), { target = target, prio = priority,
+        key = "union-owner:" .. target, guard = guard })
 end
 local function Keep(owner)
     Store().owner = { raw = owner.raw, name = owner.name, public = owner.public,

@@ -796,7 +796,8 @@ local function Evict(asm, sender)
 	return true
 end
 
--- Целое сообщение, когда пришли все куски от этого отправителя с этим id.
+-- Целое сообщение, когда пришли все куски от этого отправителя с этим id, и время первого
+-- пришедшего куска (now при Feed).
 function Codec.Feed(asm, sender, msg, now)
 	local id, i, n, body = msg:match("^C(%w+):(%d+):(%d+):(.*)$")
 	if not id then return nil end
@@ -823,7 +824,7 @@ function Codec.Feed(asm, sender, msg, now)
 	end
 	if e.got == n then
 		Codec.Close(asm, key)
-		return concat(e.parts)
+		return concat(e.parts), e.t
 	end
 	return nil
 end
