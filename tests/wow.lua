@@ -601,8 +601,16 @@ end
 
 -- opts: first, surname, realm, faction, guild, rank, class, level, zone, config (поля Config
 -- поверх Config.lua), chatFilterAPI ("modern" — только ChatFrameUtil, иначе старый API),
--- db (сохранения прежнего клиента), reload (перезагрузка интерфейса, а не вход персонажа)
+-- db (сохранения прежнего клиента), reload (перезагрузка интерфейса, а не вход персонажа),
+-- version (номер аддона вместо Config.VERSION; по умолчанию world.version, если он задан, —
+-- кроме клиентов 0.9).
 function World:Client(opts)
+	local version = opts.version or (not opts.legacy and self.version) or nil
+	if version then
+		local config = { VERSION = version }
+		for k, v in pairs(opts.config or {}) do config[k] = v end
+		opts = setmetatable({ config = config }, { __index = opts })
+	end
 	local c = setmetatable({
 		world = self, first = opts.first, surname = opts.surname, realm = opts.realm or "CAMWOWUS2Realm7PvE",
 		faction = opts.faction or "Alliance", guild = opts.guild, rank = opts.rank or 3, class = opts.class or "MAGE",
@@ -616,7 +624,7 @@ function World:Client(opts)
 	c.ns = {}
 	for _, f in ipairs(T.tocFiles()) do
 		if (not f:find("^libs/") or f == "libs/Ed25519.lua")
-			and not (opts.legacy and (f == "Issuers.lua" or f == "IssuerRevocations.lua" or f == "UnionAuthority.lua" or f == "Online.lua" or f == "Channel.lua")) then
+			and not (opts.legacy and (f == "Issuers.lua" or f == "IssuerRevocations.lua" or f == "UnionAuthority.lua" or f == "Online.lua" or f == "Pull.lua" or f == "Channel.lua")) then
 			if opts.legacy and (f == "Config.lua" or f == "Util.lua" or f == "Security.lua" or f == "Relay.lua" or f == "Census.lua") then
 				local chunk = assert(loadfile(T.ROOT .. "/tests/legacy/0.9/" .. f))
 				setfenv(chunk, c.env)("Chillzone", c.ns)
@@ -631,6 +639,9 @@ function World:Client(opts)
 	self.clients[#self.clients + 1] = c
 	c:Fire("ADDON_LOADED", "Chillzone")
 	c:Fire("PLAYER_LOGIN")
+	-- Клиент 0.9 читает настройку «делиться зонами»; у вышедших версий она включена, пока игрок её
+	-- не выключил. Новый Core её больше не заводит.
+	if opts.legacy and c.ns.char and c.ns.char.shareZones == nil then c.ns.char.shareZones = true end
 	-- Вход персонажа или перезагрузка интерфейса (opts.reload).
 	c:Fire("PLAYER_ENTERING_WORLD", not opts.reload, opts.reload == true)
 	return c
@@ -735,4 +746,27 @@ function Wow.CertRank(ns, guild, name)
 end
 
 Wow.SERVER0 = SERVER0
+
+-- Клиент прежней версии с выключенной настройкой «делиться зонами»: привет без флага зон, в
+-- выборах репортёра себя считает не делящимся, отчёт без зон. Новые клиенты зонами делятся всегда,
+-- а такой привет по-прежнему уступает выборы.
+function Wow.ZonesOff(cl)
+	local Codec = cl.ns.Codec
+	local hello, pick, shareable = Codec.EncodeHello, Codec.PickReporter, Codec.Shareable
+	Codec.EncodeHello = function(version, _, ...) return hello(version, false, ...) end
+	Codec.PickReporter = function(me, _, ...) return pick(me, false, ...) end
+	Codec.Shareable = function(r) return shareable(r, false) end
+	cl.ns.Census.SendHello()
+end
+
+-- Номер вышедшей версии без помощников репортёра (Config.LAST_WITHOUT_HELPERS) и следующий за ним.
+-- Номер аддона в ветке может совпадать с вышедшим: тогда помощников нет, и тестам помощников нужны
+-- клиенты с номером выше (World.version или opts.version).
+do
+	local config = T.load({ "Config.lua" }).Config
+	local head, tail = config.LAST_WITHOUT_HELPERS:match("^(.-)(%d+)$")
+	Wow.RELEASED_VERSION = config.LAST_WITHOUT_HELPERS
+	Wow.HELPER_VERSION = head .. (tonumber(tail) + 1)
+end
+
 return Wow
