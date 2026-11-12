@@ -150,7 +150,7 @@ local DB_DEFAULTS = {
 }
 
 local CHAR_DEFAULTS = {
-	shareZones = true, chatOn = true, chatWindow = false, warned = false,
+	chatOn = true, chatWindow = false, warned = false,
 	chatGuildTagsUpper = false,
 	-- Общий чат через канал игры (Channel.lua) и скрытие строк неподтверждённых авторов.
 	chatViaChannel = true, chatHideUnconfirmed = false,
@@ -197,10 +197,6 @@ ns.RegisterEvent("PLAYER_LOGIN", function()
 	local db = ns.db
 	db.chars[ns.myKey] = Defaults(db.chars[ns.myKey] or {}, CHAR_DEFAULTS)
 	ns.char = db.chars[ns.myKey]
-	-- Зоны стали включены по умолчанию. Тем, кто заходил раньше, включаем один раз, дальше решает игрок.
-	if not ns.char.zonesDefaulted then
-		ns.char.zonesDefaulted, ns.char.shareZones = true, true
-	end
 	db.realms[ns.group] = db.realms[ns.group] or {}
 	db.realms[ns.group][ns.faction] = Defaults(db.realms[ns.group][ns.faction] or {}, STORE_DEFAULTS)
 	ns.store = db.realms[ns.group][ns.faction]

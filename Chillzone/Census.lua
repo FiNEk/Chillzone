@@ -11,7 +11,8 @@ local L = ns.L
 local Census = {}
 ns.Census = Census
 
-local peers = {} -- [Key] = { t, z, r, name, version, unready }: согильдийцы с аддоном
+local peers = {} -- [Key] = { t, since, z, r, name, version, unready }: согильдийцы с аддоном
+-- since — с какого привета согильдиец на связи без перерыва дольше PEER_WINDOW.
 local helloReady -- готовность, объявленная в последнем H1
 -- С какого момента слушаем приветы своей гильдии (вход, смена гильдии). Каждый клиент шлёт H1
 -- раз в HELLO_EVERY, поэтому через HEARD_ALL молчание согильдийца в игре значит: аддона нет.
@@ -81,7 +82,9 @@ function Census.Reporter(withoutMe)
 		if not Trusted(key) then return false end
 		return not officers or ns.Roster.IsOfficerRank(ns.Roster.byKey[key])
 	end
-	return Codec.PickReporter(me, ns.char and ns.char.shareZones or false, live, now, C.PEER_WINDOW, eligible)
+	-- Зонами я делюсь всегда; флаг зон из чужих приветов по-прежнему важен: старые клиенты с
+	-- выключенной настройкой выборы уступают.
+	return Codec.PickReporter(me, true, live, now, C.PEER_WINDOW, eligible)
 end
 
 local acting, handingUntil = false, nil -- я репортёр; до каких пор я передаю аренду
@@ -175,11 +178,72 @@ function Census.ReporterName()
 	return peers[key] and U.Display(peers[key].name) or key
 end
 
+---------------------------------------------------------------------------
+-- Помощники репортёра. Общие обязанности гильдии (ответ на Q1, прямой запрос отчёта) сначала
+-- выполняет репортёр, а если он молчит или знает меньше — следующие по очереди. Очередь у всех
+-- клиентов одна и та же, как и выборы: офицеры, затем делящиеся зонами, затем по ключу. В ней
+-- только согильдийцы на связи новее Config.LAST_WITHOUT_HELPERS, которые слушают гильдию дольше
+-- HELPER_SETTLE: прежние версии этих обязанностей не знают, а только что вошедший сам за них ещё
+-- не берётся. Граница версии — общая постоянная, а не моя версия: иначе клиенты двух версий с
+-- помощниками считали бы очередь по-разному. except — кого не считать (спросивший сам себе не
+-- отвечает).
+---------------------------------------------------------------------------
+local function Settled(since, now)
+	return since ~= nil and now - since >= C.HELPER_SETTLE
+end
+
+local function Helps(version)
+	return U.VersionNewer(version, C.LAST_WITHOUT_HELPERS)
+end
+
+-- Слушаю приветы своей гильдии дольше HELPER_SETTLE: число согильдийцев с аддоном уже известно.
+function Census.Settled()
+	return Settled(listenSince, ns.Now())
+end
+
+function Census.Helpers(except)
+	if not ns.myKey then return {} end
+	local now = ns.Now()
+	local reporter = Census.Reporter()
+	local list = {}
+	local function add(key, officer, zones)
+		if key ~= reporter and key ~= except and Trusted(key) then
+			list[#list + 1] = { key = key, officer = officer and true or false, zones = zones and true or false }
+		end
+	end
+	if not Helps(ns.VERSION) then return list end
+	if helloReady ~= false and ns.Security.MyCertificate() and Settled(listenSince, now) then
+		add(ns.myKey, ns.Roster.IsOfficerRank(ns.Roster.RankOf(ns.me)), true)
+	end
+	for key, p in pairs(Live(now)) do
+		if not p.unready and Settled(p.since, now) and Helps(p.version)
+			and not ns.Roster.LeftGame(key, p.t) then
+			add(key, ns.Roster.IsOfficerRank(ns.Roster.byKey[key]), p.z)
+		end
+	end
+	table.sort(list, function(a, b)
+		if a.officer ~= b.officer then return a.officer end
+		if a.zones ~= b.zones then return a.zones end
+		return a.key < b.key
+	end)
+	local out = {}
+	for i, e in ipairs(list) do out[i] = e.key end
+	return out
+end
+
+-- Моё место в очереди помощников (1 — первый после репортёра) или nil.
+function Census.HelperSlot(except)
+	for i, key in ipairs(Census.Helpers(except)) do
+		if key == ns.myKey then return i end
+	end
+	return nil
+end
+
 function Census.SendHello()
 	if not ns.IsMember() then return end
 	local R = ns.Relay
 	local ready = ns.Security.MyCertificate() ~= nil
-	local hello = Codec.EncodeHello(ns.VERSION, ns.char.shareZones, R and R.IAmRelay() or false, not ready)
+	local hello = Codec.EncodeHello(ns.VERSION, true, R and R.IAmRelay() or false, not ready)
 	if ns.Comm.Send("GUILD", hello, { prio = ns.Comm.PRIO_CONTROL, key = "hello" }) then helloReady = ready end
 end
 
@@ -187,9 +251,10 @@ ns.Comm.On("H1", function(msg, sender, dist)
 	if dist ~= "GUILD" then return end
 	local h = Codec.DecodeHello(msg)
 	if not h then return end
-	local key = U.Key(sender)
+	local key, now = U.Key(sender), ns.Now()
 	local known = peers[key]
-	peers[key] = { t = ns.Now(), z = h.zones, r = h.relay, name = sender, version = h.version, unready = h.unready }
+	local since = known and now - known.t <= C.PEER_WINDOW and known.since or now
+	peers[key] = { t = now, since = since, z = h.zones, r = h.relay, name = sender, version = h.version, unready = h.unready }
 	ns.Update.Heard(key, h.version)
 	-- Новый согильдиец с аддоном: ответить своим приветом, чтобы выборы сошлись быстрее,
 	-- и отметить его в списке людей окна.
@@ -217,7 +282,7 @@ function Census.MaybeReport(force)
 	if not force and now - lastSentAt < C.REPORT_EVERY - 5 then return end
 	r.users = Census.Users()
 	r.version = ns.VERSION
-	local shareable = Codec.Shareable(r, ns.char.shareZones)
+	local shareable = Codec.Shareable(r, true)
 	local raw = Codec.EncodeReport(shareable)
 	-- Время исключаем только из сравнения, не из отправляемого отчёта.
 	-- Shareable вернул копию: время ростера и все поля (включая связных) сохраняются.
@@ -274,8 +339,12 @@ ns.Comm.On("R1", function(msg, sender, dist, ctx)
 	ns.Update.Heard(U.Key(sender), r.version)
 	local ok, why = ns.Data.Take(r, msg, sender, nil, ctx)
 	if not ok and why ~= "повтор" then ns.Log("отчёт %s от %s не принят: %s", r.guild, U.Display(sender), tostring(why)) end
+	-- Обычная доставка идёт от репортёра и в журнал не пишется; эта строка показывает, что отчёт
+	-- пришёл в обход него.
+	if ok and ctx.side then ns.Log("отчёт %s принят от %s: он не репортёр гильдии", r.guild, U.Display(ctx.relay)) end
 	-- Перезашедшее реле присылает последний известный ему отчёт, а гильдии нужен только новый.
-	ctx.outdated = why == "старее"
+	-- taken — отчёт оказался новым для меня: реле делится таким со своей гильдией.
+	ctx.outdated, ctx.taken = why == "старее", ok or nil
 end)
 
 ---------------------------------------------------------------------------
@@ -316,16 +385,97 @@ function Census.Refresh()
 	return "census"
 end
 
-ns.Comm.On("Q1", function(_, sender, dist)
-	if dist ~= "GUILD" or not Census.IsReporter() then return end
+---------------------------------------------------------------------------
+-- Ответ на Q1 из кэша соседей. Репортёр отвечает сразу, как раньше. Остальные слушают, какие
+-- отчёты после Q1 показаны гильдии (RG), и досылают из своего кэша то, чего никто не показал:
+-- первый помощник — после Q1_HELPER_WAIT секунд без RG отчётов, каждый следующий — на
+-- Q1_HELPER_STEP позже. Услышанный RG отчёта начинает тишину заново: пока кто-то отвечает,
+-- остальные ждут. «Показано» — пакет побайтно совпал с моим сохранённым, а не открытый текст
+-- чужого RG: подделка с большим временем честный ответ не заглушит. Q1 в пределах Q1_GAP от
+-- начала раунда входит в тот же раунд, как и у репортёра: вошедший шлёт Q1 дважды.
+---------------------------------------------------------------------------
+local round -- { at, last, shown = { [пакет] = true }, slot }: раунд Q1
+local mySide = {} -- когда я отдавал гильдии RG отчёта: за последнюю минуту
+local SIDE_SPARE = 2 -- столько RG за минуту остаётся реле (Relay.Forward) сверх ответа на Q1
+
+local function SideSent(now)
+	while mySide[1] and now - mySide[1] > 60 do table.remove(mySide, 1) end
+	return #mySide
+end
+
+-- Отчёт (пакет S1) показан гильдии: услышан в RG от репортёра или в пределах лимита согильдийца
+-- (Relay.lua), own — отдан гильдии мной. Свои RG ещё и считаются: получатель берёт отчёты не от
+-- репортёра не чаще RG_SIDE_PER_MIN за минуту от одного отправителя.
+function Census.Shown(wire, own)
 	local now = ns.Now()
+	if own then mySide[#mySide + 1] = now end
+	if not round then return end
+	round.shown[wire] = true
+	if not own then round.last = now end
+end
+
+local function Turn(r)
+	return r.last + C.Q1_HELPER_WAIT + (r.slot - 1) * C.Q1_HELPER_STEP
+end
+
+-- Моя очередь: дослать то, чего никто не показал. Свежие отчёты — первыми; сколько уйдёт, решает
+-- лимит получателя. Ответ встаёт в очередь отправки с проверкой: если чужая копия будет показана
+-- раньше, моя не уйдёт.
+local function Help(r)
+	local now = ns.Now()
+	if not ns.IsMember() or not ns.Roster.Fresh() or ns.Comm.InLockdown() or Census.IsReporter() then return end
 	if now - lastQ1Answer < C.Q1_GAP then return end
+	local missing = {}
+	for _, c in ipairs(ns.Data.Cached()) do
+		if not r.shown[c.raw] then missing[#missing + 1] = c end
+	end
+	local room = C.RG_SIDE_PER_MIN - SIDE_SPARE - SideSent(now)
+	if #missing == 0 or room <= 0 then return end
+	table.sort(missing, function(a, b)
+		if a.st ~= b.st then return a.st > b.st end
+		return a.key < b.key
+	end)
+	lastQ1Answer = now
+	for i = 1, math.min(room, #missing) do
+		local c = missing[i]
+		mySide[#mySide + 1] = now
+		ns.Security.IntroduceWire("GUILD", c.raw, true) -- спросивший мог ещё не знать автора
+		ns.Comm.Send("GUILD", Codec.EncodeRM("RG", "L", c.origin, c.raw), { key = "q1:" .. c.key,
+			guard = function() return not r.shown[c.raw] end })
+	end
+	ns.Log("ответ на Q1 вместо репортёра: %d из %d отчётов", math.min(room, #missing), #missing)
+end
+
+local function Wait(r)
+	ns.After(math.max(0.5, Turn(r) - ns.Now()), "q1 helper", function()
+		if round ~= r or not r.slot then return end
+		if ns.Now() < Turn(r) then Wait(r); return end
+		r.slot = nil
+		Help(r)
+	end)
+end
+
+-- Q1 открывает раунд, если прошлый начался раньше Q1_GAP. Помощники — только первые Q1_HELPERS
+-- по очереди, без спросившего.
+local function StartRound(asker, now)
+	if round and now - round.at < C.Q1_GAP then return end
+	local slot = not Census.IsReporter() and Census.HelperSlot(asker) or nil
+	round = { at = now, last = now, shown = {}, slot = slot and slot <= C.Q1_HELPERS and slot or nil }
+	if round.slot then Wait(round) end
+end
+
+ns.Comm.On("Q1", function(_, sender, dist)
+	if dist ~= "GUILD" then return end
+	local now = ns.Now()
+	StartRound(U.Key(sender), now)
+	if not Census.IsReporter() or now - lastQ1Answer < C.Q1_GAP then return end
 	if #ns.Data.Cached() == 0 then return end
 	lastQ1Answer = now
 	ns.Security.ShareTrust() -- корни и ключ репортёра — раньше самих конвертов
 	for _, c in ipairs(ns.Data.Cached()) do
 		ns.Security.IntroduceWire("GUILD", c.raw, true) -- спросивший мог отбросить прежний KP
 		ns.Comm.Send("GUILD", Codec.EncodeRM("RG", "L", c.origin, c.raw), { key = "q1:" .. c.key })
+		Census.Shown(c.raw, true)
 	end
 end)
 
@@ -374,29 +524,18 @@ ns.On("GUILD_CHANGED", function()
 	inheritedUntil = nil
 	lastSent, lastSentAt, signing, epoch = nil, -1e9, nil, epoch + 1
 	lastRefresh = -1e9
+	round, mySide = nil, {}
 	ns.After(3, "hello after guild change", Census.SendHello)
 end)
 
-ns.Command("zones", function(arg)
-	arg = U.Fold(U.Trim(arg))
-	if arg == "on" or arg == "вкл" then
-		ns.char.shareZones = true
-	elseif arg == "off" or arg == "выкл" then
-		ns.char.shareZones = false
-	else
-		ns.Print(ns.char.shareZones and L.ZONES_IS_ON or L.ZONES_IS_OFF)
-		return
-	end
-	ns.Print(ns.char.shareZones and L.ZONES_ON or L.ZONES_OFF)
-	Census.SendHello()
-	lastSent = nil
-	ns.Fire("DATA")
-end, L.HELP_ZONES)
+-- Настройки «делиться зонами» больше нет: зоны своей гильдии отправляются всегда. Команда
+-- осталась, чтобы привычное /chillzone zones on|off не называлось неизвестным; в справке её нет.
+ns.Command("zones", function() ns.Print(L.ZONES_ALWAYS) end)
 
 ns.Status(function()
 	local n = 0
 	for _ in pairs(Live(ns.Now())) do n = n + 1 end
-	return L.STATUS_CENSUS:format(Census.ReporterName() or "—", Census.IsReporter() and L.YES or L.NO, n, ns.char.shareZones and L.YES or L.NO)
+	return L.STATUS_CENSUS:format(Census.ReporterName() or "—", Census.IsReporter() and L.YES or L.NO, n)
 end)
 
 ns.Status(function()

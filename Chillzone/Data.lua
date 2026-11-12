@@ -215,13 +215,13 @@ function Data.ZoneCounts(now)
 	return out
 end
 
--- Ответ на Q1: тексты последних чужих отчётов (не старше суток) с их авторами.
+-- Ответ на Q1: тексты последних чужих отчётов (не старше суток) с их авторами и временем.
 function Data.Cached(now)
 	now = now or ns.ServerTime()
 	local out = {}
 	for gk, row in pairs(Guilds()) do
 		if not row.mine and row.signed and row.origin and U.IsMemberGuild(row.guild) and now - (row.st or 0) <= C.TOTAL_KEEP then
-			out[#out + 1] = { key = gk, raw = row.signed, origin = row.origin }
+			out[#out + 1] = { key = gk, raw = row.signed, origin = row.origin, st = row.st or 0 }
 		end
 	end
 	return out

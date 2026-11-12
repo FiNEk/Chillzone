@@ -434,11 +434,6 @@ local function BuildSettings(parent)
 			ns.db.settings.mapOpenMapWide = on
 			ns.Fire("SETTINGS")
 		end)
-	Check("zones", L.CHECK_ZONES, L.CHECK_ZONES_TIP, function() return ns.char.shareZones end, function(on)
-		ns.char.shareZones = on
-		ns.Print(on and L.ZONES_ON or L.ZONES_OFF)
-		ns.Census.SendHello()
-	end)
 	-- Настройки канала игры — справа на строках «Общий чат» и «Дублировать»: по высоте окна
 	-- отдельные строки не помещаются.
 	UI.channelCheck = Check("channel", L.CHECK_CHANNEL, L.CHECK_CHANNEL_TIP,
