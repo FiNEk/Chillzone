@@ -424,11 +424,67 @@ local function Refresh()
 	Pane.Render()
 end
 
--- Список рецептов в карточке: строка — значок, название и реагенты. Строк столько, сколько
--- видно, их содержимое меняется при прокрутке: у мастера бывает несколько сотен рецептов.
-local RECIPE_H, RECIPES_H = 30, 188
+-- Список рецептов в карточке: строка — значок и название, щелчок раскрывает под ней реагенты,
+-- по одному на строку. Рамок столько, сколько видно, их содержимое меняется при прокрутке: у
+-- мастера бывает несколько сотен рецептов.
+local RECIPE_H, REAGENT_H, RECIPES_H = 22, 16, 188
 local RECIPE_ROWS = math.ceil(RECIPES_H / RECIPE_H) + 1
 local NO_ICON = "Interface\\Icons\\INV_Misc_QuestionMark"
+local PLUS, MINUS = "Interface\\Buttons\\UI-PlusButton-Up", "Interface\\Buttons\\UI-MinusButton-Up"
+local expanded = {} -- [номер рецепта] = true: реагенты раскрыты, на сессию
+
+local function Reagents(it)
+	local d = ns.Crafters.RecipeDetails(it.id)
+	return d.reagents and #d.reagents > 0 and d.reagents or nil
+end
+
+-- Высота рецепта в списке: раскрытый выше на свои реагенты.
+local function RecipeHeight(it)
+	local r = expanded[it.id] and Reagents(it)
+	return r and RECIPE_H + #r * REAGENT_H + 4 or RECIPE_H
+end
+
+-- Верх каждого рецепта в списке и высота всего списка.
+local function Layout()
+	local tops, y = {}, 0
+	for i, it in ipairs(card.items) do
+		tops[i] = y
+		y = y + RecipeHeight(it)
+	end
+	card.tops, card.total = tops, y
+end
+
+local PlaceRecipes
+
+-- Пересчитать высоту списка и разложить видимые строки; прокрутка остаётся в пределах списка.
+local function Resize()
+	Layout()
+	card.child:SetHeight(math.max(10, card.total))
+	local most = math.max(0, card.total - RECIPES_H)
+	if (card.scroll:GetVerticalScroll() or 0) > most then card.scroll:SetVerticalScroll(most) end
+	PlaceRecipes()
+end
+
+local function Toggle(r)
+	if not r.it or not Reagents(r.it) then return end
+	expanded[r.it.id] = not expanded[r.it.id] or nil
+	Resize()
+	-- Подсказка под курсором говорит, что сделает следующий щелчок.
+	if r:IsShown() and type(GameTooltip.IsOwned) == "function" and GameTooltip:IsOwned(r) then
+		r:GetScript("OnEnter")(r)
+	end
+end
+
+local function ReagentLine(r, j)
+	local fs = r.lines[j]
+	if fs then return fs end
+	fs = FS(r, "GameFontHighlightSmall")
+	fs:SetPoint("TOPLEFT", 26, -(RECIPE_H + (j - 1) * REAGENT_H))
+	fs:SetWidth(SIDE_W - 56)
+	if fs.SetWordWrap then fs:SetWordWrap(false) end
+	r.lines[j] = fs
+	return fs
+end
 
 local function RecipeRow(i)
 	local r = CreateFrame("Button", nil, card.child)
@@ -437,42 +493,66 @@ local function RecipeRow(i)
 	r.hl:SetAllPoints()
 	r.hl:SetColorTexture(1, 1, 1, 0.07)
 	r.icon = r:CreateTexture(nil, "ARTWORK")
-	r.icon:SetSize(22, 22)
-	r.icon:SetPoint("LEFT", 2, 0)
+	r.icon:SetSize(18, 18)
+	r.icon:SetPoint("TOPLEFT", 2, -2)
+	r.toggle = r:CreateTexture(nil, "ARTWORK")
+	r.toggle:SetSize(14, 14)
+	r.toggle:SetPoint("TOPRIGHT", -4, -4)
 	r.name = FS(r, "GameFontHighlightSmall")
-	r.name:SetPoint("TOPLEFT", 30, -3)
-	r.name:SetWidth(SIDE_W - 58)
-	r.reagents = FS(r, "GameFontDisableSmall")
-	r.reagents:SetPoint("BOTTOMLEFT", 30, 3)
-	r.reagents:SetWidth(SIDE_W - 58)
-	for _, fs in ipairs({ r.name, r.reagents }) do
-		if fs.SetWordWrap then fs:SetWordWrap(false) end
-	end
+	r.name:SetPoint("TOPLEFT", 26, -5)
+	r.name:SetWidth(SIDE_W - 26 - 26 - 22)
+	if r.name.SetWordWrap then r.name:SetWordWrap(false) end
+	r.lines = {}
+	r:SetScript("OnClick", function(self) ns.SafeCall("crafters: reagents", Toggle, self) end)
 	Tip(r, nil)
 	recipeRows[i] = r
 	return r
 end
 
+-- Первый рецепт, видимый при прокрутке offset.
+local function FirstVisible(offset)
+	local tops, lo, hi = card.tops, 1, #card.items
+	while lo < hi do
+		local mid = math.floor((lo + hi + 1) / 2)
+		if tops[mid] <= offset then lo = mid else hi = mid - 1 end
+	end
+	return lo
+end
+
 -- Видимые строки списка по текущей прокрутке.
-local function PlaceRecipes()
+function PlaceRecipes()
 	local items = card.items or {}
 	local offset = card.scroll:GetVerticalScroll() or 0
-	local first = math.floor(offset / RECIPE_H) + 1
+	local index = #items > 0 and FirstVisible(offset) or 1
 	for i = 1, RECIPE_ROWS do
 		local r = recipeRows[i] or RecipeRow(i)
-		local index = first + i - 1
 		local it = items[index]
+		if it and card.tops[index] >= offset + RECIPES_H then it = nil end
 		r:SetShown(it ~= nil)
 		r.it = it
 		if it then
+			r.top = card.tops[index]
 			r:ClearAllPoints()
-			r:SetPoint("TOPLEFT", card.child, "TOPLEFT", 0, -(index - 1) * RECIPE_H)
+			r:SetPoint("TOPLEFT", card.child, "TOPLEFT", 0, -r.top)
+			r:SetHeight(RecipeHeight(it))
 			local d = ns.Crafters.RecipeDetails(it.id)
+			local open = expanded[it.id] and Reagents(it) ~= nil
+			-- Названия реагентов видимых строк игра догружает заранее: к подсказке и раскрытию.
+			for _, x in ipairs(d.reagents or {}) do ns.Crafters.ItemName(x.item) end
 			r.icon:SetTexture(d.icon or NO_ICON)
 			r.name:SetText(Views.CraftRecipeName(it))
-			r.reagents:SetText(Views.CraftReagents(d))
-			r.tip = Views.CraftRecipeTip(it.id)
+			r.toggle:SetShown(Reagents(it) ~= nil)
+			r.toggle:SetTexture(open and MINUS or PLUS)
+			local lines = open and Views.CraftReagents(d) or {}
+			for j, text in ipairs(lines) do
+				local fs = ReagentLine(r, j)
+				fs:SetText(text)
+				fs:Show()
+			end
+			for j = #lines + 1, #r.lines do r.lines[j]:Hide() end
+			r.tip = Views.CraftRecipeTip(it.id, open)
 		end
+		index = index + 1
 	end
 end
 
@@ -524,11 +604,7 @@ local function RenderCard(view)
 	for i = #view.profs + 1, #cardChips do cardChips[i]:Hide() end
 	card.state:SetText(cardWhy or (viewProf and Views.CraftListState(view.key, viewProf)) or "")
 	card.items = viewProf and Views.CraftRecipes(view.key, viewProf, query) or {}
-	card.child:SetHeight(math.max(10, #card.items * RECIPE_H))
-	-- Список стал короче прокрутки: вернуть её в допустимые пределы.
-	local most = math.max(0, #card.items * RECIPE_H - RECIPES_H)
-	if (card.scroll:GetVerticalScroll() or 0) > most then card.scroll:SetVerticalScroll(most) end
-	PlaceRecipes()
+	Resize()
 	card.whisper:SetShown(not view.own)
 	card.refresh:SetShown(not view.own)
 	card.whisper:SetEnabled(view.whisper)

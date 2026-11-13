@@ -1140,21 +1140,22 @@ end
 
 local ITEM_ICON = "|T%s:%d|t"
 
--- Реагенты одной строкой: «значок число название», через запятую. Пока игра догружает название,
--- видны значок и число. Пусто — игра реагентов не знает.
-function Views.CraftReagents(d)
-	local parts = {}
-	for _, r in ipairs(d and d.reagents or {}) do
+-- Реагенты рецепта по строке на реагент: «значок число название». Пока игра догружает название,
+-- вместо него — пометка. Пустой список — игра реагентов не знает.
+function Views.CraftReagents(d, size)
+	local lines = {}
+	for i, r in ipairs(d and d.reagents or {}) do
 		local icon = ns.Crafters.ItemIcon(r.item)
 		local name = ns.Crafters.ItemName(r.item)
-		parts[#parts + 1] = (icon and ITEM_ICON:format(icon, 12) .. " " or "") .. r.n .. (name and " " .. Codec.Plain(name) or "")
+		lines[i] = (icon and ITEM_ICON:format(icon, size or 14) .. " " or "") .. r.n .. " "
+			.. (name and Codec.Plain(name) or GREY .. L.CRAFT_ITEM_LOADING .. "|r")
 	end
-	return table.concat(parts, ", ")
+	return lines
 end
 
 -- Подсказка строки рецепта: предмет (или заклинание, как у зачарования) так, как его показывает
--- игра, ниже — реагенты.
-function Views.CraftRecipeTip(id)
+-- игра, ниже — реагенты и что делает щелчок. open — реагенты уже раскрыты в списке.
+function Views.CraftRecipeTip(id, open)
 	return function(tt)
 		local d = ns.Crafters.RecipeDetails(id)
 		local shown = false
@@ -1167,11 +1168,8 @@ function Views.CraftRecipeTip(id)
 		if not d.reagents or #d.reagents == 0 then return end
 		tt:AddLine(" ")
 		tt:AddLine(L.CRAFT_REAGENTS, 1, 0.82, 0)
-		for _, r in ipairs(d.reagents) do
-			local icon = ns.Crafters.ItemIcon(r.item)
-			local name = ns.Crafters.ItemName(r.item)
-			tt:AddLine((icon and ITEM_ICON:format(icon, 14) .. " " or "") .. r.n .. " " .. (name and Codec.Plain(name) or L.CRAFT_ITEM_LOADING), 1, 1, 1)
-		end
+		for _, line in ipairs(Views.CraftReagents(d)) do tt:AddLine(line, 1, 1, 1) end
+		tt:AddLine(open and L.CRAFT_TIP_COLLAPSE or L.CRAFT_TIP_EXPAND, 0.5, 0.83, 0.76)
 	end
 end
 

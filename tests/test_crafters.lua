@@ -382,7 +382,7 @@ T.test("crafters: без C_TradeSkillUI вкладка объясняет, чт�
 	local info = d.ns.Crafters.RecipeDetails(2660)
 	T.no(info.icon, "значка нет")
 	T.no(info.reagents, "реагентов нет")
-	T.eq(d.ns.Views.CraftReagents(info), "")
+	T.same(d.ns.Views.CraftReagents(info), {})
 	NoErrors(d, "Дина")
 	T.eq(#d:Leaks(), 0)
 end)
@@ -734,10 +734,14 @@ T.test("crafters: длинный список приходит страница�
 	V.UI.Toggle("crafters")
 	V.CraftersPane.Open(key)
 	local f = V.CraftersPane.frames
-	T.ok(#f.recipes <= 8, "строк в карточке: " .. #f.recipes)
-	for _, r in ipairs(f.recipes) do T.ok(r:IsShown(), "все строки заняты") end
+	T.ok(#f.recipes <= 10, "строк в карточке: " .. #f.recipes)
+	local shown = 0
+	for _, r in ipairs(f.recipes) do
+		if r:IsShown() then shown = shown + 1 end
+	end
+	T.eq(shown, 9, "видно 188 / 22 строк")
 	T.eq(f.recipes[1].it.id, 11000)
-	f.card.scroll:SetVerticalScroll(30 * 100)
+	f.card.scroll:SetVerticalScroll(22 * 100)
 	T.eq(f.recipes[1].it.id, 10000 + 101 * 1000, "после прокрутки — сто первый")
 	T.ok(f.recipes[1].name:GetText():find(V.L.CRAFT_RECIPE_UNKNOWN:format(111000), 1, true))
 	V.UI.Toggle("chat")
@@ -992,9 +996,12 @@ T.test("crafters pane: значок, реагенты и подсказка ре
 	T.eq(info.item, 2854, "предмет рецепта")
 	T.eq(info.icon, 134583, "значок рецепта")
 	T.same(info.reagents, { { item = 2840, n = 6 }, { item = 2320, n = 2 } }, "необязательный реагент пропущен")
-	T.eq(B.Views.CraftReagents(info), "|T132840:12|t 6, |T132320:12|t 2")
+	local lines = B.Views.CraftReagents(info)
+	T.eq(#lines, 2)
+	T.ok(lines[1]:find("^|T132840:14|t 6 "), "значок и число сразу")
+	T.ok(lines[1]:find(L.CRAFT_ITEM_LOADING, 1, true), "название загружается")
 	w:Run(1)
-	T.eq(B.Views.CraftReagents(info), "|T132840:12|t 6 Медный слиток, |T132320:12|t 2 Грубая нить")
+	T.same(B.Views.CraftReagents(info), { "|T132840:14|t 6 Медный слиток", "|T132320:14|t 2 Грубая нить" })
 	T.eq(c.B.itemLoads, 2, "каждый предмет догружается один раз")
 	B.Views.CraftReagents(info)
 	T.eq(c.B.itemLoads, 2)
@@ -1002,28 +1009,49 @@ T.test("crafters pane: значок, реагенты и подсказка ре
 	local enchant = B.Crafters.RecipeDetails(7418)
 	T.no(enchant.item)
 	T.eq(enchant.icon, 136244)
-	local lines = {}
+	lines = {}
 	B.Views.CraftRecipeTip(7418)({
 		AddLine = function(_, text) lines[#lines + 1] = text end,
 		SetSpellByID = function(_, id) lines[#lines + 1] = "spell " .. id end,
 	})
 	T.eq(lines[1], "spell 7418")
-	-- Во вкладке: строка со значком, названием и реагентами, подсказка — предмет и реагенты.
+	-- Во вкладке: строка — значок и название, реагенты раскрывает щелчок.
 	c.V.ns.UI.Toggle("crafters")
+	local f = c.V.ns.CraftersPane.frames
 	PaneRow(c.V, c.A):Click()
 	w:Run(20)
-	local row
-	for _, r in ipairs(RecipeRows(c.V)) do
-		if r.it.id == 2662 then row = r end
-	end
-	T.ok(row, "строка рецепта")
+	local rows = RecipeRows(c.V)
+	T.same({ rows[1].it.id, rows[2].it.id, rows[3].it.id }, { 2660, 2661, 2662 }, "по названию")
+	local row = rows[3]
 	T.eq(row.icon:GetTexture(), 134583)
 	T.ok(row.name:GetText():find("Медные поножи", 1, true))
-	T.ok(row.reagents:GetText():find("6 Медный слиток", 1, true), "реагенты перерисованы после догрузки")
+	T.ok(row.toggle:IsShown(), "есть что раскрыть")
+	T.ok(row.toggle:GetTexture():find("PlusButton", 1, true))
+	T.eq(#row.lines, 0, "реагенты свёрнуты")
 	local tip = Tip(c.V, row)
 	T.ok(tip:find("^item 2854"), "подсказка — предмет игры")
 	T.ok(tip:find(L.CRAFT_REAGENTS, 1, true))
 	T.ok(tip:find("2 Грубая нить", 1, true))
+	T.ok(tip:find(L.CRAFT_TIP_EXPAND, 1, true))
+	-- Раскрыть первый: реагенты под ним, остальные рецепты сдвигаются вниз.
+	rows[1]:Click()
+	rows = RecipeRows(c.V)
+	T.ok(rows[1].toggle:GetTexture():find("MinusButton", 1, true))
+	T.ok(rows[1].lines[1]:IsShown())
+	T.eq(rows[1].lines[1]:GetText(), "|T132835:14|t 1 Грубый камень")
+	T.eq(rows[2].top, 22 + 16 + 4, "следующий ниже на реагенты")
+	T.ok(Tip(c.V, rows[1]):find(L.CRAFT_TIP_COLLAPSE, 1, true))
+	rows[3]:Click()
+	T.eq(RecipeRows(c.V)[3].lines[2]:GetText(), "|T132320:14|t 2 Грубая нить", "раскрыты оба")
+	-- Повторный щелчок сворачивает.
+	rows[1]:Click()
+	rows = RecipeRows(c.V)
+	T.no(rows[1].lines[1]:IsShown())
+	T.eq(rows[2].top, 22)
+	-- Раскрытие переживает перерисовку и возврат к мастеру.
+	f.card.back:Click()
+	PaneRow(c.V, c.A):Click()
+	T.ok(RecipeRows(c.V)[3].lines[1]:IsShown(), "Медные поножи раскрыты")
 	NoErrors(c.V, "Вера")
 	NoErrors(c.B, "Борис")
 end)
