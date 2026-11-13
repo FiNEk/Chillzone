@@ -11,6 +11,14 @@ local T = ...
 local Wow = {}
 
 local SERVER0 = 1793000000
+-- Названия рецептов, которые знает игра (C_Spell.GetSpellName, C_TradeSkillUI.GetRecipeInfo).
+-- Номер 2660 и его название проверены в игре 2026-11-13.
+Wow.RECIPE_NAMES = {
+	[2660] = "Грубое точило", [2661] = "Медная кольчуга", [2662] = "Медные поножи", [2663] = "Медные наручи",
+	[2664] = "Рунический медный пояс", [3115] = "Тяжёлое точило", [3116] = "Грубый точильный камень",
+	[7408] = "Тяжёлая медная кольчуга", [9983] = "Медный когтевой клинок", [16639] = "Плотное точило",
+	[2149] = "Кожаные ботинки", [2152] = "Лёгкая обработанная кожа", [3104] = "Бронзовый топор",
+}
 local NOT_FOUND = "No player named '%s' is currently playing."
 
 local World = {}
@@ -634,6 +642,38 @@ local function Env(c)
 	env.RAID_CLASS_COLORS = {}
 	env.CLASS_ICON_TCOORDS = { DRUID = { 0.74, 0.98, 0, 0.25 }, PALADIN = { 0, 0.25, 0.5, 0.75 } }
 	env.ERR_CHAT_PLAYER_NOT_FOUND_S = "No player named '%s' is currently playing."
+	-- Окно профессии (Crafters.lua): c.profession = { id, skill, max, recipes = { [номер] = изучен },
+	-- linked — чужое окно по ссылке, npc — окно у НИП }. Client:OpenProfession открывает его.
+	env.C_TradeSkillUI = {
+		GetBaseProfessionInfo = function()
+			local p = c.profession
+			if not p then return { professionID = 0 } end
+			return { professionID = p.id, professionName = "?", skillLevel = p.skill, maxSkillLevel = p.max }
+		end,
+		GetChildProfessionInfo = function()
+			local p = c.profession
+			return p and { skillLevel = p.skill, maxSkillLevel = p.max } or {}
+		end,
+		GetAllRecipeIDs = function()
+			local out = {}
+			for id in pairs(c.profession and c.profession.recipes or {}) do out[#out + 1] = id end
+			table.sort(out)
+			return out
+		end,
+		GetRecipeInfo = function(id)
+			local p = c.profession
+			local learned = p and p.recipes and p.recipes[id]
+			local name = Wow.RECIPE_NAMES[id]
+			if learned == nil and not name then return nil end
+			return { recipeID = id, name = name, learned = learned == true }
+		end,
+		IsTradeSkillLinked = function() return c.profession ~= nil and c.profession.linked == true end,
+		IsTradeSkillGuild = function() return false end,
+		IsTradeSkillGuildMember = function() return false end,
+		IsNPCCrafting = function() return c.profession ~= nil and c.profession.npc == true end,
+	}
+	env.C_Spell = { GetSpellName = function(id) return Wow.RECIPE_NAMES[id] end }
+	if c.noTradeSkill then env.C_TradeSkillUI = nil end
 	c.stubs = {}
 	for k in pairs(env) do c.stubs[k] = true end
 	return setmetatable(env, { __index = _G })
@@ -655,7 +695,7 @@ function World:Client(opts)
 		world = self, first = opts.first, surname = opts.surname, realm = opts.realm or "CAMWOWUS2Realm7PvE",
 		faction = opts.faction or "Alliance", guild = opts.guild, rank = opts.rank or 3, class = opts.class or "MAGE",
 		level = opts.level or 60, zone = opts.zone or "Штормград", online = true, clockSkew = opts.clockSkew,
-		chatFilterAPI = opts.chatFilterAPI,
+		chatFilterAPI = opts.chatFilterAPI, noTradeSkill = opts.noTradeSkill,
 		handlers = {}, filters = {}, printed = {}, joined = {}, joinedById = {},
 		named = {}, hooks = {}, bindings = {},
 	}, Client)
@@ -664,7 +704,7 @@ function World:Client(opts)
 	c.ns = {}
 	for _, f in ipairs(T.tocFiles()) do
 		if (not f:find("^libs/") or f == "libs/Ed25519.lua")
-			and not (opts.legacy and (f == "Issuers.lua" or f == "IssuerRevocations.lua" or f == "UnionAuthority.lua" or f == "TrustCatalog.lua" or f == "Online.lua" or f == "Pull.lua" or f == "Channel.lua" or f == "Groups.lua")) then
+			and not (opts.legacy and (f == "Issuers.lua" or f == "IssuerRevocations.lua" or f == "UnionAuthority.lua" or f == "TrustCatalog.lua" or f == "Online.lua" or f == "Pull.lua" or f == "Channel.lua" or f == "Groups.lua" or f == "Crafters.lua")) then
 			if opts.legacy and (f == "Config.lua" or f == "Util.lua" or f == "Security.lua" or f == "Relay.lua" or f == "Census.lua") then
 				local chunk = assert(loadfile(T.ROOT .. "/tests/legacy/0.9/" .. f))
 				setfenv(chunk, c.env)("Chillzone", c.ns)
@@ -696,6 +736,18 @@ end
 
 function Client:Name()
 	return self.first .. " " .. self.surname
+end
+
+-- Открыть окно профессии: p — { id, skill, max, recipes = { [номер] = изучен }, linked, npc }.
+-- Аддон читает его через полсекунды после события: нужно World:Run.
+function Client:OpenProfession(p)
+	self.profession = p
+	self:Fire("TRADE_SKILL_SHOW")
+end
+
+function Client:CloseProfession()
+	self.profession = nil
+	self:Fire("TRADE_SKILL_CLOSE")
 end
 
 function Client:Guid()

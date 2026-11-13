@@ -882,3 +882,301 @@ function Views.GroupPicks(query)
 	end
 	return out, #catalog
 end
+
+---------------------------------------------------------------------------
+-- Мастера (CraftersPane.lua): строки каталога, поиск, карточка мастера и своё ремесло
+---------------------------------------------------------------------------
+local CRAFT_RANK = { own = 0, online = 1, recent = 2, away = 3 }
+local recipeKeys = {} -- [номер рецепта] = SearchKey(название) на сессию
+
+function Views.CraftIcon(id, size)
+	local icon = ns.Crafters.ICONS[id] or "Interface\\Icons\\INV_Misc_QuestionMark"
+	return ("|T%s:%d|t"):format(icon, size or 14)
+end
+
+-- Почему не получилось разместить карточку или запросить список.
+function Views.CraftWhy(why, arg)
+	if why == "nocert" then return ns.Security.NotReadyReason() end
+	if why == "wait" and arg then return L.CRAFT_WHY_WAIT:format(arg) end
+	return rawget(L, "CRAFT_WHY_" .. tostring(why):upper()) or L.CRAFT_WHY_FAILED
+end
+
+-- Слова запроса (SearchKey). nil — во всём запросе меньше трёх знаков: такой поиск не идёт.
+function Views.CraftWords(query)
+	local words, size = {}, 0
+	for word in tostring(query or ""):gmatch("%S+") do
+		word = SearchKey(word)
+		if word ~= "" then
+			words[#words + 1] = word
+			size = size + select(2, word:gsub("[^\128-\191]", ""))
+		end
+	end
+	if size < 3 then return nil end
+	return words
+end
+
+local function Fits(text, words)
+	for _, word in ipairs(words) do
+		if not text:find(word, 1, true) then return false end
+	end
+	return true
+end
+
+-- Ключ названия рецепта для поиска или nil: игра ещё не назвала рецепт.
+local function RecipeKey(id)
+	local k = recipeKeys[id]
+	if k then return k end
+	local name = ns.Crafters.RecipeName(id)
+	if not name then return nil end
+	k = SearchKey(name)
+	recipeKeys[id] = k
+	return k
+end
+
+function Views.RecipeName(id)
+	return ns.Crafters.RecipeName(id) or L.CRAFT_RECIPE_UNKNOWN:format(id)
+end
+
+local function CraftProf(card, prof)
+	for _, p in ipairs(card.profs) do
+		if p.id == prof then return p end
+	end
+end
+
+-- Рецепты мастера, чьи названия подходят под запрос: до трёх названий и сколько всего.
+local function CraftHits(card, prof, words)
+	local found, n = {}, 0
+	for _, p in ipairs(card.profs) do
+		if not prof or p.id == prof then
+			for _, id in ipairs(ns.Crafters.Recipes(card.key, p.id) or {}) do
+				local key = RecipeKey(id)
+				if key and Fits(key, words) then
+					n = n + 1
+					if #found < 3 then found[#found + 1] = Codec.Plain(ns.Crafters.RecipeName(id)) end
+				end
+			end
+		end
+	end
+	return found, n
+end
+
+local function CraftTip(card)
+	return function(tt)
+		tt:AddLine(Views.Name(card.name, card.class))
+		local who = Codec.Plain(card.guild)
+		if card.level and card.level > 0 then who = who .. ", " .. L.TIP_LEVEL:format(card.level) end
+		if card.class and L.CLASS[card.class] then who = who .. ", " .. L.CLASS[card.class] end
+		tt:AddLine(who, 0.8, 0.8, 0.8)
+		tt:AddLine(" ")
+		for _, p in ipairs(card.profs) do
+			tt:AddLine(Views.CraftIcon(p.id) .. " " .. L.CRAFT_TIP_PROF:format(ns.Crafters.ProfName(p.id), p.skill, p.max, p.n), 1, 1, 1)
+		end
+		if card.note ~= "" then tt:AddLine(Codec.Plain(card.note), 0.8, 0.8, 0.8, true) end
+		if not card.own then tt:AddLine(L.CRAFT_TIP_AGE:format(Views.Ago(ns.ServerTime() - card.at)), 0.6, 0.6, 0.6) end
+		tt:AddLine(L.CRAFT_TIP_OPEN, 0.5, 0.83, 0.76)
+	end
+end
+
+-- Одна строка каталога. action "whisper" — мастер в игре или был недавно; иначе status — давность.
+local function CraftRow(card, prof, presence, found, more)
+	local level = (card.level and card.level > 0) and (", " .. card.level) or ""
+	local row = {
+		key = card.key, card = card, own = card.own, presence = presence, rank = CRAFT_RANK[presence] or 3,
+		name = Views.Name(card.name, card.class) .. "  " .. GREY .. Codec.Plain(card.guild) .. level .. "|r",
+		tip = CraftTip(card), skill = 0,
+	}
+	local skills = {}
+	for _, p in ipairs(card.profs) do
+		if not prof or p.id == prof then
+			skills[#skills + 1] = Views.CraftIcon(p.id) .. " " .. WHITE .. p.skill .. "|r" .. GREY .. " (" .. p.n .. ")|r"
+			row.skill = math.max(row.skill, p.skill)
+		end
+	end
+	if found and #found > 0 then
+		local names = table.concat(found, ", ")
+		if more > #found then names = names .. " " .. L.CRAFT_MORE:format(more - #found) end
+		row.sub = GOLD .. names .. "|r"
+	else
+		row.sub = table.concat(skills, "  ") .. (card.note ~= "" and (GREY .. " — " .. Codec.Plain(card.note) .. "|r") or "")
+	end
+	if card.own then
+		row.status = GOLD .. L.CRAFT_YOU .. "|r"
+	elseif presence == "online" or presence == "recent" then
+		row.right = presence == "online" and (GREEN .. L.CRAFT_ONLINE .. "|r") or (GOLD .. L.CRAFT_RECENT .. "|r")
+		row.action, row.actionText = "whisper", L.CRAFT_WHISPER
+	else
+		row.status = GREY .. Views.Ago(ns.ServerTime() - card.at) .. "|r"
+	end
+	return row
+end
+
+-- Строки каталога: prof — только эта профессия (nil — все), query — поиск. Второе значение —
+-- сколько мастеров всего, третье при поиске — { loaded, of }: у скольких из подходящих по
+-- профессии загружены списки рецептов.
+function Views.CraftRows(prof, query)
+	local Crafters = ns.Crafters
+	local words = Views.CraftWords(query)
+	local cards = Crafters.Cards()
+	local own = Crafters.Own()
+	if own then table.insert(cards, 1, own) end
+	local sets = {} -- [ключ гильдии] = { [ключ игрока] = true } по списку Online или false
+	local function Online(card)
+		local gk = U.GuildKey(card.guild)
+		if sets[gk] == nil then
+			local list = ns.Online.Get(card.guild)
+			sets[gk] = false
+			if list and not list.loading and not list.failed and list.people then
+				local set = {}
+				for _, p in ipairs(list.people) do
+					local k = U.Key(p.name)
+					if k then set[k] = true end
+				end
+				sets[gk] = set
+			end
+		end
+		return sets[gk] and sets[gk][card.key] or false
+	end
+	local out, loaded, of = {}, 0, 0
+	for _, card in ipairs(cards) do
+		if not prof or CraftProf(card, prof) then
+			local fit, found, more = true, nil, 0
+			if words then
+				of = of + 1
+				if card.own or Crafters.HasList(card.key, prof) then loaded = loaded + 1 end
+				local names = {}
+				for _, p in ipairs(card.profs) do names[#names + 1] = Crafters.ProfName(p.id) end
+				fit = Fits(SearchKey(card.name .. card.guild .. card.note .. table.concat(names)), words)
+				if not fit then
+					found, more = CraftHits(card, prof, words)
+					fit = more > 0
+				end
+			end
+			if fit then
+				local presence = card.own and "own" or Crafters.Presence(card, Online(card))
+				out[#out + 1] = CraftRow(card, prof, presence, found, more)
+			end
+		end
+	end
+	table.sort(out, function(a, b)
+		if a.rank ~= b.rank then return a.rank < b.rank end
+		if a.skill ~= b.skill then return a.skill > b.skill end
+		return a.card.name < b.card.name
+	end)
+	return out, #cards, words and { loaded = loaded, of = of } or nil
+end
+
+-- Профессии, которые есть в каталоге (и в своей карточке), по порядку Crafters.PROFS.
+function Views.CraftProfs()
+	local seen, out = {}, {}
+	local cards = ns.Crafters.Cards()
+	local own = ns.Crafters.Own()
+	if own then cards[#cards + 1] = own end
+	for _, card in ipairs(cards) do
+		for _, p in ipairs(card.profs) do
+			if not seen[p.id] then
+				seen[p.id] = true
+				out[#out + 1] = p.id
+			end
+		end
+	end
+	table.sort(out, function(a, b) return ns.Crafters.ProfOrder(a) < ns.Crafters.ProfOrder(b) end)
+	return out
+end
+
+-- Карточка мастера для правой панели или nil: { name, line, note, profs, whisper }.
+function Views.CraftCard(key)
+	local card = ns.Crafters.Get(key)
+	if not card or not U.IsMemberGuild(card.guild) then return nil end
+	local presence = ns.Crafters.Presence(card)
+	local line = Codec.Plain(card.guild)
+	if card.level and card.level > 0 then line = line .. ", " .. card.level end
+	if presence == "online" then
+		line = line .. ", " .. GREEN .. L.CRAFT_ONLINE .. "|r"
+	elseif presence == "recent" then
+		line = line .. ", " .. GOLD .. L.CRAFT_RECENT .. "|r"
+	else
+		line = line .. ", " .. Views.Ago(ns.ServerTime() - card.at)
+	end
+	return {
+		key = key, who = card.name, name = Views.Name(card.name, card.class), line = line,
+		note = card.note ~= "" and Codec.Plain(card.note) or nil, profs = card.profs,
+		whisper = presence ~= "away", card = card,
+	}
+end
+
+-- Список рецептов одной профессии одной строкой: подходящие под запрос — первыми и золотом,
+-- без названия — в конце. Второе значение — сколько рецептов.
+function Views.CraftRecipes(key, prof, query)
+	local ids = ns.Crafters.Recipes(key, prof)
+	if not ids then return "", 0 end
+	local words = Views.CraftWords(query)
+	local items = {}
+	for _, id in ipairs(ids) do
+		local name = ns.Crafters.RecipeName(id)
+		local k = name and RecipeKey(id)
+		items[#items + 1] = {
+			id = id, name = name and Codec.Plain(name) or L.CRAFT_RECIPE_UNKNOWN:format(id), sort = k or "",
+			hit = words ~= nil and k ~= nil and Fits(k, words), known = name ~= nil,
+		}
+	end
+	table.sort(items, function(a, b)
+		if a.hit ~= b.hit then return a.hit end
+		if a.known ~= b.known then return a.known end
+		if a.sort ~= b.sort then return a.sort < b.sort end
+		return a.id < b.id
+	end)
+	local lines = {}
+	for i, it in ipairs(items) do
+		lines[i] = it.hit and (GOLD .. it.name .. "|r") or it.known and it.name or (GREY .. it.name .. "|r")
+	end
+	return table.concat(lines, "\n"), #items
+end
+
+-- Строка над списком рецептов: что со списком и запросом.
+function Views.CraftListState(key, prof)
+	local ask = ns.Crafters.AskState(key, prof)
+	if ask and ask.loading then
+		if ask.n then return L.CRAFT_LOADING_PAGE:format(math.min(ask.got + 1, ask.n), ask.n) end
+		return L.CRAFT_ASKING
+	end
+	local _, entry = ns.Crafters.Recipes(key, prof)
+	local ago = entry and Views.Ago(ns.ServerTime() - (entry.at or 0))
+	if key == ns.myKey then return entry and L.CRAFT_LIST_MINE:format(ago) or L.CRAFT_NO_LIST end
+	local failed = ask and ask.failed and (ask.why == "offline" and L.CRAFT_OFFLINE or ask.why == "broken"
+		and L.CRAFT_BROKEN or L.CRAFT_SILENT)
+	if failed then return ORANGE .. failed .. "|r" end
+	if not entry then return L.CRAFT_NO_LIST end
+	local card = ns.Crafters.Get(key)
+	local p = card and CraftProf(card, prof)
+	local text = L.CRAFT_LIST_AT:format(ago)
+	if p and p.hash ~= entry.hash then text = text .. ". " .. ORANGE .. L.CRAFT_LIST_OLD .. "|r" end
+	return text
+end
+
+-- «Моё ремесло»: { profs = { id, post, label, detail }, hint, status, posted }.
+function Views.CraftMine()
+	local Crafters = ns.Crafters
+	local profs = {}
+	for _, p in ipairs(Crafters.MyProfs()) do
+		profs[#profs + 1] = {
+			id = p.id, post = p.post, label = Views.CraftIcon(p.id) .. " " .. Crafters.ProfName(p.id),
+			detail = L.CRAFT_READ:format(p.skill, p.max, p.n, Views.Ago(ns.ServerTime() - (p.readAt or 0))),
+		}
+	end
+	local hint
+	if not Crafters.CanRead() then
+		hint = L.CRAFT_NOAPI
+	elseif Crafters.lastSkip == "external" then
+		hint = L.CRAFT_SKIP_EXTERNAL
+	elseif Crafters.lastSkip == "combat" then
+		hint = L.CRAFT_SKIP_COMBAT
+	elseif #profs == 0 then
+		hint = L.CRAFT_MINE_EMPTY
+	else
+		hint = L.CRAFT_MINE_HINT
+	end
+	local posted = Crafters.Posted()
+	local status = posted and (Crafters.Dirty() and (ORANGE .. L.CRAFT_CHANGED .. "|r") or (GREEN .. L.CRAFT_POSTED .. "|r"))
+		or L.CRAFT_NOT_POSTED
+	return { profs = profs, hint = hint, status = status, posted = posted }
+end

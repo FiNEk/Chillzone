@@ -155,8 +155,13 @@ local CHAR_DEFAULTS = {
 	-- Общий чат через канал игры (Channel.lua) и скрытие строк неподтверждённых авторов.
 	chatViaChannel = true, chatHideUnconfirmed = false,
 	chatMirror = true, chatTime = false, chatChannel = false, history = { G = {}, O = {} }, historyGuild = false, drafts = {},
+	-- Мастера (Crafters.lua): прочитанные профессии, отметки, примечание, своя карточка.
+	crafts = {},
 }
-local STORE_DEFAULTS = { guilds = {}, relays = {}, manual = {}, ignore = {}, chat = { A = {}, C = {}, L = {} } }
+local STORE_DEFAULTS = {
+	guilds = {}, relays = {}, manual = {}, ignore = {}, chat = { A = {}, C = {}, L = {} },
+	crafters = { cards = {}, lists = {} }, -- каталог мастеров (Crafters.lua)
+}
 
 ns.RegisterEvent("ADDON_LOADED", function(name)
 	if name ~= ADDON then return end

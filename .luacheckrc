@@ -40,6 +40,8 @@ read_globals = {
 	"C_LFGList",
 	"C_Map",
 	"C_PartyInfo",
+	"C_Spell",
+	"C_TradeSkillUI",
 	"C_Timer",
 	"Enum",
 
@@ -90,6 +92,7 @@ read_globals = {
 	"IsBuiltinChatWindow",
 	"InCombatLockdown",
 	"IsShiftKeyDown",
+	"IsTradeSkillLinked",
 	"LeaveChannelByName",
 	"LoadAddOn",
 	"SendChatMessage",

@@ -39,6 +39,20 @@
 --         GQ~ по GUILD — вошедший просит объявления заново.
 --         GA~id~fp~guild~class~level~t.h.d~note (заявка) · GW~id (отзыв) · GR~id~I|D (ответ:
 --         приглашён, отказ) — шёпотом напрямую, без реле.
+-- Мастера: W1~C~st~guild~class~level~profs~note · W1~X~st~guild (карточка снята)   (после 0.14.2)
+--           st     серверное время последней правки карточки, десятичное
+--           profs  id:skill:max:n:hash[,...] — не больше CRAFT_PROFS профессий: номер базовой
+--                  профессии игры, навык и его предел, сколько рецептов в списке и хеш
+--                  упакованного списка (4 знака base36, Codec.IdsHash)
+--           note   свободный текст автора без "~" и "|", до CRAFT_NOTE байт
+--         Идёт только в конверте строки чата M1~A~guild~W1~..., подписанном как M1: S1 по GUILD
+--         своей гильдии и через реле (режим P). Реле, репортёры и чат 0.14.2 и старше поступают с
+--         ним, как с конвертом G1: пересылают и молча отбрасывают.
+--         WR~prof~fp~hash (запрос списка рецептов; hash — список у спрашивающего, 0 — нет) ·
+--         WL~prof~hash~i~n~data (страница i из n упакованного списка; WL~prof~hash~0~0~ — хеш
+--         совпал) — шёпотом напрямую, без реле и без подписи.
+--         Список рецептов: номера по возрастанию, каждый — разность с предыдущим варинтом из
+--         знаков 0-9A-Za-z-_ (5 бит на знак; знаки с номером 32 и выше — число продолжается).
 local ADDON, ns = ...
 
 local Codec = {}
@@ -617,6 +631,225 @@ function Codec.DecodeGroupReply(s)
 	local id = groupId(rawId)
 	if not id then return nil end
 	return id, answer
+end
+
+---------------------------------------------------------------------------
+-- Мастера (Crafters.lua): карточка W1, запрос списка рецептов WR и его страницы WL.
+-- По сети идут только номера: названия рецептов и предметов каждый клиент берёт у игры сам.
+---------------------------------------------------------------------------
+Codec.CRAFT_NOTE = 60
+Codec.CRAFT_PROFS = 5
+Codec.CRAFT_PAGE = 200 -- байт упакованного списка на странице WL
+Codec.CRAFT_MAX_PAGES = 32
+Codec.CRAFT_IDS = 2000 -- номеров в распакованном списке: больше не бывает ни у кого
+local CRAFT_ID_MAX = 9999999 -- номер рецепта или профессии
+local CRAFT_SKILL_MAX = 999
+local CRAFT_COUNT_MAX = 9999
+
+local ALPHA = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz-_"
+local ALPHA_INDEX = {}
+for i = 1, #ALPHA do ALPHA_INDEX[ALPHA:byte(i)] = i - 1 end
+
+local function craftNum(v, max)
+	local n = type(v) == "string" and #v <= 7 and v:find("^%d+$") and tonumber(v) or nil
+	return (n and n <= max) and n or nil
+end
+
+local function craftHash(v)
+	return type(v) == "string" and v:find("^[0-9a-z][0-9a-z][0-9a-z][0-9a-z]$") and v or nil
+end
+
+-- Номера рецептов: целые положительные, по возрастанию, без повторов, не больше max.
+local function SortIds(list, max)
+	local seen, out = {}, {}
+	for _, v in ipairs(type(list) == "table" and list or {}) do
+		local n = tonumber(v)
+		if n and n == floor(n) and n >= 1 and n <= CRAFT_ID_MAX and not seen[n] then
+			seen[n] = true
+			out[#out + 1] = n
+		end
+	end
+	table.sort(out)
+	for i = #out, (max or Codec.CRAFT_IDS) + 1, -1 do out[i] = nil end
+	return out
+end
+Codec.SortIds = SortIds
+
+local function varint(n, out)
+	local groups = {}
+	repeat
+		table.insert(groups, 1, n % 32)
+		n = floor(n / 32)
+	until n == 0
+	for i = 1, #groups do
+		local d = groups[i] + (i < #groups and 32 or 0)
+		out[#out + 1] = ALPHA:sub(d + 1, d + 1)
+	end
+end
+
+-- Упакованная строка: разности соседних номеров варинтами. Разность до 31 — один знак, до 1023 — два.
+function Codec.PackIds(list, max)
+	local ids, out, prev = SortIds(list, max), {}, 0
+	for _, n in ipairs(ids) do
+		varint(n - prev, out)
+		prev = n
+	end
+	return concat(out), #ids
+end
+
+-- Список номеров или nil: мусор, слишком длинное число, номер вне границ, больше max номеров.
+function Codec.UnpackIds(s, max)
+	if type(s) ~= "string" or #s > Codec.CRAFT_PAGE * Codec.CRAFT_MAX_PAGES then return nil end
+	max = max or Codec.CRAFT_IDS
+	local out, n, digits, prev = {}, 0, 0, 0
+	for i = 1, #s do
+		local d = ALPHA_INDEX[s:byte(i)]
+		if not d then return nil end
+		digits = digits + 1
+		if digits > 5 then return nil end
+		n = n * 32 + (d % 32)
+		if d < 32 then
+			prev = prev + n
+			if (n == 0 and #out > 0) or prev < 1 or prev > CRAFT_ID_MAX or #out >= max then return nil end
+			out[#out + 1] = prev
+			n, digits = 0, 0
+		end
+	end
+	if digits > 0 then return nil end -- оборванное число
+	return out
+end
+
+-- 4 знака base36: устойчив между клиентами и меняется при правке списка. Это проверка кэша,
+-- не защита. Только арифметика: в Lua 5.1 нет битовых операций.
+function Codec.IdsHash(packed)
+	local h = 0
+	packed = tostring(packed or "")
+	for i = 1, #packed do h = (h * 31 + packed:byte(i)) % 1679616 end
+	local s = Codec.Base36(h)
+	return ("0"):rep(4 - #s) .. s
+end
+
+-- Страницы упакованной строки: режутся только по границам чисел, не больше size байт каждая.
+function Codec.CraftPages(packed, size)
+	size = size or Codec.CRAFT_PAGE
+	local pages, from, last = {}, 1, 0 -- last — конец последнего целого числа в текущей странице
+	packed = tostring(packed or "")
+	for i = 1, #packed do
+		local d = ALPHA_INDEX[packed:byte(i)] or 0
+		if d < 32 then
+			if i - from + 1 > size and last >= from then
+				pages[#pages + 1] = packed:sub(from, last)
+				from = last + 1
+			end
+			last = i
+		end
+	end
+	if from <= #packed or #pages == 0 then pages[#pages + 1] = packed:sub(from) end
+	return pages
+end
+
+-- c: { mode, st, guild, class, level, profs = { { id, skill, max, n, hash } }, note }. nil — нет
+-- времени, гильдии или (у карточки) профессий. Примечание укорачивается, чтобы всё сообщение
+-- уместилось в 255 байт.
+function Codec.EncodeCraft(c)
+	local guild = clean(c.guild)
+	local st = groupId(tostring(floor(tonumber(c.st) or 0)))
+	if not st or guild == "" or LongGuild(guild) then return nil end
+	if c.mode == "X" then return ("W1~X~%d~%s"):format(st, guild) end
+	if c.mode ~= "C" then return nil end
+	local profs, seen = {}, {}
+	for _, p in ipairs(c.profs or {}) do
+		local id = floor(tonumber(p.id) or 0)
+		local hash = craftHash(p.hash)
+		if id >= 1 and id <= CRAFT_ID_MAX and hash and not seen[id] and #profs < Codec.CRAFT_PROFS then
+			seen[id] = true
+			profs[#profs + 1] = ("%d:%d:%d:%d:%s"):format(id, bounded(p.skill, 0, CRAFT_SKILL_MAX),
+				bounded(p.max, 0, CRAFT_SKILL_MAX), bounded(p.n, 0, CRAFT_COUNT_MAX), hash)
+		end
+	end
+	if #profs == 0 then return nil end
+	local head = ("W1~C~%d~%s~%s~%d~%s~"):format(st, guild, classCode(c.class), bounded(c.level, 0, 255), concat(profs, ","))
+	if #head > 255 then return nil end
+	return head .. Codec.GroupText(c.note, math.min(Codec.CRAFT_NOTE, 255 - #head))
+end
+
+-- Таблица как у EncodeCraft или nil. Поля после примечания и после хеша профессии не мешают:
+-- их добавят следующие версии.
+function Codec.DecodeCraft(s)
+	if type(s) ~= "string" or #s > 255 then return nil end
+	local mode, rawSt, rest = s:match("^W1~([CX])~(%d+)~(.+)$")
+	local st = groupId(rawSt)
+	if not st then return nil end
+	if mode == "X" then
+		local guild = rest:match("^([^~|]+)")
+		if not guild or LongGuild(guild) then return nil end
+		return { mode = "X", st = st, guild = guild }
+	end
+	local guild, class, level, list, note = rest:match("^([^~|]+)~(%u?%u?)~(%d%d?%d?)~([^~]+)~([^~]*)")
+	if not guild or LongGuild(guild) then return nil end
+	local profs, seen = {}, {}
+	for entry in (list .. ","):gmatch("([^,]*),") do
+		local id, skill, cap, n, hash = entry:match("^(%d+):(%d+):(%d+):(%d+):(%w+)")
+		id, skill, cap, n, hash = craftNum(id, CRAFT_ID_MAX), craftNum(skill, CRAFT_SKILL_MAX),
+			craftNum(cap, CRAFT_SKILL_MAX), craftNum(n, CRAFT_COUNT_MAX), craftHash(hash)
+		if not id or id < 1 or not skill or not cap or not n or not hash or seen[id] or #profs >= Codec.CRAFT_PROFS then
+			return nil
+		end
+		seen[id] = true
+		profs[#profs + 1] = { id = id, skill = skill, max = cap, n = n, hash = hash }
+	end
+	return {
+		mode = "C", st = st, guild = guild, class = classFile(class), level = bounded(level, 0, 255),
+		profs = profs, note = Codec.GroupText(note, Codec.CRAFT_NOTE),
+	}
+end
+
+-- Карточка в конверте строки чата: M1~A~guild~<W1 целиком>, как Codec.WrapGroup. Реле, репортёры
+-- и чат 0.14.2 и старше пересылают её как строку и молча отбрасывают (третье поле не номер).
+function Codec.WrapCraft(msg)
+	local guild = type(msg) == "string" and #msg <= 255 and msg:match("^W1~[CX]~%d+~([^~|]+)")
+	if not guild then return nil end
+	return "M1~A~" .. guild .. "~" .. msg
+end
+
+-- Вложенное W1 и гильдия или nil: это не конверт карточки.
+function Codec.UnwrapCraft(s)
+	local guild, msg = (type(s) == "string" and s or ""):match("^M1~A~([^~|]+)~(W1~.+)$")
+	if not guild or #msg > 255 or msg:match("^W1~[CX]~%d+~([^~|]+)") ~= guild then return nil end
+	return msg, guild
+end
+
+-- Запрос списка рецептов. hash — список у спрашивающего или nil.
+function Codec.EncodeCraftQuery(prof, fp, hash)
+	return ("WR~%d~%s~%s"):format(prof, fp, craftHash(hash) or "0")
+end
+
+-- prof, fp, hash (nil — списка нет) или nil.
+function Codec.DecodeCraftQuery(s)
+	local prof, fp, hash = (type(s) == "string" and #s <= 255 and s or ""):match("^WR~(%d+)~([%w_-]+)~([0-9a-z]+)$")
+	prof = craftNum(prof, CRAFT_ID_MAX)
+	if not prof or prof < 1 or (hash ~= "0" and not craftHash(hash)) then return nil end
+	return prof, fp, craftHash(hash)
+end
+
+-- Страницы ответа. same — хеш совпал: одна пустая страница WL~prof~hash~0~0~.
+function Codec.EncodeCraftPages(prof, hash, packed, same)
+	if same then return { ("WL~%d~%s~0~0~"):format(prof, hash) } end
+	local pages, out = Codec.CraftPages(packed), {}
+	local n = math.min(#pages, Codec.CRAFT_MAX_PAGES)
+	for i = 1, n do out[i] = ("WL~%d~%s~%d~%d~%s"):format(prof, hash, i, n, pages[i]) end
+	return out
+end
+
+-- { prof, hash, i, n, data } или nil. i = n = 0 — хеш совпал.
+function Codec.DecodeCraftPage(s)
+	if type(s) ~= "string" or #s > 255 then return nil end
+	local prof, hash, i, n, data = s:match("^WL~(%d+)~([0-9a-z]+)~(%d%d?)~(%d%d?)~([%w_-]*)$")
+	prof, hash, i, n = craftNum(prof, CRAFT_ID_MAX), craftHash(hash), tonumber(i), tonumber(n)
+	if not prof or prof < 1 or not hash or #data > Codec.CRAFT_PAGE then return nil end
+	if i == 0 and n == 0 then return { prof = prof, hash = hash, i = 0, n = 0, data = "" } end
+	if i < 1 or i > n or n > Codec.CRAFT_MAX_PAGES then return nil end
+	return { prof = prof, hash = hash, i = i, n = n, data = data }
 end
 
 ---------------------------------------------------------------------------
