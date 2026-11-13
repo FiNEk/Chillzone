@@ -1,6 +1,9 @@
 name: Release
 
 # Тег vX.Y.Z → проверки, Chillzone-X.Y.Z.zip и релиз.
+# Тег ставится на слитый main, а для этого коммита полный набор уже запустил ci.yml по пушу в main:
+# второй такой же прогон не нужен, ждём итога первого. Если прогона нет (тег не на main или GitHub
+# отменил ожидавший прогон, когда в main пришёл следующий пуш) или его отменили, ci.yml запускается здесь.
 # Если релиза с этим тегом ещё нет — создаётся черновик с шаблоном описания;
 # если есть (создан заранее через gh release create) — к нему прикладывается архив.
 on:
@@ -11,12 +14,73 @@ permissions:
   contents: read
 
 jobs:
+  main-ci:
+    name: CI of main
+    runs-on: ubuntu-latest
+    # Прогон main может ждать в очереди окончания предыдущего (concurrency в ci.yml).
+    timeout-minutes: 60
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      passed: ${{ steps.wait.outputs.passed }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ github.ref_name }}
+    steps:
+      - name: Wait for CI of the tagged commit
+        id: wait
+        run: |
+          # Коммит тега: API раскрывает и аннотированный тег.
+          sha=$(gh api "repos/$GH_REPO/commits/$TAG" --jq .sha)
+          runs="$GITHUB_SERVER_URL/$GH_REPO/actions/runs"
+          # Прогон по пушу в main создаётся при слиянии, до тега; минута — запас на задержку GitHub.
+          id=
+          for _ in 1 2 3 4 5 6; do
+            id=$(gh run list --workflow ci.yml --branch main --event push --commit "$sha" --limit 1 \
+              --json databaseId --jq '.[0].databaseId // empty') || id=
+            [ -n "$id" ] && break
+            sleep 10
+          done
+          if [ -z "$id" ]; then
+            echo "::notice::Нет прогона CI для $sha по пушу в main: проверки запустятся здесь"
+            echo "passed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "Жду CI коммита $sha: $runs/$id"
+          state=
+          while [ "${state%% *}" != completed ]; do
+            sleep 20
+            # Перезапуск упавших заданий сохраняет номер прогона: смотрим последнюю попытку.
+            state=$(gh run view "$id" --json status,conclusion --jq '.status + " " + .conclusion') || state=
+          done
+          conclusion=${state#completed }
+          case "$conclusion" in
+            success)
+              echo "CI коммита прошёл: $runs/$id"
+              echo "passed=true" >> "$GITHUB_OUTPUT"
+              ;;
+            cancelled|skipped)
+              echo "::notice::CI коммита $sha отменён ($runs/$id): проверки запустятся здесь"
+              echo "passed=false" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "::error::CI коммита $sha не прошёл ($conclusion): $runs/$id. Исправьте main или перезапустите упавшие задания там, затем — этот workflow."
+              exit 1
+              ;;
+          esac
+
   checks:
+    needs: main-ci
+    if: needs.main-ci.outputs.passed != 'true'
     uses: ./.github/workflows/ci.yml
 
   release:
     name: Build and publish
-    needs: checks
+    needs: [main-ci, checks]
+    # checks пропущен, когда CI коммита уже прошёл на main.
+    if: ${{ !cancelled() && needs.main-ci.result == 'success' && (needs.checks.result == 'success' || needs.checks.result == 'skipped') }}
     runs-on: ubuntu-latest
     permissions:
       contents: write

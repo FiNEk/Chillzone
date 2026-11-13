@@ -37,11 +37,51 @@ jobs:
         interpreter: [lua5.1, luajit]
     steps:
       - uses: actions/checkout@v7
+        with:
+          # В PR это слияние с main: HEAD^1 — main, разница с ним — сам PR.
+          fetch-depth: 2
+      # PR, который меняет только номер версии (строки «## Version:» в toc и «C.VERSION =» в
+      # Config.lua), полный набор не гоняет: код уже прошёл CI на main, а набор целиком пройдёт
+      # на main после слияния, и release.yml ждёт именно этот прогон. Задание не пропускается
+      # целиком: у пропущенного задания матрицы имя не раскрывается, и обязательные проверки
+      # «Tests (...)» висели бы в ожидании.
+      - name: Detect version-only pull request
+        id: scope
+        shell: bash
+        run: |
+          full=true
+          if [ "${{ github.event_name }}" = pull_request ] && files=$(git diff --name-only HEAD^1 HEAD) && [ -n "$files" ]; then
+            full=false
+            while IFS= read -r f; do
+              case "$f" in
+                Chillzone/Chillzone.toc) skip='^## Version:' ;;
+                Chillzone/Config.lua) skip='^C\.VERSION = ' ;;
+                *) full=true; break ;;
+              esac
+              if ! cmp -s <(git show "HEAD^1:$f" | grep -v "$skip") <(git show "HEAD:$f" | grep -v "$skip"); then
+                full=true
+                break
+              fi
+            done <<< "$files"
+          fi
+          if [ "$full" = false ]; then
+            # Единственное, что здесь может сломаться, — расхождение двух записей версии.
+            toc=$(sed -n 's/^## Version: *//p' Chillzone/Chillzone.toc | tr -d '[:space:]')
+            cfg=$(sed -n 's/^C\.VERSION = "\([^"]*\)".*/\1/p' Chillzone/Config.lua)
+            if [ -z "$toc" ] || [ "$toc" != "$cfg" ]; then
+              echo "::error file=Chillzone/Config.lua::C.VERSION «$cfg» не совпадает с «## Version: $toc» в Chillzone.toc"
+              exit 1
+            fi
+            echo "::notice::PR меняет только номер версии ($toc): полный набор пройдёт на main после слияния"
+          fi
+          echo "full=$full" >> "$GITHUB_OUTPUT"
       - name: Install Lua interpreters and the game-compatible bit library
+        if: steps.scope.outputs.full == 'true'
         run: |
           sudo apt-get update -q
           sudo apt-get install -yq --no-install-recommends lua5.1 lua-bitop luajit
       - name: Run functional, cryptographic and adversarial tests
+        if: steps.scope.outputs.full == 'true'
         env:
           CZ_TEST_PROGRESS: '1'
         run: |
