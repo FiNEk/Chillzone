@@ -116,6 +116,60 @@ function World:AddOnline(guild, full, rank, level, class)
 	g.members[#g.members + 1] = { full = full, rank = rank, level = level or 60, class = class or "WARRIOR", online = true }
 end
 
+-- Системные строки гильдии (в игре — свои для языка клиента).
+local ERR_GUILD_REMOVE_SS = "%s has been kicked out of the guild by %s."
+local ERR_GUILD_LEAVE_S = "%s has left the guild."
+local ERR_GUILD_JOIN_S = "%s has joined the guild."
+
+-- Системная строка гильдии: её видят все её участники в игре.
+function World:GuildSystem(guild, text)
+	for _, c in ipairs(self.clients) do
+		if c.online and c.guild == guild then
+			self:Schedule(self.now + 0.05, function() c:Fire("CHAT_MSG_SYSTEM", text) end, c)
+		end
+	end
+end
+
+-- Исключение: клиент теряет гильдию, строка ростера пропадает. name — «Имя Фамилия».
+-- by — кто исключил (клиент): тогда гильдия получает системную строку, как в игре.
+function World:Uninvite(guild, name, by)
+	local short = name:gsub("%-.*$", "")
+	local done = false
+	for _, o in ipairs(self.clients) do
+		if not done and o.guild == guild and (o.first .. " " .. o.surname) == short then
+			o.guild = nil
+			if o.online then o:Fire("PLAYER_GUILD_UPDATE", "player") end
+			done = true
+		end
+	end
+	local g = self.guilds[guild]
+	for i, m in ipairs(g and g.members or {}) do
+		if not done and m.full:gsub("%-.*$", "") == short then
+			table.remove(g.members, i)
+			done = true
+		end
+	end
+	if done and by then self:GuildSystem(guild, ERR_GUILD_REMOVE_SS:format(short, by:Name())) end
+	return done
+end
+
+-- Игрок вступил в гильдию (принял приглашение): who — клиент или «Имя Фамилия-Реалм» строки
+-- ростера без клиента. Гильдия получает системную строку.
+function World:Join(guild, who, rank)
+	local g = self.guilds[guild]
+	rank = rank or #g.ranks - 1
+	local short
+	if type(who) == "table" then
+		who.guild, who.rank = guild, rank
+		short = who:Name()
+		if who.online then who:Fire("PLAYER_GUILD_UPDATE", "player") end
+	else
+		g.members[#g.members + 1] = { full = who, rank = rank, level = 60, class = "WARRIOR", days = 0 }
+		short = who:gsub("%-.*$", "")
+	end
+	self:GuildSystem(guild, ERR_GUILD_JOIN_S:format(short))
+end
+
 local CLASS_LOCAL = { WARRIOR = "Воин", MAGE = "Маг", PRIEST = "Жрец", PALADIN = "Паладин", DRUID = "Друид", ROGUE = "Разбойник", HUNTER = "Охотник", WARLOCK = "Чернокнижник", SHAMAN = "Шаман" }
 
 ---------------------------------------------------------------------------
@@ -430,10 +484,22 @@ local function Env(c)
 		if c.canInvite ~= nil then return c.canInvite end
 		return c.guild ~= nil and c.rank <= 1
 	end
-	env.GuildInvite = function(name)
-		assert(env.CanGuildInvite(), "нет права приглашать")
-		c.invites[#c.invites + 1] = name
+	c.uninvites = {}
+	env.CanGuildRemove = function()
+		if c.canRemove ~= nil then return c.canRemove end
+		return c.guild ~= nil and c.rank <= 1
 	end
+	-- Исключать и приглашать в гильдию Forever не даёт ни аддону, ни макросу: вызов записывается
+	-- в c.forbidden и падает, как ADDON_ACTION_FORBIDDEN в игре. Команду игрок вводит сам —
+	-- Client:GuildCommand; она и пишет c.invites и c.uninvites.
+	c.forbidden = {}
+	local function Forbidden(what)
+		return function(name)
+			c.forbidden[#c.forbidden + 1] = what .. " " .. tostring(name)
+			error("ADDON_ACTION_FORBIDDEN " .. what)
+		end
+	end
+	env.GuildInvite, env.GuildUninvite = Forbidden("GuildInvite"), Forbidden("GuildUninvite")
 	env.C_FriendList = {
 		SetWhoToUi = function(on) c.whoToUi = on end,
 		SendWho = function(query)
@@ -477,7 +543,9 @@ local function Env(c)
 		local g = w.guilds[c.guild]
 		return c.guild, g.ranks[c.rank + 1], c.rank
 	end
-	local function Rows()
+	-- Строки ростера. c.hideOffline — в окне гильдии снят «Показать всех»: игра отдаёт только
+	-- тех, кто в игре, а GetNumGuildMembers по-прежнему считает всех. all — все строки.
+	local function Rows(all)
 		local g = c.guild and w.guilds[c.guild]
 		local rows = {}
 		if not g then return rows end
@@ -489,13 +557,20 @@ local function Env(c)
 		for _, m in ipairs(g.members) do
 			rows[#rows + 1] = { full = m.full, rank = m.rank, level = m.level, class = m.class, online = m.online or false, days = m.days }
 		end
+		if c.hideOffline and not all then
+			for i = #rows, 1, -1 do if not rows[i].online then table.remove(rows, i) end end
+		end
 		return rows
 	end
 	env.GetNumGuildMembers = function()
-		local rows, on = Rows(), 0
+		local rows, on = Rows(true), 0
 		for _, r in ipairs(rows) do if r.online then on = on + 1 end end
 		return #rows, on, on
 	end
+	env.GetGuildRosterShowOffline = function() return not c.hideOffline end
+	env.SetGuildRosterShowOffline = function(on) c.hideOffline = not on end
+	-- Зажатый Ctrl: тест ставит c.ctrl перед нажатием клавиши в поле.
+	env.IsControlKeyDown = function() return c.ctrl == true end
 	env.GetGuildRosterInfo = function(i)
 		local r = Rows()[i]
 		if not r then return nil end
@@ -509,6 +584,7 @@ local function Env(c)
 	end
 	env.C_GuildInfo = {
 		Invite = env.GuildInvite,
+		Uninvite = env.GuildUninvite,
 		GuildRoster = function() w:Schedule(w.now + 0.2, function() c:Fire("GUILD_ROSTER_UPDATE") end, c) end,
 		-- Права звания rankOrder (с 1): таблица из 24 флагов, [22] — «офицер».
 		GuildControlGetRankFlags = function(order)
@@ -734,6 +810,7 @@ local function Env(c)
 		end,
 	}
 	if c.noTradeSkill then env.C_TradeSkillUI = nil end
+	env.ERR_GUILD_REMOVE_SS, env.ERR_GUILD_LEAVE_S, env.ERR_GUILD_JOIN_S = ERR_GUILD_REMOVE_SS, ERR_GUILD_LEAVE_S, ERR_GUILD_JOIN_S
 	c.stubs = {}
 	for k in pairs(env) do c.stubs[k] = true end
 	return setmetatable(env, { __index = _G })
@@ -840,6 +917,23 @@ function Client:Slash(cmd, text)
 		end
 	end
 	error("нет слэш-команды " .. cmd)
+end
+
+-- Команда гильдии, которую игрок ввёл в чате сам: "/gremove Имя Фамилия" или "/ginvite ...".
+-- Без права игры команда молча ничего не делает, как в игре. Исключение проходит сразу, а
+-- приглашённый вступает, когда примет приглашение (World:Join).
+function Client:GuildCommand(text)
+	local cmd, name = text:match("^(/%a+) (.+)$")
+	if cmd == "/gremove" then
+		if not self.env.CanGuildRemove() then return false end
+		self.uninvites[#self.uninvites + 1] = name
+		return self.world:Uninvite(self.guild, name, self)
+	elseif cmd == "/ginvite" then
+		if not self.env.CanGuildInvite() then return false end
+		self.invites[#self.invites + 1] = name
+		return true
+	end
+	error("неизвестная команда гильдии " .. tostring(text))
 end
 
 -- Enter в поле ввода (окно Chillzone, вкладка чата): нажатие клавиши.

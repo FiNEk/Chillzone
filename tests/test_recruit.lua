@@ -387,15 +387,21 @@ T.test("заявки: гильдию, найденную общим поиско
 	Errors(c)
 end)
 
-T.test("заявки: офицер приглашает по игровому праву", function()
+T.test("заявки: офицер приглашает своей командой по игровому праву", function()
 	local w, c = Build()
 	local req = Request(w, c)
 	c.O.canInvite = false
 	T.no(c.O.ns.Recruit.Accept(req))
 	c.O.canInvite = true
-	T.ok(c.O.ns.Recruit.Accept(req))
-	T.eq(c.O.invites[1], c.R:Name(), "имя без реалма")
-	T.eq(#c.O.ns.Recruit.requests, 0)
+	local command = c.O.ns.Recruit.Accept(req)
+	T.eq(command, "/ginvite " .. c.R:Name(), "имя без реалма")
+	T.eq(#c.O.forbidden, 0, "сам аддон не приглашает: игра это запрещает")
+	T.eq(#c.O.ns.Recruit.requests, 1, "заявка ждёт вступления")
+	T.ok(req.invited, "отмечено, что команда показана")
+	T.ok(c.O:GuildCommand(command))
+	w:Join("Чиллзон Север", c.R)
+	w:Run(10)
+	T.eq(#c.O.ns.Recruit.Requests(), 0, "вступивший закрыл заявку")
 	T.no(c.O.ns.Recruit.Accept(req), "повторный щелчок")
 	Errors(c)
 end)
@@ -449,8 +455,7 @@ T.test("заявки: старую заявку можно обработать 
 	w.now = w.now + 2 * 3600
 	c.O.ns.Roster.Scan()
 	T.eq(#R.Requests(), 1, "заявка не истекла через час")
-	T.ok(R.Accept(req))
-	T.eq(c.O.invites[1], c.R:Name())
+	T.eq(R.Accept(req), "/ginvite " .. c.R:Name())
 	Errors(c)
 end)
 
@@ -475,8 +480,18 @@ T.test("заявки: окно отправляет отредактирован
 	}
 	rows[1]:GetScript("OnEnter")(rows[1])
 	T.eq(tip[2], "Мой текст", "полный текст доступен в подсказке")
+	-- «Пригласить» показывает команду в своём поле вместо подсказки над очередью.
+	local box = c.O.ns.RecruitPane.frames.inboxBox
 	rows[1].accept:GetScript("OnClick")(rows[1].accept)
-	T.eq(c.O.invites[1], c.R:Name())
+	T.eq(box:Command(), "/ginvite " .. c.R:Name())
+	T.ok(box.edit:HasFocus(), "команда выделена для копирования")
+	T.ok(rows[1].source:GetText():find(c.O.ns.L.RECRUIT_INVITED, 1, true), "строка заявки ждёт вступления")
+	c.O:GuildCommand(box:Command())
+	w:Join("Чиллзон Север", c.R)
+	w:Run(10)
+	T.no(box:IsShown(), "игрок вступил — команда убрана")
+	T.no(rows[1]:IsShown(), "заявка закрыта")
+	T.eq(#c.O.forbidden, 0)
 	Errors(c)
 end)
 
@@ -595,9 +610,7 @@ T.test("заявки: legacy API поиска, приглашения и кир�
 	T.ok(c.R.ns.Recruit.Ask(contact, string.rep("я", 140)))
 	w:Run(5)
 	T.eq(c.O.ns.Recruit.requests[1].text, string.rep("я", 125))
-	c.O.env.C_GuildInfo.Invite = nil
-	T.ok(c.O.ns.Recruit.Accept(c.O.ns.Recruit.requests[1]))
-	T.eq(c.O.invites[1], c.R:Name())
+	T.eq(c.O.ns.Recruit.Accept(c.O.ns.Recruit.requests[1]), "/ginvite " .. c.R:Name())
 	Errors(c)
 end)
 

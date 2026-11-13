@@ -447,13 +447,15 @@ local function Current(req)
 	for _, r in ipairs(Recruit.requests) do if r == req then return true end end
 	return false
 end
+-- Приглашать Forever не даёт ни аддону, ни макросу (проверено в игре): возвращаем команду
+-- /ginvite, которую офицер введёт в чате сам. Заявка остаётся, пока новичок не вступил: её
+-- закрывает ростер (Prune), и у остальных офицеров тоже (RecruitSync.Joined).
 function Recruit.Accept(req)
-	if not Recruit.CanInvite() or not Current(req) then return false end
-	local invite = C_GuildInfo and C_GuildInfo.Invite or GuildInvite
-	if type(invite) ~= "function" then return false end
-	invite(U.TellName(req.name))
-	ns.Print(L.RECRUIT_INVITED, U.Display(req.name), req.guild)
-	return Drop(req)
+	if not Recruit.CanInvite() or not Current(req) then return nil end
+	req.invited = ns.Now()
+	ns.Log("заявки: команда приглашения для %s", U.Display(req.name))
+	Changed()
+	return ns.Roster.GuildCommand("I", req.name)
 end
 function Recruit.Decline(req)
 	if not Recruit.CanInvite() or not Current(req) or ns.Comm.InLockdown() then return false end

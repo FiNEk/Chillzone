@@ -1,10 +1,13 @@
 -- Chillzone: окно — как «Гильдия и сообщества»: рамка ButtonFrameTemplate с портретом, вкладки-
 -- значки на правом краю. Сверху повседневные: Чат, Группы, Мастера, Перепись, Заявки (главам и офицерам),
 -- Королевство. Ниже, с отступом, служебные: Настройки и «Управление».
--- «Управление» собирает три раздела с переключателем на месте названия вкладки: «Объединение»
+-- «Управление» собирает пять разделов с переключателем на месте названия вкладки: «Объединение»
 -- (UnionPane.lua: глава главной гильдии управляет составом, офицер гильдии вне объединения запрашивает
--- связь), «Отладка» (Debug.lua, главы и офицеры) и «Журнал» (JournalPane.lua, любой игрок). Кому нет ни
--- «Объединения», ни «Отладки», значка «Управления» не видит: журнал открывает кнопка в Настройках.
+-- связь), «Состав» (RosterPane.lua: состав своей гильдии и исключение по очереди) и «Кадры»
+-- (TransferPane.lua: исключение и перенос игроков между гильдиями) — главам и офицерам гильдий
+-- объединения, «Отладка» (Debug.lua, главы и офицеры) и «Журнал» (JournalPane.lua, любой игрок).
+-- Кому нет ни «Объединения», ни «Кадров», ни «Отладки», значка «Управления» не видит: журнал открывает
+-- кнопка в Настройках.
 -- Чат рисует ChatPane.lua, Перепись — CensusPane.lua, Королевство и Отладку — список строк из Views.lua
 -- и Debug.lua во вставке окна. Кнопка у миникарты — LibDBIcon, объект запуска — LibDataBroker.
 local ADDON, ns = ...
@@ -35,6 +38,8 @@ local TABS = {
 -- (UI.Current, UI.Toggle, команды), а значок «Управления» только ведёт к одному из них.
 local SECTIONS = {
 	{ key = "union", text = "TAB_UNION" },
+	{ key = "roster", text = "TAB_ROSTER" },
+	{ key = "transfer", text = "TAB_TRANSFER" },
 	{ key = "debug", text = "TAB_DEBUG" },
 	{ key = "journal", text = "TAB_JOURNAL" },
 }
@@ -559,13 +564,15 @@ function UI.RenderActivity()
 end
 
 -- «Заявки» (общая очередь, RecruitSync.IsOfficer) и «Отладка» (Debug.Allowed) — только главам и
--- офицерам, «Объединение» — главе объединения и офицерам гильдий вне его: звание могли поменять
--- при открытом окне. «Управление» видно, когда из его разделов доступно что-то кроме журнала.
+-- офицерам, «Объединение» — главе объединения и офицерам гильдий вне его, «Кадры» — по правам
+-- Transfer.Rights: звание могли поменять при открытом окне. «Управление» видно, когда из его разделов
+-- доступно что-то кроме журнала.
 local function Allowed(key)
 	if key == "requests" then return ns.RecruitSync.IsOfficer() end
+	if key == "transfer" or key == "roster" then return ns.Transfer.Rights() ~= nil end
 	if key == "debug" then return ns.Debug.Allowed() end
 	if key == "union" then return ns.Security.CanManageUnion() or ns.Security.CanRequestUnion() end
-	if key == "manage" then return Allowed("union") or Allowed("debug") end
+	if key == "manage" then return Allowed("union") or Allowed("transfer") or Allowed("debug") end
 	return true
 end
 
@@ -607,6 +614,12 @@ local function Owner(key)
 	return tabs.manage:IsShown() and "manage" or "settings"
 end
 
+-- Название раздела; у «Кадров» с ним число просьб к игроку, как у «Заявок» в подсказке значка.
+local function SectionTitle(def)
+	local count = def.key == "transfer" and ns.Transfer.Count() or 0
+	return count > 0 and L.TAB_TRANSFER_COUNT:format(count) or L[def.text]
+end
+
 -- Переключатель стоит на месте названия вкладки: выбранный раздел золотой и подчёркнут, как
 -- заголовок, остальные серые. Ширина кнопки — по надписи, скрытые разделы места не занимают.
 local function RenderSwitcher()
@@ -618,6 +631,7 @@ local function RenderSwitcher()
 		local b = sections[def.key]
 		if b:IsShown() then
 			local selected = def.key == current
+			b.text:SetText(SectionTitle(def))
 			if selected then b.text:SetTextColor(1, 0.82, 0) else b.text:SetTextColor(0.6, 0.6, 0.6) end
 			b.line:SetShown(selected)
 			local w = b.text:GetStringWidth()
@@ -634,6 +648,8 @@ function UI.Render()
 	if not frame or not frame:IsShown() then return end
 	SyncTabs()
 	if current ~= "union" then ns.UnionPane.Hide() end
+	if current ~= "transfer" then ns.TransferPane.Hide() end
+	if current ~= "roster" then ns.RosterPane.Hide() end
 	if current ~= "journal" then ns.JournalPane.Hide() end
 	if not ns.IsMember() and not OPEN_TO_ALL[current] then current = "join"
 	elseif ns.IsMember() and current == "join" then current = "census" end
@@ -691,6 +707,18 @@ function UI.Render()
 		scroll:Hide()
 		ns.CensusPane.Hide()
 		ns.UnionPane.Show()
+		return
+	end
+	if current == "transfer" then
+		scroll:Hide()
+		ns.CensusPane.Hide()
+		ns.TransferPane.Show()
+		return
+	end
+	if current == "roster" then
+		scroll:Hide()
+		ns.CensusPane.Hide()
+		ns.RosterPane.Show()
 		return
 	end
 	if current == "groups" then
@@ -752,7 +780,7 @@ local function SideTab(def)
 			tt:AddLine(L[def.text], 1, 1, 1)
 			local names = {}
 			for _, s in ipairs(SECTIONS) do
-				if Allowed(s.key) then names[#names + 1] = L[s.text] end
+				if Allowed(s.key) then names[#names + 1] = SectionTitle(s) end
 			end
 			tt:AddLine(table.concat(names, ", "), 0.7, 0.7, 0.7)
 			return
@@ -922,6 +950,8 @@ local function Create()
 	ns.GroupsPane.Build(body)
 	ns.CraftersPane.Build(body)
 	ns.UnionPane.Build(body)
+	ns.TransferPane.Build(body)
+	ns.RosterPane.Build(body)
 	ns.JournalPane.Build(body)
 	body:Hide()
 
@@ -930,7 +960,7 @@ local function Create()
 	UI.tabs = tabs
 
 	f:SetScript("OnShow", function() UI.Render() end)
-	f:SetScript("OnHide", function() ns.ChatPane.Hide(); ns.Recruit.Cancel(); ns.UnionPane.Hide(); ns.JournalPane.Hide(); ns.GroupsPane.Hide(); ns.CraftersPane.Hide() end)
+	f:SetScript("OnHide", function() ns.ChatPane.Hide(); ns.Recruit.Cancel(); ns.UnionPane.Hide(); ns.TransferPane.Hide(); ns.RosterPane.Hide(); ns.JournalPane.Hide(); ns.GroupsPane.Hide(); ns.CraftersPane.Hide() end)
 	local elapsed, debugElapsed, activityElapsed, pulse = 0, 0, 0, 0
 	f:SetScript("OnUpdate", ns.Perf.Wrap("window update", function(_, dt)
 		elapsed, debugElapsed = elapsed + (dt or 0), debugElapsed + (dt or 0)
@@ -951,7 +981,7 @@ local function Create()
 		elseif elapsed >= 30 then
 			elapsed, debugElapsed = 0, 0
 			if current == "census" or current == "kingdom" or current == "join" or current == "requests" or current == "union"
-				or current == "groups" or current == "crafters" then
+				or current == "groups" or current == "crafters" or current == "transfer" or current == "roster" then
 				UI.Render()
 			else UI.RenderStatus() end
 		end
@@ -1010,6 +1040,8 @@ ns.On("SETTINGS", Refresh)
 ns.On("UNION", Refresh)
 ns.On("GUILD_CHANGED", Refresh)
 ns.On("RECRUIT", function() if frame and frame:IsShown() then UI.Render() end end)
+-- Число просьб «Кадров» стоит на переключателе разделов: обновить его, не перерисовывая страницу.
+ns.On("TRANSFER", function() if frame and frame:IsShown() then RenderSwitcher() end end)
 ns.On("UPDATE", function() UI.RenderTitle() end)
 
 ---------------------------------------------------------------------------
@@ -1065,6 +1097,13 @@ ns.Command("requests", function()
 	end
 	UI.Toggle("requests")
 end, L.HELP_REQUESTS)
+ns.Command("transfer", function()
+	if not ns.Transfer.Rights() then
+		ns.Print(L.TRANSFER_ONLY_OFFICERS)
+		return
+	end
+	UI.Toggle("transfer")
+end, L.HELP_TRANSFER)
 ns.Command("settings", function() UI.Toggle("settings") end, L.HELP_SETTINGS)
 ns.Command("diag", function()
 	if not ns.Debug.Allowed() then
