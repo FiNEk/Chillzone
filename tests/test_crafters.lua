@@ -1222,6 +1222,8 @@ T.test("crafters pane: фильтр по уровню предмета, как �
 	PaneRow(c.V, c.A):Click()
 	w:Run(20)
 	T.eq(#RecipeRows(c.V), 3, "без уровня — все")
+	T.no(f.card.state:GetText():find(L.CRAFT_LEVEL_NOTE:format(""), 1, true), "без уровня — без пометки")
+	local listH = f.card.listH
 	-- Поножи — девятого уровня: в строке и в карточке остаются только они.
 	P.Levels(8, 10)
 	local row = PaneRow(c.V, c.A)
@@ -1230,8 +1232,18 @@ T.test("crafters pane: фильтр по уровню предмета, как �
 	T.no(PaneRow(c.V, c.K), "список Карла не загружен")
 	T.eq(f.loaded:GetText(), L.CRAFT_LOADED:format(1, 2))
 	T.eq(CardText(c.V), "Медные поножи")
+	-- В карточке под состоянием списка видно, что действует фильтр уровня.
+	local state = f.card.state:GetText()
+	T.ok(state:find(L.CRAFT_LIST_AT:format(""), 1, true), "состояние списка на месте")
+	T.ok(state:find("\n|cffffd100" .. L.CRAFT_LEVEL_NOTE:format("8—10") .. "|r", 1, true), "пометка: " .. state)
+	T.eq(f.card.listH, listH - 14, "список короче на строку пометки")
+	P.Levels(9, 9)
+	T.ok(f.card.state:GetText():find(L.CRAFT_LEVEL_NOTE:format("9"), 1, true), "один уровень")
+	P.Levels(8)
+	T.ok(f.card.state:GetText():find(L.CRAFT_LEVEL_NOTE:format("от 8"), 1, true))
 	-- Одна граница: «до 7» — и предметы без требования уровня.
 	P.Levels(nil, 7)
+	T.ok(f.card.state:GetText():find(L.CRAFT_LEVEL_NOTE:format("до 7"), 1, true))
 	T.eq(CardText(c.V), "Грубое точило\nМедная кольчуга")
 	-- Со словами: мастер не подошёл по имени — нужны рецепты, подходящие и по названию, и по уровню.
 	P.Search("медн")
@@ -1251,6 +1263,8 @@ T.test("crafters pane: фильтр по уровню предмета, как �
 	T.eq(f.card.empty:GetText(), L.CRAFT_RECIPE_NO_LEVEL)
 	-- Набор в полях: фильтр после паузы.
 	P.Levels()
+	T.no(f.card.state:GetText():find(L.CRAFT_LEVEL_NOTE:format(""), 1, true), "фильтр снят — пометки нет")
+	T.eq(f.card.listH, listH)
 	f.levelLo:SetText("9")
 	f.levelLo:GetScript("OnTextChanged")(f.levelLo)
 	T.eq(#RecipeRows(c.V), 3, "сразу не перерисовывается")

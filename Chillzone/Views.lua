@@ -964,6 +964,22 @@ function Views.CraftLevels(lo, hi)
 	return { min = lo, max = hi }
 end
 
+-- Пометка над списком рецептов карточки, пока действует фильтр уровня: «Только предметы уровня
+-- 8—10» («от 8», «до 10», «8»). nil — фильтра нет.
+function Views.CraftLevelNote(levels)
+	if not levels then return nil end
+	local lo, hi = levels.min, levels.max
+	local range
+	if lo and hi then
+		range = lo == hi and tostring(lo) or (lo .. "—" .. hi)
+	elseif lo then
+		range = L.CRAFT_LEVEL_FROM .. " " .. lo
+	else
+		range = L.CRAFT_LEVEL_TO .. " " .. hi
+	end
+	return GOLD .. L.CRAFT_LEVEL_NOTE:format(range) .. "|r"
+end
+
 -- Предмет рецепта в диапазоне уровней. Рецепт без предмета (зачарование) и предмет, который
 -- игра ещё догружает, в диапазон не попадают.
 local function InLevels(id, levels)

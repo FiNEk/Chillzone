@@ -710,7 +710,11 @@ local function RenderCard(view)
 		x = x + chip.w + 4
 	end
 	for i = #view.profs + 1, #cardChips do cardChips[i]:Hide() end
-	card.state:SetText(cardWhy or (viewProf and Views.CraftListState(view.key, viewProf)) or "")
+	-- Фильтр уровня задают поля над каталогом; в карточке под состоянием видно, что он действует.
+	local listState = cardWhy or (viewProf and Views.CraftListState(view.key, viewProf)) or ""
+	local note = Views.CraftLevelNote(levels)
+	if note then listState = listState ~= "" and (listState .. "\n" .. note) or note end
+	card.state:SetText(listState)
 	local total, bound
 	if viewProf then
 		card.items, total, bound = Views.CraftRecipes(view.key, viewProf, query, card.query, levels)
