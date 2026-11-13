@@ -1,8 +1,11 @@
 -- Chillzone: окно — как «Гильдия и сообщества»: рамка ButtonFrameTemplate с портретом, вкладки-
--- значки на правом краю (Чат, Перепись, Королевство, Настройки, а главам и офицерам ещё Заявки и Отладка).
--- Вкладка «Объединение» (UnionPane.lua): глава главной гильдии управляет составом,
--- офицер гильдии вне объединения запрашивает связь.
--- Чат рисует ChatPane.lua, Перепись — CensusPane.lua, остальные вкладки — список строк из Views.lua
+-- значки на правом краю. Сверху повседневные: Чат, Группы, Перепись, Заявки (главам и офицерам),
+-- Королевство. Ниже, с отступом, служебные: Настройки и «Управление».
+-- «Управление» собирает три раздела с переключателем на месте названия вкладки: «Объединение»
+-- (UnionPane.lua: глава главной гильдии управляет составом, офицер гильдии вне объединения запрашивает
+-- связь), «Отладка» (Debug.lua, главы и офицеры) и «Журнал» (JournalPane.lua, любой игрок). Кому нет ни
+-- «Объединения», ни «Отладки», значка «Управления» не видит: журнал открывает кнопка в Настройках.
+-- Чат рисует ChatPane.lua, Перепись — CensusPane.lua, Королевство и Отладку — список строк из Views.lua
 -- и Debug.lua во вставке окна. Кнопка у миникарты — LibDBIcon, объект запуска — LibDataBroker.
 local ADDON, ns = ...
 
@@ -17,17 +20,30 @@ local WIDTH, HEIGHT = 814, 426
 -- Значок аддона: логотип «Chill Zone», обрезанный по золотому кольцу (media/icon.tga, 64×64 TGA
 -- с прозрачностью). Он уже круглый, маска не нужна. Логотип целиком — media/logo.tga, для списка аддонов (toc).
 local ICON = "Interface\\AddOns\\" .. ADDON .. "\\media\\icon"
+-- Значки на правом краю. service — служебная группа: она стоит под повседневной с большим отступом.
 local TABS = {
 	{ key = "chat", text = "TAB_CHAT", icons = { "Interface\\Icons\\UI_Chat", "Interface\\Icons\\INV_Letter_15" } },
 	{ key = "groups", text = "TAB_GROUPS", icons = { "Interface\\Icons\\INV_Misc_GroupNeedMore", "Interface\\Icons\\Ability_Warrior_BattleShout" } },
 	{ key = "census", text = "TAB_CENSUS", icons = { "Interface\\Icons\\achievement_guildperk_everybodysfriend", "Interface\\Icons\\INV_Misc_Book_09" } },
 	{ key = "requests", text = "TAB_REQUESTS", icons = { "Interface\\Icons\\INV_Letter_15" } },
 	{ key = "kingdom", text = "TAB_KINGDOM", icons = { "Interface\\Icons\\achievement_guildperk_honorablemention", "Interface\\Icons\\INV_Misc_Note_01" } },
-	{ key = "settings", text = "TAB_SETTINGS", icons = { "Interface\\Icons\\INV_Misc_Gear_01" } },
-	{ key = "debug", text = "TAB_DEBUG", icons = { "Interface\\Icons\\Trade_Engineering", "Interface\\Icons\\INV_Misc_Spyglass_03" } },
-	{ key = "journal", text = "TAB_JOURNAL", icons = { "Interface\\Icons\\INV_Misc_Note_01" } },
-	{ key = "union", text = "TAB_UNION", icons = { "Interface\\Icons\\INV_Misc_GroupLooking" } },
+	{ key = "settings", text = "TAB_SETTINGS", icons = { "Interface\\Icons\\INV_Misc_Gear_01" }, service = true },
+	{ key = "manage", text = "TAB_MANAGE", icons = { "Interface\\Icons\\Trade_Engineering", "Interface\\Icons\\INV_Misc_Spyglass_03" }, service = true },
 }
+-- Разделы «Управления» в порядке кнопок переключателя. Ключ раздела — это и открытая страница
+-- (UI.Current, UI.Toggle, команды), а значок «Управления» только ведёт к одному из них.
+local SECTIONS = {
+	{ key = "union", text = "TAB_UNION" },
+	{ key = "debug", text = "TAB_DEBUG" },
+	{ key = "journal", text = "TAB_JOURNAL" },
+}
+local IS_SECTION, TITLES = {}, {}
+for _, def in ipairs(SECTIONS) do IS_SECTION[def.key], TITLES[def.key] = true, def.text end
+for _, def in ipairs(TABS) do TITLES[def.key] = def.text end
+-- Без членства в объединении открываются только эти страницы, остальные заменяет экран вступления.
+local OPEN_TO_ALL = { settings = true, union = true, journal = true }
+local TAB_GAP, SERVICE_GAP = 20, 44 -- между значками и перед служебной группой
+local SECTION_H = 26 -- высота кнопки раздела: строка названия вкладки над вставкой
 local DEBUG_EVERY = 5 -- «Отладка» обновляется чаще остальных: там счётчики и состояние реле
 local ACTIVITY_EVERY = 0.25 -- строка «что идёт сейчас» и обратные отсчёты на кнопках
 local ACTIVITY_WIDTH = 300 -- длиннее текст обрезается, самые длинные строки сюда помещаются
@@ -43,8 +59,11 @@ local status, heading -- шапка (крупно и мелко) и назван
 local activity, refreshButton -- что идёт сейчас и кнопка обновления
 local titleText -- свой текст заголовка, если у рамки нет SetTitle
 local tabs, rows, checks = {}, {}, {}
+local switcher, sections = nil, {} -- переключатель разделов «Управления» и его кнопки
 local current = "chat"
+local lastSection = "union" -- куда ведёт значок «Управления»: последний открытый раздел, если он доступен
 local minimapLauncher
+local SelectTab
 
 local function SetTip(owner, tip)
 	owner:SetScript("OnEnter", function(self)
@@ -467,6 +486,18 @@ local function BuildSettings(parent)
 	end)
 	Check("recruits", L.CHECK_RECRUITS, L.CHECK_RECRUITS_TIP,
 		function() return not ns.Recruit.NoContactMe() end, function(on) ns.Recruit.SetNoContact(not on) end)
+	-- Журнал нужен любому игроку, а значок «Управления» есть не у всех: кнопка в правом верхнем углу,
+	-- где справа от «Кругов на карте» пусто. У кого «Управление» есть, она открывает его раздел.
+	local journal = CreateFrame("Button", nil, settings, "UIPanelButtonTemplate")
+	journal:SetSize(170, 22)
+	journal:SetPoint("TOPRIGHT", settings, "TOPRIGHT", -16, -18)
+	journal:SetText(L.SETTINGS_JOURNAL)
+	journal:SetScript("OnClick", function() ns.SafeCall("settings journal", SelectTab, "journal") end)
+	SetTip(journal, function(tt)
+		tt:AddLine(L.SETTINGS_JOURNAL, 1, 0.82, 0)
+		tt:AddLine(L.SETTINGS_JOURNAL_TIP, 1, 1, 1, true)
+	end)
+	UI.journalButton = journal
 	local hint = settings:CreateFontString(nil, "OVERLAY", "GameFontDisable")
 	hint:SetPoint("TOPLEFT", settings, "TOPLEFT", 20, -settingsY - 8)
 	hint:SetPoint("RIGHT", settings, "RIGHT", -20, 0)
@@ -525,31 +556,75 @@ function UI.RenderActivity()
 end
 
 -- «Заявки» (общая очередь, RecruitSync.IsOfficer) и «Отладка» (Debug.Allowed) — только главам и
--- офицерам: звание могли поменять при открытом окне. Видимые вкладки идут подряд, без дыр.
+-- офицерам, «Объединение» — главе объединения и офицерам гильдий вне его: звание могли поменять
+-- при открытом окне. «Управление» видно, когда из его разделов доступно что-то кроме журнала.
 local function Allowed(key)
 	if key == "requests" then return ns.RecruitSync.IsOfficer() end
 	if key == "debug" then return ns.Debug.Allowed() end
 	if key == "union" then return ns.Security.CanManageUnion() or ns.Security.CanRequestUnion() end
+	if key == "manage" then return Allowed("union") or Allowed("debug") end
 	return true
 end
 
+-- Раздел, который открывает значок «Управления»: последний открытый, иначе первый доступный.
+local function Page(key)
+	if key ~= "manage" then return key end
+	if Allowed(lastSection) then return lastSection end
+	for _, def in ipairs(SECTIONS) do
+		if Allowed(def.key) then return def.key end
+	end
+	return "journal"
+end
+
+-- Видимые значки идут подряд, без дыр; служебная группа отделена отступом. Кнопки разделов
+-- показаны по правам, а весь переключатель — только на странице раздела (RenderSwitcher).
 local function SyncTabs()
-	local prev
+	local prev, service
 	for _, def in ipairs(TABS) do
 		local b, allowed = tabs[def.key], Allowed(def.key)
 		b:SetShown(allowed)
 		if allowed then
 			b:ClearAllPoints()
 			if prev then
-				b:SetPoint("TOPLEFT", prev, "BOTTOMLEFT", 0, -20)
+				b:SetPoint("TOPLEFT", prev, "BOTTOMLEFT", 0, -(def.service and not service and SERVICE_GAP or TAB_GAP))
 			else
 				b:SetPoint("TOPLEFT", frame, "TOPRIGHT", 0, -36)
 			end
+			service = service or def.service
 			prev = b
-		elseif current == def.key then
-			current = "chat"
 		end
 	end
+	for _, def in ipairs(SECTIONS) do sections[def.key]:SetShown(Allowed(def.key)) end
+	if not Allowed(current) then current = "chat" end
+end
+
+-- Чей значок отмечен: у раздела — «Управления», а журнал без него — Настроек, откуда его открывают.
+local function Owner(key)
+	if not IS_SECTION[key] then return key end
+	return tabs.manage:IsShown() and "manage" or "settings"
+end
+
+-- Переключатель стоит на месте названия вкладки: выбранный раздел золотой и подчёркнут, как
+-- заголовок, остальные серые. Ширина кнопки — по надписи, скрытые разделы места не занимают.
+local function RenderSwitcher()
+	local on = IS_SECTION[current] and tabs.manage:IsShown() or false
+	switcher:SetShown(on)
+	if not on then return false end
+	local prev
+	for _, def in ipairs(SECTIONS) do
+		local b = sections[def.key]
+		if b:IsShown() then
+			local selected = def.key == current
+			if selected then b.text:SetTextColor(1, 0.82, 0) else b.text:SetTextColor(0.6, 0.6, 0.6) end
+			b.line:SetShown(selected)
+			local w = b.text:GetStringWidth()
+			b:SetWidth(type(w) == "number" and w > 0 and math.ceil(w) + 16 or 120)
+			b:ClearAllPoints()
+			if prev then b:SetPoint("LEFT", prev, "RIGHT", 4, 0) else b:SetPoint("LEFT", switcher, "LEFT", 0, 0) end
+			prev = b
+		end
+	end
+	return true
 end
 
 function UI.Render()
@@ -557,9 +632,12 @@ function UI.Render()
 	SyncTabs()
 	if current ~= "union" then ns.UnionPane.Hide() end
 	if current ~= "journal" then ns.JournalPane.Hide() end
-	if not ns.IsMember() and current ~= "settings" and current ~= "union" and current ~= "journal" then current = "join"
+	if not ns.IsMember() and not OPEN_TO_ALL[current] then current = "join"
 	elseif ns.IsMember() and current == "join" then current = "census" end
-	for key, tab in pairs(tabs) do tab:SetChecked(key == current) end
+	if IS_SECTION[current] then lastSection = current end
+	local owner = Owner(current)
+	for key, tab in pairs(tabs) do tab:SetChecked(key == owner) end
+	local switched = RenderSwitcher()
 	if current ~= "requests" then ns.RecruitPane.HideInbox() end
 	if current ~= "groups" then ns.GroupsPane.Hide() end
 	UI.RenderStatus()
@@ -574,11 +652,8 @@ function UI.Render()
 		return
 	end
 	ns.RecruitPane.Hide()
-	local def
-	for _, t in ipairs(TABS) do
-		if t.key == current then def = t end
-	end
-	heading:SetText(current ~= "chat" and def and L[def.text] or "")
+	-- У чата название канала рисует ChatPane, у разделов «Управления» его заменяет переключатель.
+	heading:SetText(current ~= "chat" and not switched and TITLES[current] and L[TITLES[current]] or "")
 	if current == "chat" then
 		body:Hide()
 		ns.ChatPane.Show()
@@ -634,8 +709,8 @@ function UI.Render()
 	end
 end
 
-local function SelectTab(key)
-	current = key
+SelectTab = function(key)
+	current = Page(key)
 	if scroll then scroll:SetVerticalScroll(0) end
 	UI.Render()
 end
@@ -662,6 +737,16 @@ local function SideTab(def)
 	if checked and checked.SetBlendMode then checked:SetBlendMode("ADD") end
 	b:SetScript("OnClick", function() ns.SafeCall("tab " .. def.key, SelectTab, def.key) end)
 	SetTip(b, function(tt)
+		-- «Управление» перечисляет свои доступные разделы, чтобы было видно, куда делись прежние вкладки.
+		if def.key == "manage" then
+			tt:AddLine(L[def.text], 1, 1, 1)
+			local names = {}
+			for _, s in ipairs(SECTIONS) do
+				if Allowed(s.key) then names[#names + 1] = L[s.text] end
+			end
+			tt:AddLine(table.concat(names, ", "), 0.7, 0.7, 0.7)
+			return
+		end
 		-- Число заявок и объявлений — в подсказке: подпись рядом со значком растягивала вкладку.
 		if def.key == "groups" then
 			local count = ns.Groups.Count()
@@ -672,6 +757,26 @@ local function SideTab(def)
 		tt:AddLine(count > 0 and L.TAB_REQUESTS_COUNT:format(count) or L[def.text], 1, 1, 1)
 	end)
 	tabs[def.key] = b
+end
+
+-- Кнопка раздела «Управления»: надпись шрифтом названия вкладки, подчёркивание у выбранной.
+-- Свои кнопки, без шаблонов вкладок игры: их наличие на клиентах Forever разное.
+local function SectionButton(def)
+	local b = CreateFrame("Button", nil, switcher)
+	b:SetSize(120, SECTION_H)
+	b.text = b:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+	b.text:SetPoint("LEFT", 8, 0)
+	b.text:SetText(L[def.text])
+	b.line = b:CreateTexture(nil, "ARTWORK")
+	b.line:SetColorTexture(1, 0.82, 0, 0.9)
+	b.line:SetHeight(2)
+	b.line:SetPoint("BOTTOMLEFT", 6, 0)
+	b.line:SetPoint("BOTTOMRIGHT", -6, 0)
+	local hl = b:CreateTexture(nil, "HIGHLIGHT")
+	hl:SetAllPoints()
+	hl:SetColorTexture(1, 1, 1, 0.08)
+	b:SetScript("OnClick", function() ns.SafeCall("section " .. def.key, SelectTab, def.key) end)
+	sections[def.key] = b
 end
 
 local function Portrait(f)
@@ -775,7 +880,14 @@ local function Create()
 	-- Название вкладки слева вверху (у чата там название канала — ChatPane).
 	heading = f:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
 	heading:SetPoint("BOTTOMLEFT", f, "TOPLEFT", 70, -54)
-	UI.status, UI.heading = status, heading
+	-- Переключатель разделов «Управления» — на той же строке: надписи начинаются там же, где название,
+	-- подчёркивание ложится на верх вставки.
+	switcher = CreateFrame("Frame", nil, f)
+	switcher:SetSize(400, SECTION_H)
+	switcher:SetPoint("BOTTOMLEFT", f, "TOPLEFT", 62, -58)
+	for _, def in ipairs(SECTIONS) do SectionButton(def) end
+	switcher:Hide()
+	UI.status, UI.heading, UI.switcher, UI.sections = status, heading, switcher, sections
 
 	-- Перепись, Королевство и Настройки — во вставке, как Inset у ButtonFrameTemplate: (4,-60) → (-6,26).
 	local okInset, inset = pcall(CreateFrame, "Frame", nil, f, "InsetFrameTemplate")
@@ -830,10 +942,11 @@ local function Create()
 	end))
 end
 
--- Окно на вкладке tab (без tab — открыть или закрыть).
+-- Окно на вкладке tab (без tab — открыть или закрыть). tab — страница: вкладка, раздел
+-- «Управления» («union», «debug», «journal») или «manage» — последний открытый раздел.
 function UI.Toggle(tab)
 	if not frame then Create() end
-	if tab then current = tab end
+	if tab then current = Page(tab) end
 	if frame:IsShown() and not tab then
 		frame:Hide()
 	else
@@ -857,8 +970,10 @@ function UI.Current()
 end
 
 local function TabsChanged()
-	for key, b in pairs(tabs) do
-		if (b:IsShown() and true or false) ~= (Allowed(key) and true or false) then return true end
+	for _, list in ipairs({ tabs, sections }) do
+		for key, b in pairs(list) do
+			if (b:IsShown() and true or false) ~= (Allowed(key) and true or false) then return true end
+		end
 	end
 	return false
 end
