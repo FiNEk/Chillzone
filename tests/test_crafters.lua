@@ -758,7 +758,7 @@ T.test("crafters: длинный список приходит страница�
 	for _, r in ipairs(f.recipes) do
 		if r:IsShown() then shown = shown + 1 end
 	end
-	T.eq(shown, 9, "видно 188 / 22 строк")
+	T.eq(shown, 8, "видно 166 / 22 строк")
 	T.eq(f.recipes[1].it.id, 11000)
 	f.card.scroll:SetVerticalScroll(22 * 100)
 	T.eq(f.recipes[1].it.id, 10000 + 101 * 1000, "после прокрутки — сто первый")
@@ -1090,6 +1090,64 @@ T.test("crafters pane: правый щелчок по мастеру — мен�
 	T.ok(menu:IsShown(), "меню есть и без отметки «в игре»")
 	T.eq(menu.invite.enabled, false, "в группу — только тех, кто в игре")
 	NoErrors(c.A, "Арагорн")
+end)
+
+T.test("crafters pane: поиск в списке рецептов карточки", function()
+	local w, c = Build()
+	Learn(c.A, Smith(150, { [2660] = true, [2661] = true, [2662] = true, [2663] = true, [3115] = true }))
+	c.A.ns.Crafters.SetPost(164, true)
+	T.ok(c.A.ns.Crafters.Post("кую"))
+	w:Run(30)
+	Master(c.K, "и я кую")
+	local P, L = c.V.ns.CraftersPane, c.V.ns.L
+	c.V.ns.UI.Toggle("crafters")
+	local f = P.frames
+	PaneRow(c.V, c.A):Click()
+	w:Run(20)
+	T.ok(f.card:IsShown(), "карточка открыта")
+	T.eq(f.card.searchHint:GetText(), L.CRAFT_RECIPE_SEARCH, "поле поиска в карточке")
+	T.eq(#RecipeRows(c.V), 5, "без поиска — все")
+	T.no(f.card.empty:IsShown())
+	-- С первой буквы, без учёта регистра и «ё», по нескольким словам.
+	P.SearchRecipes("мед")
+	T.eq(CardText(c.V), "Медная кольчуга\nМедные наручи\nМедные поножи")
+	P.SearchRecipes("ТЯЖЕЛ")
+	T.eq(CardText(c.V), "Тяжёлое точило")
+	P.SearchRecipes("точ гр")
+	T.eq(CardText(c.V), "Грубое точило", "все слова")
+	P.SearchRecipes("щщщ")
+	T.eq(#RecipeRows(c.V), 0)
+	T.ok(f.card.empty:IsShown(), "ничего не нашлось")
+	T.eq(f.card.empty:GetText(), L.CRAFT_RECIPE_NONE)
+	-- Общий поиск по-прежнему ставит подходящие первыми и красит их.
+	P.SearchRecipes("")
+	T.eq(#RecipeRows(c.V), 5)
+	P.Search("наручи")
+	P.SearchRecipes("мед")
+	T.eq(RecipeRows(c.V)[1].it.id, 2663, "подходящий под общий поиск — первым")
+	T.eq(#RecipeRows(c.V), 3)
+	P.Search("")
+	-- Набор в поле: список меняется после паузы.
+	f.card.search:SetText("кольч")
+	f.card.search:GetScript("OnTextChanged")(f.card.search)
+	T.eq(#RecipeRows(c.V), 3, "сразу не перерисовывается")
+	w:Run(0.3)
+	T.eq(CardText(c.V), "Медная кольчуга")
+	-- Состояние в две строки сдвигает поле и список вниз, список короче, но не уходит на кнопки.
+	local oneLine = f.card.listH
+	f.card.state.GetStringHeight = function() return 26 end
+	P.Render()
+	T.eq(f.card.listH, oneLine - 12, "список короче на строку состояния")
+	T.ok(88 + 26 + 2 + 24 + f.card.listH <= 292, "низ списка выше кнопок")
+	f.card.state.GetStringHeight = nil
+	P.Render()
+	T.eq(f.card.listH, oneLine)
+	-- У другого мастера поиск начинается с пустого поля.
+	PaneRow(c.V, c.K):Click()
+	w:Run(20)
+	T.eq(f.card.search:GetText(), "")
+	T.eq(#RecipeRows(c.V), 3, "у Карла все три")
+	NoErrors(c.V, "Вера")
 end)
 
 T.test("crafters pane: значок, реагенты и подсказка рецепта", function()

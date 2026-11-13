@@ -31,7 +31,7 @@ local filter -- номер профессии или nil — все
 local query = ""
 local viewing, viewProf -- мастер и его профессия на правой панели; nil — своё ремесло
 local mineWhy, cardWhy -- отказ последнего действия: показывается до следующего
-local searchToken = 0
+local searchToken, recipeToken = 0, 0 -- отложенный поиск в каталоге и в рецептах карточки
 
 ---------------------------------------------------------------------------
 -- Детали интерфейса
@@ -140,6 +140,14 @@ end
 -- рецептов; «Назад» возвращает к «Моему ремеслу».
 local function Open(key)
 	cardWhy = nil
+	-- Поиск в рецептах относится к одному мастеру: у другого он начинается с пустого поля.
+	if key ~= viewing and card and (card.query ~= "" or (card.search:GetText() or "") ~= "") then
+		recipeToken = recipeToken + 1
+		card.query = ""
+		card.search:SetText("")
+		card.search:ClearFocus()
+		card.searchHint:Show()
+	end
 	local own = key ~= nil and key == ns.myKey
 	local c
 	if own then c = ns.Crafters.Own() elseif key then c = ns.Crafters.Get(key) end
@@ -435,7 +443,9 @@ end
 -- Список рецептов в карточке: строка — значок и название, щелчок раскрывает под ней реагенты,
 -- по одному на строку. Рамок столько, сколько видно, их содержимое меняется при прокрутке: у
 -- мастера бывает несколько сотен рецептов.
-local RECIPE_H, REAGENT_H, RECIPES_H = 22, 16, 188
+-- RECIPES_H — высота списка, когда строка состояния над ним в одну строку; длиннее она — короче список
+-- (card.listH). LIST_BOTTOM — низ списка от верха панели: ниже кнопки.
+local RECIPE_H, REAGENT_H, RECIPES_H, LIST_BOTTOM = 22, 16, 166, 292
 local RECIPE_ROWS = math.ceil(RECIPES_H / RECIPE_H) + 1
 local NO_ICON = "Interface\\Icons\\INV_Misc_QuestionMark"
 local PLUS, MINUS = "Interface\\Buttons\\UI-PlusButton-Up", "Interface\\Buttons\\UI-MinusButton-Up"
@@ -468,7 +478,7 @@ local PlaceRecipes
 local function Resize()
 	Layout()
 	card.child:SetHeight(math.max(10, card.total))
-	local most = math.max(0, card.total - RECIPES_H)
+	local most = math.max(0, card.total - (card.listH or RECIPES_H))
 	if (card.scroll:GetVerticalScroll() or 0) > most then card.scroll:SetVerticalScroll(most) end
 	PlaceRecipes()
 end
@@ -535,7 +545,7 @@ function PlaceRecipes()
 	for i = 1, RECIPE_ROWS do
 		local r = recipeRows[i] or RecipeRow(i)
 		local it = items[index]
-		if it and card.tops[index] >= offset + RECIPES_H then it = nil end
+		if it and card.tops[index] >= offset + (card.listH or RECIPES_H) then it = nil end
 		r:SetShown(it ~= nil)
 		r.it = it
 		if it then
@@ -571,13 +581,39 @@ local function BuildCard()
 	card.line = Label(card, 0, 18, nil, "GameFontHighlightSmall")
 	card.note = Label(card, 0, 34, nil, "GameFontDisableSmall")
 	card.state = Label(card, 0, 88, nil, "GameFontDisableSmall")
+	-- Поиск в списке рецептов этого мастера: отсеивает по названию с первого знака.
+	card.query = ""
+	card.search = Input(card, SIDE_W - 24, 60)
+	card.search:SetHeight(20)
+	card.search:SetPoint("TOPLEFT", 0, -102)
+	card.searchHint = FS(card.search, "GameFontDisableSmall")
+	card.searchHint:SetPoint("LEFT", 8, 0)
+	card.searchHint:SetText(L.CRAFT_RECIPE_SEARCH)
+	card.search:SetScript("OnTextChanged", function(self)
+		card.searchHint:SetShown((self:GetText() or "") == "" and not self:HasFocus())
+		recipeToken = recipeToken + 1
+		local token = recipeToken
+		ns.After(SEARCH_DELAY, "crafters recipe search", function()
+			if token ~= recipeToken then return end
+			card.query = self:GetText() or ""
+			card.scroll:SetVerticalScroll(0)
+			Pane.Render()
+		end)
+	end)
+	card.search:SetScript("OnEditFocusGained", function() card.searchHint:Hide() end)
+	card.search:SetScript("OnEditFocusLost", function(self) card.searchHint:SetShown((self:GetText() or "") == "") end)
+	TextTip(card.search, L.CRAFT_RECIPE_SEARCH, L.CRAFT_RECIPE_SEARCH_TIP)
 	card.scroll = CreateFrame("ScrollFrame", nil, card, "UIPanelScrollFrameTemplate")
-	card.scroll:SetPoint("TOPLEFT", 0, -104)
+	card.scroll:SetPoint("TOPLEFT", 0, -126)
 	card.scroll:SetSize(SIDE_W - 24, RECIPES_H)
 	card.child = CreateFrame("Frame", nil, card.scroll)
 	card.child:SetSize(SIDE_W - 24, 10)
 	card.scroll:SetScrollChild(card.child)
 	card.scroll:HookScript("OnVerticalScroll", function() ns.SafeCall("crafters recipes", PlaceRecipes) end)
+	card.empty = FS(card, "GameFontDisableSmall")
+	card.empty:SetPoint("TOPLEFT", card.scroll, "TOPLEFT", 4, -4)
+	card.empty:SetWidth(SIDE_W - 32)
+	card.empty:SetText(L.CRAFT_RECIPE_NONE)
 	card.whisper = Button(card, L.CRAFT_WHISPER, 86, "card whisper", function()
 		local c = viewing and ns.Crafters.Get(viewing)
 		if c then Whisper(c.name) end
@@ -618,8 +654,19 @@ local function RenderCard(view)
 	end
 	for i = #view.profs + 1, #cardChips do cardChips[i]:Hide() end
 	card.state:SetText(cardWhy or (viewProf and Views.CraftListState(view.key, viewProf)) or "")
-	card.items = viewProf and Views.CraftRecipes(view.key, viewProf, query) or {}
+	-- Состояние бывает в две строки (отказ, «Мастер изменил список»): поле поиска и список встают
+	-- под него, а список становится короче.
+	local top = 88 + math.max(12, math.ceil(card.state:GetStringHeight() or 0)) + 2
+	card.search:ClearAllPoints()
+	card.search:SetPoint("TOPLEFT", 0, -top)
+	card.scroll:ClearAllPoints()
+	card.scroll:SetPoint("TOPLEFT", 0, -(top + 24))
+	card.listH = math.max(RECIPE_H, math.min(RECIPES_H, LIST_BOTTOM - top - 24))
+	card.scroll:SetHeight(card.listH)
+	local total
+	if viewProf then card.items, total = Views.CraftRecipes(view.key, viewProf, query, card.query) else card.items, total = {}, 0 end
 	Resize()
+	card.empty:SetShown(#card.items == 0 and total > 0)
 	card.whisper:SetShown(not view.own)
 	card.refresh:SetShown(not view.own)
 	card.whisper:SetEnabled(view.whisper)
@@ -671,6 +718,7 @@ end
 function Pane.Hide()
 	if not pane or not pane:IsShown() then return end
 	search:ClearFocus()
+	card.search:ClearFocus()
 	mine.note:ClearFocus()
 	pane:Hide()
 end
@@ -681,6 +729,16 @@ function Pane.Search(text)
 	search:SetText(text or "")
 	searchToken = searchToken + 1
 	query = text or ""
+	Pane.Render()
+end
+
+-- Поиск в списке рецептов открытой карточки из кода (тесты): сразу, без паузы на набор.
+function Pane.SearchRecipes(text)
+	if not card then return end
+	card.search:SetText(text or "")
+	recipeToken = recipeToken + 1
+	card.query = text or ""
+	card.scroll:SetVerticalScroll(0)
 	Pane.Render()
 end
 

@@ -1131,20 +1131,35 @@ function Views.CraftCard(key)
 	}
 end
 
--- Список рецептов одной профессии: { id, name, hit, known }, подходящие под запрос — первыми,
--- без названия — в конце. Второе значение — сколько рецептов.
-function Views.CraftRecipes(key, prof, query)
+-- Слова поиска в списке рецептов карточки: с первого знака (общий поиск — от трёх), без учёта
+-- регистра, «ё», пробелов и знаков. nil — поля нет или оно пустое.
+local function RecipeFilter(text)
+	local words = {}
+	for word in tostring(text or ""):gmatch("%S+") do
+		word = SearchKey(word)
+		if word ~= "" then words[#words + 1] = word end
+	end
+	return #words > 0 and words or nil
+end
+
+-- Список рецептов одной профессии: { id, name, hit, known }, подходящие под общий поиск query —
+-- первыми, без названия — в конце. only — поиск в самой карточке: остаются только рецепты, чьё
+-- название подходит (ещё не названные игрой не подходят). Второе значение — сколько рецептов
+-- в списке мастера без учёта only.
+function Views.CraftRecipes(key, prof, query, only)
 	local ids = ns.Crafters.Recipes(key, prof)
 	if not ids then return {}, 0 end
-	local words = Views.CraftWords(query)
+	local words, keep = Views.CraftWords(query), RecipeFilter(only)
 	local items = {}
 	for _, id in ipairs(ids) do
 		local name = ns.Crafters.RecipeName(id)
 		local k = name and RecipeKey(id)
-		items[#items + 1] = {
-			id = id, name = name and Codec.Plain(name) or L.CRAFT_RECIPE_UNKNOWN:format(id), sort = k or "",
-			hit = words ~= nil and k ~= nil and Fits(k, words), known = name ~= nil,
-		}
+		if not keep or k and Fits(k, keep) then
+			items[#items + 1] = {
+				id = id, name = name and Codec.Plain(name) or L.CRAFT_RECIPE_UNKNOWN:format(id), sort = k or "",
+				hit = words ~= nil and k ~= nil and Fits(k, words), known = name ~= nil,
+			}
+		end
 	end
 	table.sort(items, function(a, b)
 		if a.hit ~= b.hit then return a.hit end
@@ -1152,7 +1167,7 @@ function Views.CraftRecipes(key, prof, query)
 		if a.sort ~= b.sort then return a.sort < b.sort end
 		return a.id < b.id
 	end)
-	return items, #items
+	return items, #ids
 end
 
 -- Название рецепта в строке списка: подходящее под поиск — золотом, без названия — серым.
