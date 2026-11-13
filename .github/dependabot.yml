@@ -5,6 +5,9 @@ updates:
     directory: /
     schedule:
       interval: monthly
+    # Conventional Commits, как в AGENTS.md («Коммиты»): «ci: bump ...».
+    commit-message:
+      prefix: ci
     groups:
       actions:
         patterns: ["*"]
