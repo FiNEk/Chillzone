@@ -196,15 +196,17 @@ T.test("кадры: «игрока нет», отзыв просьбы и пре
 	Errors(c)
 end)
 
-T.test("кадры: вкладка — форма с подтверждением и кнопки входящих", function()
+T.test("кадры: раздел «Управления» — форма с подтверждением и кнопки входящих", function()
 	local w, c = Build()
 	local P, L = c.K.ns.TransferPane, c.K.ns.L
 	c.M.ns.UI.Toggle("transfer")
-	T.ok(c.M.ns.UI.Current() ~= "transfer", "рядовой вкладку не видит")
+	T.ok(c.M.ns.UI.Current() ~= "transfer", "рядовой раздел не видит")
 	c.M:Slash("/chillzone", "transfer")
 	T.ok(c.M:Saw(c.M.ns.L.TRANSFER_ONLY_OFFICERS) > 0, "команда объясняет почему")
 	c.K.ns.UI.Toggle("transfer")
 	T.eq(c.K.ns.UI.Current(), "transfer")
+	T.ok(c.K.ns.UI.tabs.manage:GetChecked(), "«Кадры» — раздел «Управления»")
+	T.ok(c.K.ns.UI.switcher:IsShown(), "переключатель разделов на месте названия")
 	T.ok(P.frames.pane:IsShown())
 	P.Fill(Short(c.B), NORTH, nil)
 	T.ok(P.frames.kick.enabled, "исключить можно")
@@ -216,8 +218,10 @@ T.test("кадры: вкладка — форма с подтверждение�
 	T.eq(#c.K.ns.Transfer.Tasks(), 1, "второй щелчок создаёт просьбу")
 	T.eq(P.frames.message:GetText(), L.TRANSFER_STARTED)
 	T.ok(Until(w, function() return c.V.ns.Transfer.Count() == 1 end))
-	-- У Веры просьба — строка с кнопками; исключение тоже со вторым щелчком.
+	-- У Веры просьба — строка с кнопками; исключение тоже со вторым щелчком. Число просьб — на переключателе.
 	c.V.ns.UI.Toggle("transfer")
+	local section = c.V.ns.UI.sections.transfer
+	T.eq(section.text:GetText(), L.TAB_TRANSFER_COUNT:format(1), "число просьб на кнопке раздела")
 	local row
 	for _, r in ipairs(c.V.ns.TransferPane.frames.rows) do
 		if r:IsShown() and r.first:IsShown() then row = r end
@@ -229,5 +233,7 @@ T.test("кадры: вкладка — форма с подтверждение�
 	row.first:Click()
 	T.eq(c.V.uninvites[1], Short(c.B))
 	T.ok(Until(w, function() return c.K.ns.Transfer.Tasks()[1].phase == "done" end))
+	T.ok(Until(w, function() return c.V.ns.Transfer.Count() == 0 end))
+	T.eq(section.text:GetText(), L.TAB_TRANSFER, "после решения числа на кнопке нет")
 	Errors(c)
 end)
