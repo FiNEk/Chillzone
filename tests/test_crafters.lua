@@ -628,6 +628,25 @@ T.test("crafters: после /reload карточка не уходит рань
 	NoErrors(again, "после /reload")
 end)
 
+-- Так было в игре: «Разместить» сразу после /reload, пока ни одно реле ещё не ответило на опрос.
+T.test("crafters: карточка, размещённая до ответа реле, уходит другим гильдиям после него", function()
+	local w, c = Build()
+	Learn(c.A, Smith())
+	local db = c.A.ns.db
+	c.A:Logout()
+	local again = w:Client({ first = "Арагорн", surname = "Светлый", guild = "Чиллзон", rank = 1, class = "WARRIOR", level = 24, db = db, reload = true })
+	w:Run(0) -- вход и сертификат, но реле ещё не спрошено
+	again.ns.Crafters.SetPost(164, true)
+	T.ok(again.ns.Crafters.Post("кую на заказ"))
+	w:Run(1)
+	T.eq(Logged(again, "отвечающего реле нет: остальным уйдёт после его ответа"), 1, "реле ещё не ответило")
+	T.no(c.V.ns.Crafters.Get(Key(again)), "другой гильдии пока нет")
+	w:Run(60)
+	T.ok(c.V.ns.Crafters.Get(Key(again)), "дошла после ответа реле")
+	T.ok(c.K.ns.Crafters.Get(Key(again)), "своей гильдии — сразу по GUILD")
+	NoErrors(again, "после /reload")
+end)
+
 T.test("crafters: каталог и списки переживают /reload смотрящего, испорченное выбрасывается", function()
 	local w, c = Build()
 	Master(c.A)
