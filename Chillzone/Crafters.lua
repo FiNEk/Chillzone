@@ -489,16 +489,17 @@ function Crafters.Dirty()
 	return saved ~= nil and saved.posted and Signature() ~= saved.sentSig
 end
 
--- Своя карточка в том же виде, что чужие, пока она размещена.
-function Crafters.Own()
-	if not saved or not saved.posted then return nil end
+-- Своя карточка в том же виде, что чужие, пока она размещена. draft — и неразмещённая: черновик,
+-- в котором до размещения выставляется витрина. nil — нет отмеченных профессий.
+function Crafters.Own(draft)
+	if not saved or not (saved.posted or draft) then return nil end
 	local profs = Chosen()
 	if #profs == 0 then return nil end
 	local _, class = UnitClass("player")
 	return {
 		key = ns.myKey, name = U.Display(ns.me), guild = ns.MyGuild() or "", class = class,
 		level = UnitLevel("player") or 0, note = saved.note or "", profs = profs, own = true,
-		at = saved.sentAt or ns.ServerTime(), st = saved.st,
+		at = saved.sentAt or ns.ServerTime(), st = saved.st, posted = saved.posted == true,
 	}
 end
 

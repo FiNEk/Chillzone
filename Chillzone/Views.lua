@@ -1192,18 +1192,19 @@ function Views.CraftProfs()
 	return out
 end
 
--- Карточка мастера для правой панели или nil: { name, line, note, profs, whisper, own }. Своя —
--- размещённая карточка, как её видят остальные; шептать себе и спрашивать свой список незачем.
+-- Карточка мастера для правой панели или nil: { name, line, note, profs, whisper, own, posted }.
+-- Своя — карточка, как её видят остальные, и до размещения (черновик, posted = false); шептать
+-- себе и спрашивать свой список незачем.
 function Views.CraftCard(key)
 	local own = key ~= nil and key == ns.myKey
 	local card
-	if own then card = ns.Crafters.Own() else card = ns.Crafters.Get(key) end
+	if own then card = ns.Crafters.Own(true) else card = ns.Crafters.Get(key) end
 	if not card or not own and not U.IsMemberGuild(card.guild) then return nil end
 	local presence = not own and ns.Crafters.Presence(card)
 	local line = Codec.Plain(card.guild)
 	if card.level and card.level > 0 then line = line .. ", " .. card.level end
 	if own then
-		line = line .. ", " .. GOLD .. L.CRAFT_YOU .. "|r"
+		line = line .. ", " .. (card.posted and (GOLD .. L.CRAFT_YOU) or (ORANGE .. L.CRAFT_DRAFT)) .. "|r"
 	elseif presence == "online" then
 		line = line .. ", " .. GREEN .. L.CRAFT_ONLINE .. "|r"
 	elseif presence == "recent" then
@@ -1221,6 +1222,7 @@ function Views.CraftCard(key)
 		key = key, who = card.name, name = Views.CraftDot(own and "own" or presence) .. " " .. Views.Name(card.name, card.class), line = line,
 		note = card.note ~= "" and Codec.Plain(card.note) or nil, profs = card.profs,
 		whisper = presence == "online" or presence == "recent", own = own, card = card, mine = mine,
+		posted = not own or card.posted,
 	}
 end
 
@@ -1245,7 +1247,7 @@ end
 -- подходящих по уровню.
 function Views.CraftRecipes(key, prof, query, only, levels)
 	local card
-	if key == ns.myKey then card = ns.Crafters.Own() else card = ns.Crafters.Get(key) end
+	if key == ns.myKey then card = ns.Crafters.Own(true) else card = ns.Crafters.Get(key) end
 	local p = card and CraftProf(card, prof)
 	local ids = ns.Crafters.Recipes(key, prof)
 	local total = ids and #ids or 0
@@ -1387,7 +1389,5 @@ function Views.CraftMine()
 	local posted = Crafters.Posted()
 	local status = posted and (Crafters.Dirty() and (ORANGE .. L.CRAFT_CHANGED .. "|r") or (GREEN .. L.CRAFT_POSTED .. "|r"))
 		or L.CRAFT_NOT_POSTED
-	-- Витрина правится в своей карточке: подсказка, как туда попасть.
-	if posted then status = status .. "\n" .. GREY .. L.CRAFT_SHOW_HINT .. "|r" end
 	return { profs = profs, hint = hint, status = status, posted = posted }
 end

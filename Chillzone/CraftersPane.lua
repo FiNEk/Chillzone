@@ -2,7 +2,8 @@
 -- профессии, справа — своё ремесло (прочитанные профессии, примечание, своя карточка) или
 -- карточка выбранного мастера со списком его рецептов. Строки готовит Views.lua, логика — в
 -- Crafters.lua. Витрина мастера — значки справа от имени в строке каталога и рецепты первыми в
--- карточке; свою витрину игрок отмечает звёздочками в своей карточке.
+-- карточке; свою витрину игрок отмечает звёздочками в своей карточке, а кнопка «Витрина» открывает
+-- её и до размещения — черновиком, который там же и размещается.
 --
 -- Поля ввода — свои EditBox, штатные popup и выпадающие списки не используются (taint). Поле
 -- ввода и окна чата игры вкладка не трогает: «Шепнуть» и меню правого щелчка открывают шёпот
@@ -162,7 +163,7 @@ local function Open(key, prof)
 	end
 	local own = key ~= nil and key == ns.myKey
 	local c
-	if own then c = ns.Crafters.Own() elseif key then c = ns.Crafters.Get(key) end
+	if own then c = ns.Crafters.Own(true) elseif key then c = ns.Crafters.Get(key) end
 	if not key or own and not c then
 		viewing, viewProf = nil, nil
 		Pane.Render()
@@ -450,6 +451,19 @@ local function Post()
 	Pane.Render()
 end
 
+-- «Витрина»: своя карточка, в том числе неразмещённая (черновик) — в ней рецепты отмечаются
+-- звёздочкой, а черновик там же и размещается.
+local function Showcase()
+	mine.note:ClearFocus()
+	if not ns.Crafters.Own(true) then
+		mineWhy = Views.CraftWhy(#ns.Crafters.MyProfs() > 0 and "none" or "noprofs")
+		Pane.Render()
+		return
+	end
+	mineWhy = nil
+	Open(ns.myKey)
+end
+
 local function Withdraw()
 	if ns.Crafters.Withdraw() then mineWhy = L.CRAFT_WITHDRAWN end
 	Pane.Render()
@@ -483,9 +497,15 @@ local function BuildMine()
 	mine.note = Input(mine, SIDE_W, Codec.CRAFT_NOTE)
 	mine.note:SetPoint("TOPLEFT", 0, -220)
 	mine.status = Label(mine, 0, 250, nil, "GameFontHighlightSmall")
-	mine.post = Button(mine, L.CRAFT_POST, 150, "post", Post)
+	mine.post = Button(mine, L.CRAFT_POST, 104, "post", Post)
 	mine.post:SetPoint("BOTTOMLEFT", 0, 2)
-	mine.withdraw = Button(mine, L.CRAFT_WITHDRAW, 110, "withdraw", Withdraw)
+	mine.showcase = Button(mine, L.CRAFT_SHOWCASE, 84, "showcase", Showcase)
+	mine.showcase:SetPoint("BOTTOMLEFT", 108, 2)
+	Tip(mine.showcase, function(tt)
+		tt:AddLine(L.CRAFT_SHOW_TITLE, 1, 0.82, 0)
+		tt:AddLine(L.CRAFT_SHOWCASE_TIP:format(ns.Crafters.ShowCount(), C.CRAFT_SHOW), 1, 1, 1, true)
+	end)
+	mine.withdraw = Button(mine, L.CRAFT_WITHDRAW, 86, "withdraw", Withdraw)
 	mine.withdraw:SetPoint("BOTTOMRIGHT", 0, 2)
 end
 
@@ -530,12 +550,13 @@ local function CardChip(i)
 	return chip
 end
 
--- «Обновить рецепты» у чужой карточки; в своей та же кнопка — «Обновить»: отправить правки
--- витрины сразу.
+-- «Обновить рецепты» у чужой карточки; в своей та же кнопка — «Разместить» черновик или
+-- «Обновить»: отправить правки витрины сразу. Примечание — из поля «Моего ремесла», как у его кнопки.
 local function Refresh()
 	if viewing and viewing == ns.myKey then
-		local ok, why, arg = ns.Crafters.Post()
+		local ok, why, arg = ns.Crafters.Post(mine.note:GetText())
 		cardWhy = not ok and Views.CraftWhy(why, arg) or nil
+		if ok then mine.note:SetText(ns.Crafters.Note()) end
 		Pane.Render()
 		return
 	end
@@ -775,9 +796,16 @@ local function BuildCard()
 	card.refresh = Button(card, L.CRAFT_REFRESH, 124, "refresh", Refresh)
 	card.refresh:SetPoint("LEFT", card.whisper, "RIGHT", 4, 0)
 	Tip(card.refresh, function(tt)
-		local own = viewing ~= nil and viewing == ns.myKey
-		tt:AddLine(own and L.CRAFT_UPDATE or L.CRAFT_REFRESH, 1, 0.82, 0)
-		tt:AddLine(own and L.CRAFT_UPDATE_TIP or L.CRAFT_REFRESH_TIP, 1, 1, 1, true)
+		if viewing == nil or viewing ~= ns.myKey then
+			tt:AddLine(L.CRAFT_REFRESH, 1, 0.82, 0)
+			tt:AddLine(L.CRAFT_REFRESH_TIP, 1, 1, 1, true)
+		elseif ns.Crafters.Posted() then
+			tt:AddLine(L.CRAFT_UPDATE, 1, 0.82, 0)
+			tt:AddLine(L.CRAFT_UPDATE_TIP, 1, 1, 1, true)
+		else
+			tt:AddLine(L.CRAFT_POST, 1, 0.82, 0)
+			tt:AddLine(L.CRAFT_POST_TIP, 1, 1, 1, true)
+		end
 	end)
 	card.back = Button(card, L.CRAFT_BACK, 64, "back", function() Open(nil) end)
 	card.back:SetPoint("BOTTOMRIGHT", 0, 2)
@@ -854,11 +882,11 @@ local function RenderCard(view)
 	card.whisper:SetShown(not view.own)
 	card.whisper:SetEnabled(view.whisper)
 	card.refresh:Show()
-	card.refresh:SetText(view.own and L.CRAFT_UPDATE or L.CRAFT_REFRESH)
+	card.refresh:SetText(view.own and (view.posted and L.CRAFT_UPDATE or L.CRAFT_POST) or L.CRAFT_REFRESH)
 	card.refresh:ClearAllPoints()
 	if view.own then
 		card.refresh:SetPoint("BOTTOMLEFT", 0, 2)
-		card.refresh:SetEnabled(ns.Crafters.Dirty())
+		card.refresh:SetEnabled(not view.posted or ns.Crafters.Dirty())
 	else
 		card.refresh:SetPoint("LEFT", card.whisper, "RIGHT", 4, 0)
 		local state = viewProf and ns.Crafters.AskState(view.key, viewProf)
