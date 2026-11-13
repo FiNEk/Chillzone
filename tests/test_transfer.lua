@@ -1,9 +1,11 @@
--- Кадры (Transfer.lua, TransferPane.lua): просьбы офицерам гильдии исключить или пригласить
--- игрока, ответы по ростеру, права просящего и вкладка «Кадры».
+-- Кадры (Transfer.lua, TransferPane.lua, CommandBox.lua): просьбы офицерам гильдии исключить или
+-- пригласить игрока, команды /gremove и /ginvite, которые игрок вводит сам, итог по системным
+-- строкам гильдии и ростеру, права просящего, состав гильдии и очередь исключения.
 local T = ...
 local Wow = assert(loadfile(T.ROOT .. "/tests/wow.lua"))(T)
 
 local NORTH, ORDER, MAIN = "Чиллзон Север", "Орден Чиллзона", "Чиллзон"
+local REALM = "-CAMWOWUS2Realm7PvE"
 
 -- Три гильдии, как в test_pull: в главной глава Карл (владелец ключа объединения), офицер Арагорн
 -- и рядовая Мира; в Севере глава Вера и рядовой Борис; в Ордене глава Глеб и рядовая без аддона.
@@ -13,7 +15,7 @@ local function Build()
 	w:Guild(MAIN)
 	w:Guild(NORTH)
 	w:Guild(ORDER)
-	w:AddOnline(ORDER, "Тень Тихая-CAMWOWUS2Realm7PvE", 3)
+	w:AddOnline(ORDER, "Тень Тихая" .. REALM, 3)
 	local cfg = { CHANNEL_CHAT = false }
 	local c = {}
 	c.A = w:Client({ first = "Арагорн", surname = "Светлый", guild = MAIN, rank = 1, config = cfg })
@@ -36,6 +38,7 @@ local function Errors(c)
 	for name, cl in pairs(c) do
 		T.eq(#cl.ns.db.errors, 0, name .. ": " .. table.concat(cl.ns.db.errors, " | "))
 		T.eq(#cl:Leaks(), 0, name .. ": глобалы")
+		T.eq(#cl.forbidden, 0, name .. ": вызов, запрещённый игрой: " .. table.concat(cl.forbidden, " | "))
 	end
 end
 
@@ -55,6 +58,8 @@ end
 
 local function Short(cl) return cl.first .. " " .. cl.surname end
 
+local function Has(text, part) return type(text) == "string" and text:find(part, 1, true) ~= nil end
+
 T.test("кадры: кодек просьбы, ответа и отзыва", function()
 	local w = Wow.World()
 	w:Guild(MAIN)
@@ -73,6 +78,38 @@ T.test("кадры: кодек просьбы, ответа и отзыва", fu
 	T.eq(state, "D")
 	T.eq(Codec.DecodeTransferAnswer("TA~1~abc.1~X"), nil)
 	T.eq(Codec.DecodeTransferCancel(Codec.EncodeTransferCancel("abc.1")), "abc.1")
+end)
+
+T.test("кадры: системные строки гильдии, форматы с номерами аргументов и команды", function()
+	local w = Wow.World()
+	w:Guild(NORTH)
+	local cl = w:Client({ first = "Вера", surname = "Верная", guild = NORTH, rank = 0 })
+	w:Run(5)
+	local R = cl.ns.Roster
+	local args = R.MatchFormat("Вера Верная: из гильдии исключён Борис Быстрый.", "%2$s: из гильдии исключён %1$s.")
+	T.eq(args[1], "Борис Быстрый", "первый аргумент формата")
+	T.eq(args[2], "Вера Верная", "второй аргумент формата")
+	T.eq(R.MatchFormat("100% (X)", "100%% (%s)")[1], "X", "%% и скобки — обычные знаки")
+	T.eq(R.MatchFormat("Другая строка.", "%s has left the guild."), nil)
+	T.eq(R.MatchFormat("уровень 12", "уровень %d")[1], "12")
+	T.eq(R.PlainName("|Hplayer:Борис Быстрый|h[Борис Быстрый]|h"), "Борис Быстрый", "ссылка игрока")
+	T.eq(R.PlainName("|cffffffff[Борис Быстрый]|r"), "Борис Быстрый", "цвет и скобки")
+	local what, name = R.GuildEvent("|Hplayer:Борис Быстрый|h[Борис Быстрый]|h has joined the guild.")
+	T.eq(what, "joined")
+	T.eq(name, "Борис Быстрый")
+	what, name = R.GuildEvent("Борис Быстрый has been kicked out of the guild by Вера Верная.")
+	T.eq(what, "left", "исключён")
+	T.eq(name, "Борис Быстрый", "имя исключённого, не того, кто исключил")
+	T.eq((R.GuildEvent("Борис Быстрый has left the guild.")), "left", "ушёл сам")
+	T.eq(R.GuildEvent("Вера Верная has joined the guild."), nil, "строка о себе")
+	T.eq(R.GuildEvent("Что-то другое."), nil)
+	-- В переводе игры порядок аргументов бывает другим.
+	cl.env.ERR_GUILD_REMOVE_SS = "%2$s исключает из гильдии: %1$s."
+	what, name = R.GuildEvent("Вера Верная исключает из гильдии: Борис Быстрый.")
+	T.eq(what, "left")
+	T.eq(name, "Борис Быстрый")
+	T.eq(R.GuildCommand("K", "Борис Быстрый" .. REALM), "/gremove Борис Быстрый", "без реалма")
+	T.eq(R.GuildCommand("I", "Борис Быстрый"), "/ginvite Борис Быстрый")
 end)
 
 T.test("кадры: права — владелец, офицер главной, глава другой гильдии, рядовые", function()
@@ -97,7 +134,7 @@ T.test("кадры: права — владелец, офицер главной
 	Errors(c)
 end)
 
-T.test("кадры: владелец просит исключить из другой гильдии, её глава исключает щелчком", function()
+T.test("кадры: владелец просит исключить из другой гильдии, её глава вводит команду", function()
 	local w, c = Build()
 	local task = c.K.ns.Transfer.Kick(Short(c.B), NORTH)
 	T.ok(task, "просьба создана")
@@ -105,16 +142,18 @@ T.test("кадры: владелец просит исключить из дру
 	T.ok(Until(w, function() return c.V.ns.Transfer.Count() == 1 end), "просьба во входящих Веры")
 	T.ok(Until(w, function() return Target(task, c.V).state == "R" end), "Вера подтвердила получение")
 	T.ok(c.V:Saw("просит исключить") > 0, "Вера увидела уведомление")
-	T.eq(#c.V.uninvites, 0, "сам аддон никого не исключает")
 	local item = c.V.ns.Transfer.Incoming()[1]
 	T.eq(item.kind, "K")
 	T.eq(item.byGuild, MAIN)
-	T.ok(c.V.ns.Transfer.Act(item), "щелчок Веры")
-	T.eq(c.V.uninvites[1], Short(c.B))
+	local command = c.V.ns.Transfer.Act(item)
+	T.eq(command, "/gremove " .. Short(c.B), "щелчок Веры даёт команду")
+	T.eq(c.B.guild, NORTH, "сам аддон никого не исключает")
+	T.ok(item.tried)
+	c.V:GuildCommand(command)
 	T.eq(c.B.guild, nil, "Борис вне гильдии")
 	T.ok(Until(w, function() return task.phase == "done" end), "владелец получил «сделано»")
 	T.eq(task.outcome, "done")
-	T.eq(c.V.ns.Transfer.Count(), 0, "входящая просьба закрыта по ростеру")
+	T.eq(c.V.ns.Transfer.Count(), 0, "входящая просьба закрыта по сообщению гильдии")
 	Errors(c)
 end)
 
@@ -141,22 +180,28 @@ T.test("кадры: просьбы без права отклоняет сам �
 	Errors(c)
 end)
 
-T.test("кадры: перенос своего игрока — исключение своим щелчком, приглашение по просьбе", function()
+T.test("кадры: перенос своего игрока — своя команда исключения, приглашение по просьбе", function()
 	local w, c = Build()
-	local task = c.V.ns.Transfer.Move(Short(c.B), NORTH, ORDER)
+	local V = c.V.ns
+	local task = V.Transfer.Move(Short(c.B), NORTH, ORDER)
 	T.ok(task, "перенос начат")
-	T.eq(c.V.uninvites[1], Short(c.B), "из своей гильдии Вера исключает сама")
-	T.ok(Until(w, function() return task.phase == "join" end), "второй шаг начался по ростеру")
+	T.ok(task.localStep, "из своей гильдии Вера исключает сама")
+	T.eq(c.B.guild, NORTH, "аддон сам не исключает")
+	local kind, command = V.Transfer.Step(task)
+	T.eq(kind, "K")
+	T.eq(command, "/gremove " .. Short(c.B))
+	c.V:GuildCommand(command)
+	T.ok(Until(w, function() return task.phase == "join" end), "второй шаг начался по сообщению гильдии")
 	T.ok(Until(w, function() return c.G.ns.Transfer.Count() == 1 end), "просьба пригласить у Глеба")
 	local item = c.G.ns.Transfer.Incoming()[1]
 	T.eq(item.kind, "I")
 	T.eq(item.other, NORTH)
-	T.ok(c.G.ns.Transfer.Act(item))
-	T.eq(c.G.invites[1], Short(c.B), "приглашение отправлено щелчком Глеба")
+	command = c.G.ns.Transfer.Act(item)
+	T.eq(command, "/ginvite " .. Short(c.B))
+	T.ok(c.G:GuildCommand(command))
+	T.eq(c.G.invites[1], Short(c.B), "Глеб пригласил своей командой")
 	-- Борис принял приглашение.
-	c.B.guild, c.B.rank = ORDER, 3
-	c.B:Fire("PLAYER_GUILD_UPDATE", "player")
-	c.G.ns.Roster.Scan()
+	w:Join(ORDER, c.B, 3)
 	T.ok(Until(w, function() return task.phase == "done" end), "Вера получила «сделано»")
 	T.eq(c.G.ns.Transfer.Count(), 0)
 	Errors(c)
@@ -169,8 +214,8 @@ T.test("кадры: офицер без права исключать проси
 	T.ok(task and task.req, "просьба ушла офицерам своей гильдии")
 	T.ok(Target(task, c.K), "адресат — глава")
 	T.ok(Until(w, function() return c.K.ns.Transfer.Count() == 1 end))
-	T.ok(c.K.ns.Transfer.Act(c.K.ns.Transfer.Incoming()[1]))
-	T.eq(c.M.guild, nil, "Мира исключена щелчком главы")
+	c.K:GuildCommand(c.K.ns.Transfer.Act(c.K.ns.Transfer.Incoming()[1]))
+	T.eq(c.M.guild, nil, "Мира исключена командой главы")
 	T.ok(Until(w, function() return task.phase == "done" end))
 	Errors(c)
 end)
@@ -188,7 +233,7 @@ T.test("кадры: «игрока нет», отзыв просьбы и пре
 	-- Больше TRANSFER_PER_MIN просьб от одного отправителя за минуту не принимается.
 	w:Run(61)
 	c.V.ns.Config.TRANSFER_PER_MIN = 2
-	for i = 1, 3 do w:AddOnline(NORTH, ("Новичок%d Севера-CAMWOWUS2Realm7PvE"):format(i), 3) end
+	for i = 1, 3 do w:AddOnline(NORTH, ("Новичок%d Севера" .. REALM):format(i), 3) end
 	c.V.ns.Roster.Scan()
 	for i = 1, 3 do c.K.ns.Transfer.Kick(("Новичок%d Севера"):format(i), NORTH) end
 	w:Run(20)
@@ -196,7 +241,7 @@ T.test("кадры: «игрока нет», отзыв просьбы и пре
 	Errors(c)
 end)
 
-T.test("кадры: раздел «Управления» — форма с подтверждением и кнопки входящих", function()
+T.test("кадры: раздел «Управления» — просьба со вторым щелчком, команда в своём поле", function()
 	local w, c = Build()
 	local P, L = c.K.ns.TransferPane, c.K.ns.L
 	c.M.ns.UI.Toggle("transfer")
@@ -217,23 +262,137 @@ T.test("кадры: раздел «Управления» — форма с по
 	P.frames.kick:Click()
 	T.eq(#c.K.ns.Transfer.Tasks(), 1, "второй щелчок создаёт просьбу")
 	T.eq(P.frames.message:GetText(), L.TRANSFER_STARTED)
+	T.no(P.frames.box:IsShown(), "просьба офицерам — без команды у просящего")
 	T.ok(Until(w, function() return c.V.ns.Transfer.Count() == 1 end))
-	-- У Веры просьба — строка с кнопками; исключение тоже со вторым щелчком. Число просьб — на переключателе.
+	-- У Веры просьба — строка с кнопками. Число просьб — на переключателе.
 	c.V.ns.UI.Toggle("transfer")
+	local VP = c.V.ns.TransferPane.frames
 	local section = c.V.ns.UI.sections.transfer
 	T.eq(section.text:GetText(), L.TAB_TRANSFER_COUNT:format(1), "число просьб на кнопке раздела")
 	local row
-	for _, r in ipairs(c.V.ns.TransferPane.frames.rows) do
+	for _, r in ipairs(VP.rows) do
 		if r:IsShown() and r.first:IsShown() then row = r end
 	end
 	T.ok(row, "строка входящей просьбы")
 	T.ok(row.first.enabled)
 	row.first:Click()
-	T.eq(#c.V.uninvites, 0, "первый щелчок только просит подтверждения")
-	row.first:Click()
-	T.eq(c.V.uninvites[1], Short(c.B))
+	T.ok(VP.box:IsShown(), "щелчок показывает команду")
+	T.eq(VP.box:Command(), "/gremove " .. Short(c.B))
+	T.ok(VP.box.edit:HasFocus(), "команда выделена для копирования")
+	T.no(VP.box.skip:IsShown(), "одна команда — пропускать нечего")
+	T.no(VP.message:IsShown(), "поле команды на месте строки о правах")
+	T.eq(c.B.guild, NORTH, "сам аддон не исключает")
+	-- Поле только для чтения: набранное заменяется командой.
+	VP.box.edit:SetText("/gremove Кто-то Другой")
+	VP.box.edit:GetScript("OnTextChanged")(VP.box.edit, true)
+	T.eq(VP.box.edit:GetText(), "/gremove " .. Short(c.B))
+	c.V:GuildCommand(VP.box:Command())
+	T.ok(Until(w, function() return not VP.box:IsShown() end), "сообщение гильдии убрало команду")
 	T.ok(Until(w, function() return c.K.ns.Transfer.Tasks()[1].phase == "done" end))
 	T.ok(Until(w, function() return c.V.ns.Transfer.Count() == 0 end))
 	T.eq(section.text:GetText(), L.TAB_TRANSFER, "после решения числа на кнопке нет")
+	T.ok(VP.message:IsShown())
+	Errors(c)
+end)
+
+T.test("кадры: состав гильдии — давность входа, отметки и очередь команд", function()
+	local w, c = Build()
+	w:AddOffline(NORTH, "Старик Давний" .. REALM, 3, 60, "MAGE", 90)
+	w:AddOffline(NORTH, "Сонный Ленивый" .. REALM, 3, 40, "ROGUE", 45)
+	w:AddOffline(NORTH, "Свежий Новый" .. REALM, 3, 20, "PRIEST", 2)
+	local V, L = c.V.ns, c.V.ns.L
+	V.Roster.Scan()
+	V.UI.Toggle("transfer")
+	local f = V.TransferPane.frames
+	T.ok(f.tools:IsShown(), "панель отметок")
+	T.ok(f.head:IsShown(), "заголовок таблицы")
+	T.no(f.tools.showAll:IsShown(), "ростер полный — показывать всех не нужно")
+	T.ok(Has(f.members[1].cells[1]:GetText(), "Старик Давний"), "дольше всех не заходивший — сверху")
+	T.eq(f.members[1].cells[4]:GetText(), L.TRANSFER_DAYS:format(90))
+	local selfRow
+	for _, r in ipairs(f.members) do
+		if r:IsShown() and r.person and V.IsMe(r.person.name) then selfRow = r end
+	end
+	T.ok(selfRow, "своя строка в составе")
+	T.no(selfRow.check.enabled, "себя отметить нельзя")
+	-- Щелчок по строке подставляет игрока в форму.
+	f.members[1]:Click()
+	T.eq(f.input:GetText(), "Старик Давний")
+	-- Сортировка по имени и обратно.
+	f.head.cells[1]:Click()
+	T.ok(Has(f.members[1].cells[1]:GetText(), "Борис Быстрый"), "по имени")
+	f.head.cells[1]:Click()
+	T.ok(Has(f.members[1].cells[1]:GetText(), "Старик Давний"), "по имени в обратном порядке")
+	f.head.cells[4]:Click()
+	-- Отметить не заходивших дольше 30 дней.
+	f.tools.days:SetText("30")
+	f.tools.mark:Click()
+	T.eq(f.tools.kick:GetText(), L.TRANSFER_KICK_CHECKED:format(2))
+	T.ok(f.tools.kick.enabled)
+	f.tools.kick:Click()
+	T.ok(f.box:IsShown(), "очередь команд")
+	T.eq(f.box:Command(), "/gremove Старик Давний")
+	T.ok(Has(f.box.title:GetText(), L.TRANSFER_QUEUE_PROGRESS:format(1, 2)))
+	T.ok(f.box.skip:IsShown())
+	c.V:GuildCommand(f.box:Command())
+	T.ok(Until(w, function() return f.box:Command() == "/gremove Сонный Ленивый" end),
+		"следующая команда — после сообщения гильдии")
+	T.ok(Has(f.box.title:GetText(), L.TRANSFER_QUEUE_PROGRESS:format(2, 2)))
+	T.eq(f.tools.kick:GetText(), L.TRANSFER_KICK_CHECKED:format(1), "исключённый снят с отметок")
+	f.box.skip:Click()
+	T.no(f.box:IsShown(), "очередь закончилась")
+	T.eq(f.message:GetText(), L.TRANSFER_QUEUE_DONE:format(1, 2))
+	T.eq(f.tools.kick:GetText(), L.TRANSFER_KICK_CHECKED:format(1), "пропущенный остался отмеченным")
+	f.tools.unmark:Click()
+	T.eq(f.tools.kick:GetText(), L.TRANSFER_KICK_CHECKED:format(0))
+	T.no(f.tools.kick.enabled)
+	-- Длинный состав: строк таблицы немного, прокрутка переставляет их на видимую часть.
+	for i = 1, 40 do w:AddOffline(NORTH, ("Игрок%02d Севера" .. REALM):format(i), 3, 30, "MAGE", 100 + i) end
+	V.Roster.Scan()
+	T.ok(Has(f.members[1].cells[1]:GetText(), "Игрок40 Севера"), "сверху дольше всех не заходивший")
+	f.scroll:SetVerticalScroll(f.peopleTop() + 10 * 18)
+	local top
+	for _, r in ipairs(f.members) do
+		if r:IsShown() and (not top or r.index < top.index) then top = r end
+	end
+	T.ok(Has(top.cells[1]:GetText(), "Игрок30 Севера"), "после прокрутки на 10 строк")
+	Errors(c)
+end)
+
+T.test("кадры: неполный ростер — исключение засчитывает только сообщение гильдии", function()
+	local w, c = Build()
+	w:AddOffline(NORTH, "Старик Давний" .. REALM, 3, 60, "MAGE", 90)
+	c.V.hideOffline = true
+	local V, L = c.V.ns, c.V.ns.L
+	V.Roster.Scan()
+	T.no(V.Roster.complete, "игроки не в сети скрыты")
+	V.UI.Toggle("transfer")
+	local f = V.TransferPane.frames
+	local partial = false
+	for _, h in ipairs(f.headers) do
+		if h:IsShown() and Has(h.label:GetText(), L.TRANSFER_ROSTER_PARTIAL) then partial = true end
+	end
+	T.ok(partial, "заголовок состава предупреждает о скрытых")
+	T.ok(f.tools.showAll:IsShown())
+	-- Из своей гильдии — без второго щелчка: просьба никуда не уходит, команда сразу в поле.
+	V.TransferPane.Fill(Short(c.B), NORTH, nil)
+	f.kick:Click()
+	T.ok(f.box:IsShown(), "своя команда сразу")
+	T.eq(f.box:Command(), "/gremove " .. Short(c.B))
+	local task = V.Transfer.Tasks()[1]
+	T.ok(task and task.localStep)
+	-- Бориса нет в неполном ростере, но системной строки не было: ничего не засчитано.
+	w:Uninvite(NORTH, Short(c.B))
+	V.Roster.Scan()
+	w:Run(5)
+	T.eq(task.phase, "leave", "отсутствие в неполном ростере ничего не доказывает")
+	T.ok(f.box:IsShown(), "команда ещё ждёт")
+	w:GuildSystem(NORTH, c.V.env.ERR_GUILD_REMOVE_SS:format(Short(c.B), c.V:Name()))
+	T.ok(Until(w, function() return task.phase == "done" end), "сообщение гильдии закрыло шаг")
+	T.no(f.box:IsShown())
+	-- «Показать всех» — та же настройка, что в окне гильдии.
+	f.tools.showAll:Click()
+	T.ok(Until(w, function() return V.Roster.complete end), "ростер снова полный")
+	T.no(f.tools.showAll:IsShown())
 	Errors(c)
 end)

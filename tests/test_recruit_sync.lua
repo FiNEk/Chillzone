@@ -119,7 +119,12 @@ T.test("общие заявки: рядовой передаёт офицера�
 	local accept = c.P.ns.RecruitPane.requestRows[1].accept
 	T.ok(accept:IsShown())
 	accept:GetScript("OnClick")(accept)
-	T.eq(c.P.invites[1], c.R:Name())
+	local box = c.P.ns.RecruitPane.frames.inboxBox
+	T.eq(box:Command(), "/ginvite " .. c.R:Name())
+	w:Run(15)
+	T.eq(#c.O.ns.Recruit.Requests(), 1, "команда показана, но игрок ещё не вступил")
+	T.ok(c.P:GuildCommand(box:Command()))
+	w:Join("Чиллзон Север", c.R)
 	w:Run(15)
 	T.eq(#c.O.ns.Recruit.Requests(), 0)
 	T.eq(#c.M.ns.Recruit.Requests(), 0)
@@ -320,7 +325,7 @@ T.test("общие заявки: решение не ждёт передачи �
 	for i = 1, 80 do
 		T.ok(c.O.ns.Recruit.OnJoinRequest("J3~Чиллзон Север~27~MAGE", "Фоновый Игрок " .. i, "WHISPER"))
 	end
-	T.ok(c.O.ns.Recruit.Accept(req))
+	T.ok(c.O.ns.Recruit.Decline(req), "отказ закрывает заявку у всех офицеров")
 	w:Run(8)
 	for _, pending in ipairs(c.P.ns.Recruit.Requests()) do
 		T.no(c.P.ns.Util.SameName(pending.name, c.R.ns.me), "решение должно обойти фоновый снимок")

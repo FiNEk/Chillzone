@@ -270,6 +270,94 @@ ns.RegisterEvent("PLAYER_GUILD_UPDATE", function(unit)
 	end)
 end)
 
+-- Команда игры, которую игрок вводит в чате сам: kind "K" — исключить из гильдии, "I" —
+-- пригласить. Forever не даёт этого ни аддону, ни макросу. Имя — «Имя Фамилия» без реалма.
+-- Помощники этого раздела живут здесь, а не в Util.lua: клиент 0.9 в test_migration берёт
+-- старый Util.lua вместе с новым Roster.lua.
+function Roster.GuildCommand(kind, name)
+	return (kind == "K" and "/gremove " or "/ginvite ") .. U.TellName(U.Display(name))
+end
+
+-- Имя из системной строки игры: без ссылки игрока, цвета и квадратных скобок.
+function Roster.PlainName(text)
+	if type(text) ~= "string" then return nil end
+	text = text:gsub("|H.-|h(.-)|h", "%1"):gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "")
+	text = U.Trim(text):gsub("^%[(.*)%]$", "%1")
+	return text
+end
+
+-- Строка формата игры ("%s has joined", "%2$s ... %1$s") в шаблон Lua. Второе значение —
+-- номер аргумента формата для каждой захваченной группы. nil — формат не разобран.
+local formatPatterns = {}
+function Roster.FormatPattern(fmt)
+	if type(fmt) ~= "string" or fmt == "" then return nil end
+	local cached = formatPatterns[fmt]
+	if cached then return cached[1], cached[2] end
+	local parts, order, plain, i = { "^" }, {}, 0, 1
+	while i <= #fmt do
+		local c = fmt:sub(i, i)
+		if c == "%" then
+			local pos, kind, stop = fmt:match("^(%d)%$([sd])()", i + 1)
+			local nextc = fmt:sub(i + 1, i + 1)
+			if pos then
+				order[#order + 1] = tonumber(pos)
+			elseif nextc == "s" or nextc == "d" then
+				plain = plain + 1
+				order[#order + 1], kind, stop = plain, nextc, i + 2
+			elseif nextc == "%" then
+				kind, stop = "%", i + 2
+			else
+				return nil
+			end
+			parts[#parts + 1] = kind == "s" and "(.+)" or kind == "d" and "(%-?%d+)" or "%%"
+			i = stop
+		else
+			parts[#parts + 1] = c:find("^[%^%$%(%)%%%.%[%]%*%+%-%?]$") and "%" .. c or c
+			i = i + 1
+		end
+	end
+	parts[#parts + 1] = "$"
+	local pattern = table.concat(parts)
+	formatPatterns[fmt] = { pattern, order }
+	return pattern, order
+end
+
+-- Разобрать строку по формату игры: аргументы по их номерам в формате или nil.
+function Roster.MatchFormat(text, fmt)
+	local pattern, order = Roster.FormatPattern(fmt)
+	if not pattern or type(text) ~= "string" or #order == 0 then return nil end
+	local caps = { text:match(pattern) }
+	if #caps ~= #order then return nil end
+	local args = {}
+	for k, v in ipairs(caps) do args[order[k]] = v end
+	return args
+end
+
+-- Системные строки гильдии: кого исключили, кто ушёл сам, кто вступил. Их получает вся гильдия.
+-- По ним «Кадры» и «Заявки» узнают итог команды, которую игрок ввёл в чате (/gremove,
+-- /ginvite): ростер может скрывать игроков не в сети и обновляется не сразу.
+-- Возвращает "left" или "joined" и имя игрока либо nil.
+function Roster.GuildEvent(text)
+	if type(text) ~= "string" then return nil end
+	local events = {
+		{ ERR_GUILD_REMOVE_SS, "left" }, { ERR_GUILD_LEAVE_S, "left" }, { ERR_GUILD_JOIN_S, "joined" },
+	}
+	for _, e in ipairs(events) do
+		local args = type(e[1]) == "string" and Roster.MatchFormat(text, e[1])
+		local name = args and Roster.PlainName(args[1])
+		if name and U.Key(name) and not ns.IsMe(name) then return e[2], name end
+	end
+	return nil
+end
+
+ns.RegisterEvent("CHAT_MSG_SYSTEM", function(text)
+	if not ns.MyGuild() then return end
+	local what, name = Roster.GuildEvent(text)
+	if not what then return end
+	ns.Fire("GUILD_MEMBER", what, name)
+	Roster.RequestScan(true)
+end)
+
 -- Глава поменял права званий: офицеры могли стать другими.
 local function RanksChanged()
 	rankOfficer = {}

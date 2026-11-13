@@ -6,7 +6,7 @@ local L, U, R = ns.L, ns.Util, ns.Recruit
 local Pane = { frames = {}, requestRows = {}, guildRows = {} }
 ns.RecruitPane = Pane
 local guildRows, replyRows = Pane.guildRows, {}
-local pane, child, intro, note, inbox, inboxChild, inboxHint, inboxEmpty
+local pane, child, intro, note, inbox, inboxChild, inboxHint, inboxEmpty, inboxBox
 
 local function Label(parent, x, y, width, font)
 	local f = parent:CreateFontString(nil, "OVERLAY", font or "GameFontHighlightSmall")
@@ -181,6 +181,9 @@ function Pane.BuildInbox(parent)
 	inbox = CreateFrame("Frame", nil, parent)
 	inbox:SetAllPoints(parent)
 	inboxHint = Label(inbox, 16, 14, 570)
+	-- Команда /ginvite встаёт на место подсказки: игра не даёт аддону приглашать.
+	inboxBox = ns.CommandBox.New(inbox, 740, nil, function() Pane.RenderInbox() end)
+	inboxBox:SetPoint("TOPLEFT", 8, -8)
 	local scroll = CreateFrame("ScrollFrame", nil, inbox, "UIPanelScrollFrameTemplate")
 	scroll:SetPoint("TOPLEFT", 16, -58)
 	scroll:SetPoint("BOTTOMRIGHT", -30, 12)
@@ -190,7 +193,7 @@ function Pane.BuildInbox(parent)
 	inboxEmpty = Label(inboxChild, 0, 12, 730, "GameFontDisable")
 	inboxEmpty:SetText(L.RECRUIT_INBOX_EMPTY)
 	inbox:SetScript("OnShow", function() ns.RecruitSync.RequestSync() end)
-	Pane.frames.inbox, Pane.frames.inboxEmpty = inbox, inboxEmpty
+	Pane.frames.inbox, Pane.frames.inboxEmpty, Pane.frames.inboxBox = inbox, inboxEmpty, inboxBox
 	inbox:Hide()
 end
 
@@ -204,6 +207,14 @@ function Pane.RenderInbox()
 	end)
 	local shared = ns.RecruitSync.IsOfficer()
 	inboxHint:SetText(shared and (R.CanInvite() and L.RECRUIT_INBOX_SHARED or L.RECRUIT_INBOX_NO_INVITE) or L.RECRUIT_INBOX_PERSONAL)
+	-- Новичок вступил или заявку закрыли: команда больше не нужна.
+	local open = inboxBox:IsShown() and inboxBox.req
+	if open then
+		local still = false
+		for _, req in ipairs(reqs) do if req == open then still = true end end
+		if not still then inboxBox:Close() end
+	end
+	inboxHint:SetShown(not inboxBox:IsShown())
 	inboxEmpty:SetShown(#reqs == 0)
 	local y = 0
 	for count, req in ipairs(reqs) do
@@ -224,7 +235,7 @@ function Pane.RenderInbox()
 			row.message = Label(row, 0, 20, 730)
 			row.message:SetHeight(26)
 			row.source = Label(row, 0, 48, 730, "GameFontDisableSmall")
-			row.accept = Button(row, L.RECRUIT_INVITE, 140, function() R.Accept(row.req) end)
+			row.accept = Button(row, L.RECRUIT_INVITE, 140, function() Pane.Invite(row.req) end)
 			row.accept:SetPoint("TOPLEFT", 0, -66)
 			row.decline = Button(row, L.RECRUIT_DECLINE, 130, function() R.Decline(row.req) end)
 			row.decline:SetPoint("TOPLEFT", 148, -66)
@@ -239,7 +250,9 @@ function Pane.RenderInbox()
 		row:SetPoint("TOPLEFT", inboxChild, "TOPLEFT", 0, -y)
 		row.title:SetText(L.RECRUIT_REQUEST:format(U.Display(req.name), req.level, L.CLASS[req.class] or "", ns.Views.Ago(ns.Now() - req.t)))
 		row.message:SetText(req.text or L.RECRUIT_NO_TEXT)
-		row.source:SetText(L.RECRUIT_SOURCE:format(U.Display(req.origin or ns.me)))
+		local source = L.RECRUIT_SOURCE:format(U.Display(req.origin or ns.me))
+		if req.invited then source = source .. " — " .. L.RECRUIT_INVITED end
+		row.source:SetText(source)
 		row.accept:SetShown(R.CanInvite())
 		row.decline:SetShown(R.CanInvite())
 		row.point:SetShown(not R.CanInvite() and R.Officer() ~= nil)
@@ -250,5 +263,17 @@ function Pane.RenderInbox()
 	for i = #reqs + 1, #Pane.requestRows do Pane.requestRows[i]:Hide() end
 	inboxChild:SetHeight(math.max(y, 60))
 end
+-- «Пригласить»: команда /ginvite в своём поле, её вводит сам офицер.
+function Pane.Invite(req)
+	local command = R.Accept(req)
+	if not command or not inboxBox then return end
+	inboxBox.req = req
+	inboxBox:Open(L.RECRUIT_CMD_INVITE:format(U.Display(req.name), req.guild), command, nil, L.RECRUIT_CMD_TIP)
+	Pane.RenderInbox()
+end
 function Pane.ShowInbox() if inbox then inbox:Show(); Pane.RenderInbox() end end
-function Pane.HideInbox() if inbox then inbox:Hide() end end
+function Pane.HideInbox()
+	if not inbox then return end
+	inbox:Hide()
+	inboxBox.edit:ClearFocus()
+end

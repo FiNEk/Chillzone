@@ -1,19 +1,20 @@
 -- Chillzone: кадры — просьбы офицерам гильдии объединения исключить игрока или пригласить его
--- (перенос из одной гильдии в другую). Сам аддон никого не исключает и не приглашает по
--- чужой просьбе: она лишь появляется во «Входящих» у офицеров гильдии, а исключает или
--- приглашает их щелчок (Uninvite и Invite игры). Своим щелчком просящий сразу исключает
--- только из своей гильдии, если ему это позволяют звание и права игры.
+-- (перенос из одной гильдии в другую). Аддон никого не исключает и не приглашает: Forever не
+-- даёт этого ни аддону, ни макросу (проверено в игре). Просьба появляется во «Входящих» у
+-- офицеров гильдии, и офицер сам вводит в чате игры команду /gremove или /ginvite, которую
+-- вкладка показывает в своём поле (CommandBox.lua). Из своей гильдии просящий так же сразу
+-- исключает сам, если ему это позволяют звание и права игры.
 --
 -- Кто может просить (получатель проверяет сам, просящий видит то же через Transfer.Rights):
 --   - исключить из гильдии G: офицер G по ростеру получателя; владелец или офицер главной
 --     гильдии по сертификату с подтверждённой ролью (Security.Level 3);
 --   - пригласить в G: те же, а ещё офицер любой гильдии объединения (Security.Level 2 и выше),
 --     если вторая гильдия просьбы — его собственная: он переносит своего игрока.
--- Перенос — два шага у просящего: исключить из первой гильдии (своим щелчком или просьбой её
+-- Перенос — два шага у просящего: исключить из первой гильдии (своей командой или просьбой её
 -- офицерам), затем пригласить во вторую. Второй шаг начинается, когда первая гильдия ответила
--- «сделано» или «его нет», либо когда мой ростер больше не видит игрока. «Сделано» получатель
--- видит по своему ростеру: исключённого в нём нет (ростер полный или игрок исчез после щелчка
--- получателя), приглашённый в нём есть.
+-- «сделано» или «его нет», либо когда моя гильдия сообщила об уходе игрока. «Сделано» получатель
+-- видит по системной строке гильдии («исключён», «покидает», «вступает» — Roster.GuildEvent)
+-- или по своему ростеру: исключённого в нём нет (только полный ростер), приглашённый в нём есть.
 --
 -- Кадры TQ, TA и TC (формат — в Codec.lua) идут прямым WHISPER без реле и без подписи: имя
 -- отправителя удостоверяет сервер, гильдию и роль — сертификат по отпечатку (Security.Resolve).
@@ -28,7 +29,7 @@ local tasks, byReq = {}, {} -- мои просьбы по порядку; ном
 local incoming = {} -- [ключ отправителя .. "#" .. номер] = просьба ко мне
 local fromTimes, allTimes = {}, {} -- пределы входящих TQ за минуту
 local serial, epoch = 0, 0
-local lastAct, lastNotice = -math.huge, -math.huge
+local lastNotice = -math.huge
 local NOTICE_GAP = 10
 
 Transfer.stats = { asked = 0, received = 0, rejected = 0, acted = 0 }
@@ -94,19 +95,8 @@ function Transfer.CanInvite()
 	return CanGuildInvite ~= nil and CanGuildInvite() and true or false
 end
 
--- Вызовы игры: только из щелчка игрока. Ошибка игры уходит в журнал.
-local function Call(fn, what, name)
-	if not fn then ns.Log("кадры: в игре нет функции «%s»", what); return false end
-	local ok, err = pcall(fn, U.TellName(name))
-	if not ok then ns.Log("кадры: %s %s не удалось: %s", what, U.Display(name), tostring(err)) end
-	return ok
-end
-local function Uninvite(name)
-	return Call((C_GuildInfo and C_GuildInfo.Uninvite) or GuildUninvite, "исключить", name)
-end
-local function Invite(name)
-	return Call((C_GuildInfo and C_GuildInfo.Invite) or GuildInvite, "пригласить", name)
-end
+-- Команда игры для ручного действия: kind "K" — исключить, "I" — пригласить.
+function Transfer.Command(kind, name) return ns.Roster.GuildCommand(kind, name) end
 
 -- Гильдия игрока: мой ростер, затем сертификаты гильдий объединения, затем отчёты переписи.
 function Transfer.GuessGuild(name)
@@ -221,7 +211,7 @@ local function Finish(task, outcome)
 	Fire()
 end
 
--- Второй шаг переноса: пригласить в to. В свою гильдию — своим щелчком, если могу.
+-- Второй шаг переноса: пригласить в to. В свою гильдию — своей командой, если могу.
 local function StartJoin(task)
 	Withdraw(task.req)
 	task.phase, task.req, task.tried = "join", nil, nil
@@ -238,21 +228,6 @@ local function Left(task, state)
 	if task.op == "kick" then Finish(task, state == "O" and "absent" or "done") else StartJoin(task) end
 end
 
--- Исключить своим щелчком из своей гильдии.
-local function Remove(task)
-	local now = ns.Now()
-	if now - lastAct < C.TRANSFER_ACT_GAP then ns.Print(L.TRANSFER_WAIT); return false end
-	if not Transfer.CanRemove(task.name) then ns.Print(L.TRANSFER_CANT_REMOVE, U.Display(task.name)); return false end
-	lastAct = now
-	if not Uninvite(task.name) then ns.Print(L.TRANSFER_FAILED); return false end
-	task.tried, task.seen = true, true
-	Transfer.stats.acted = Transfer.stats.acted + 1
-	ns.Log("кадры: исключаю %s своим щелчком", U.Display(task.name))
-	ns.Roster.RequestScan(true)
-	Fire()
-	return true
-end
-
 local function NewTask(op, name, from, to)
 	local task = { op = op, name = U.Display(name), from = from, to = to, phase = "leave", at = ns.Now(),
 		home = Home(), seen = Mine(from) and Present(name) or nil }
@@ -264,13 +239,12 @@ local function NewTask(op, name, from, to)
 	return task
 end
 
--- Первый шаг: из своей гильдии — своим щелчком, если могу, иначе просьбой её офицерам.
+-- Первый шаг: из своей гильдии — своей командой, если могу, иначе просьбой её офицерам.
 local function StartLeave(task)
 	if Mine(task.from) and ns.Roster.Fresh() and not Present(task.name) and ns.Roster.complete then
 		Left(task, "O")
 	elseif Mine(task.from) and Transfer.CanRemove(task.name) then
 		task.localStep = true
-		Remove(task)
 	else
 		Ask(task, "K", task.from, task.to)
 	end
@@ -308,20 +282,20 @@ function Transfer.Move(name, from, to)
 	return task
 end
 
--- Кнопка своего шага: исключить или пригласить своим щелчком.
+-- Свой шаг просьбы: kind ("K" или "I") и команда, которую игрок введёт в чате. nil и текст,
+-- если права нет. Итог шага — системная строка гильдии или ростер (ObserveTasks).
 function Transfer.Step(task)
-	if not task.localStep or task.phase == "done" then return false end
-	if task.phase == "leave" then return Remove(task) end
-	local now = ns.Now()
-	if now - lastAct < C.TRANSFER_ACT_GAP then ns.Print(L.TRANSFER_WAIT); return false end
-	if not Transfer.CanInvite() then ns.Print(L.TRANSFER_CANT_INVITE); return false end
-	lastAct = now
-	if not Invite(task.name) then ns.Print(L.TRANSFER_FAILED); return false end
+	if not task.localStep or task.phase == "done" then return nil end
+	local kind = task.phase == "leave" and "K" or "I"
+	if kind == "K" and not Transfer.CanRemove(task.name) then
+		return nil, L.TRANSFER_CANT_REMOVE:format(U.Display(task.name))
+	end
+	if kind == "I" and not Transfer.CanInvite() then return nil, L.TRANSFER_CANT_INVITE end
 	task.tried = true
 	Transfer.stats.acted = Transfer.stats.acted + 1
-	ns.Log("кадры: приглашаю %s своим щелчком", U.Display(task.name))
+	ns.Log("кадры: команда «%s» для своего шага", Transfer.Command(kind, task.name))
 	Fire()
-	return true
+	return kind, Transfer.Command(kind, task.name)
 end
 
 -- Спросить заново: тех же офицеров или тех, кто в игре сейчас.
@@ -510,31 +484,22 @@ ns.Comm.On("TC", function(msg, sender, dist, ctx)
 	return true
 end)
 
--- Щелчок офицера: исключить или пригласить по просьбе.
+-- Щелчок офицера по просьбе: команда, которую он введёт в чате сам. nil и текст, если права нет.
 function Transfer.Act(item)
-	if not item or incoming[item.slot] ~= item then return false end
-	local now = ns.Now()
-	if now - lastAct < C.TRANSFER_ACT_GAP then ns.Print(L.TRANSFER_WAIT); return false end
-	if item.kind == "K" then
-		if not Transfer.CanRemove(item.name) then ns.Print(L.TRANSFER_CANT_REMOVE, U.Display(item.name)); return false end
-		lastAct = now
-		if not Uninvite(item.name) then ns.Print(L.TRANSFER_FAILED); return false end
-	else
-		if not Transfer.CanInvite() then ns.Print(L.TRANSFER_CANT_INVITE); return false end
-		lastAct = now
-		if not Invite(item.name) then ns.Print(L.TRANSFER_FAILED); return false end
+	if not item or incoming[item.slot] ~= item then return nil end
+	if item.kind == "K" and not Transfer.CanRemove(item.name) then
+		return nil, L.TRANSFER_CANT_REMOVE:format(U.Display(item.name))
 	end
-	-- Тот же игрок мог быть в просьбах нескольких офицеров: щелчок засчитывается всем.
+	if item.kind == "I" and not Transfer.CanInvite() then return nil, L.TRANSFER_CANT_INVITE end
+	-- Тот же игрок мог быть в просьбах нескольких офицеров: команда показана для всех.
 	local key = U.Key(item.name)
 	for _, other in pairs(incoming) do
 		if other.kind == item.kind and U.Key(other.name) == key then other.tried = true end
 	end
 	Transfer.stats.acted = Transfer.stats.acted + 1
-	ns.Log("кадры: %s %s по просьбе %s", item.kind == "K" and "исключаю" or "приглашаю", U.Display(item.name),
-		U.Display(item.from))
-	if item.kind == "K" then ns.Roster.RequestScan(true) end
+	ns.Log("кадры: команда «%s» по просьбе %s", Transfer.Command(item.kind, item.name), U.Display(item.from))
 	Fire()
-	return true
+	return Transfer.Command(item.kind, item.name)
 end
 
 -- Отказ: просящий видит «отклонено».
@@ -547,7 +512,8 @@ function Transfer.Decline(item)
 end
 
 ---------------------------------------------------------------------------
--- Ростер: сделано ли
+-- Ростер и системные строки гильдии: сделано ли. Отсутствие в неполном ростере (скрыты игроки
+-- не в сети) ничего не доказывает: тогда исключение засчитывает только системная строка.
 ---------------------------------------------------------------------------
 
 local function ObserveIncoming(now)
@@ -562,7 +528,7 @@ local function ObserveIncoming(now)
 		local state
 		if not Mine(item.guild) or now - item.at > C.TRANSFER_KEEP then
 			state = false
-		elseif item.kind == "K" and not here and (ns.Roster.complete or (item.tried and item.seen)) then
+		elseif item.kind == "K" and not here and ns.Roster.complete then
 			state = item.seen and "D" or "O"
 		elseif item.kind == "I" and here then
 			state = "D"
@@ -592,7 +558,7 @@ local function ObserveTasks(now)
 		elseif task.phase == "leave" and Mine(task.from) then
 			if Present(task.name) then
 				task.seen = true
-			elseif ns.Roster.complete or (task.tried and task.seen) then
+			elseif ns.Roster.complete then
 				Withdraw(task.req)
 				Left(task, task.seen and "D" or "O")
 				changed = true
@@ -614,6 +580,33 @@ ns.On("ROSTER", function()
 		if not list[1] then fromTimes[key] = nil end
 	end
 	if a or b then Fire() end
+end)
+
+-- Системная строка гильдии: игрок исключён или ушёл сам ("left"), вступил ("joined").
+ns.On("GUILD_MEMBER", function(what, name)
+	local key = U.Key(name)
+	if not key then return end
+	local changed = false
+	for slot, item in pairs(incoming) do
+		if U.Key(item.name) == key and Mine(item.guild)
+			and (item.kind == "K" and what == "left" or item.kind == "I" and what == "joined") then
+			incoming[slot], changed = nil, true
+			Reply(item.from, item.id, "D")
+		end
+	end
+	for _, task in ipairs(tasks) do
+		if task.phase ~= "done" and U.Key(task.name) == key then
+			if task.phase == "leave" and what == "left" and Mine(task.from) then
+				Withdraw(task.req)
+				Left(task, "D")
+				changed = true
+			elseif task.phase == "join" and what == "joined" and Mine(task.to) then
+				Finish(task, "done")
+				changed = true
+			end
+		end
+	end
+	if changed then Fire() end
 end)
 
 -- GUILD_CHANGED приходит и при смене звания: забываются только просьбы прежней гильдии
