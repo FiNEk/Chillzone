@@ -1,7 +1,8 @@
 -- Chillzone: вкладка «Мастера профессий». Слева каталог мастеров объединения с поиском и фильтром по
 -- профессии, справа — своё ремесло (прочитанные профессии, примечание, своя карточка) или
 -- карточка выбранного мастера со списком его рецептов. Строки готовит Views.lua, логика — в
--- Crafters.lua.
+-- Crafters.lua. Витрина мастера — значки справа от имени в строке каталога и рецепты первыми в
+-- карточке; свою витрину игрок отмечает звёздочками в своей карточке.
 --
 -- Поля ввода — свои EditBox, штатные popup и выпадающие списки не используются (taint). Поле
 -- ввода и окна чата игры вкладка не трогает: «Шепнуть» и меню правого щелчка открывают шёпот
@@ -24,6 +25,10 @@ local ACTION_W = 84
 local PROF_ROWS = 6
 local LIST_TOP = 60
 local SEARCH_DELAY = 0.25
+local NAME_W = LIST_W - 6 - ACTION_W - 8 -- имя в строке каталога без витрины
+local SHOW_SIZE = 18 -- значок витрины в строке каталога
+local NO_ICON = "Interface\\Icons\\INV_Misc_QuestionMark"
+local STAR = "Interface\\TargetingFrame\\UI-RaidTargetingIcon_1"
 
 local pane, search, searchHint, loaded, list, listChild, empty, side
 local levelLo, levelHi -- требуемый уровень предмета «от» и «до»
@@ -141,9 +146,12 @@ end
 -- Каталог
 ---------------------------------------------------------------------------
 -- Своя строка открывает свою размещённую карточку, как её видят остальные, со своим списком
--- рецептов; «Назад» возвращает к «Моему ремеслу».
-local function Open(key)
+-- рецептов; «Назад» возвращает к «Моему ремеслу». prof — открыть на этой профессии (значок
+-- витрины), иначе — на выбранной фильтром или первой.
+local function Open(key, prof)
 	cardWhy = nil
+	-- Другой мастер или значок витрины — список с начала: витрина в нём первой.
+	if card and key and (key ~= viewing or prof) then card.scroll:SetVerticalScroll(0) end
 	-- Поиск в рецептах относится к одному мастеру: у другого он начинается с пустого поля.
 	if key ~= viewing and card and (card.query ~= "" or (card.search:GetText() or "") ~= "") then
 		recipeToken = recipeToken + 1
@@ -162,7 +170,7 @@ local function Open(key)
 	end
 	viewing, viewProf = key, nil
 	for _, p in ipairs(c and c.profs or {}) do
-		if p.id == filter then viewProf = p.id end
+		if p.id == (prof or filter) then viewProf = p.id end
 	end
 	viewProf = viewProf or (c and c.profs[1] and c.profs[1].id)
 	-- Нет списка или он устарел — запрос уходит сразу; иначе показывается сохранённый.
@@ -199,10 +207,11 @@ local function Row(i)
 	r.status:SetWidth(ACTION_W - 4)
 	r.name = FS(r, "GameFontHighlight")
 	r.name:SetPoint("TOPLEFT", 6, -5)
-	r.name:SetWidth(LIST_W - 6 - ACTION_W - 8)
+	r.name:SetWidth(NAME_W)
 	r.sub = FS(r, "GameFontHighlightSmall")
 	r.sub:SetPoint("BOTTOMLEFT", 6, 6)
-	r.sub:SetWidth(LIST_W - 6 - ACTION_W - 8)
+	r.sub:SetWidth(NAME_W)
+	r.shows = {}
 	for _, fs in ipairs({ r.name, r.sub, r.status }) do
 		if fs.SetWordWrap then fs:SetWordWrap(false) end
 	end
@@ -220,6 +229,47 @@ local function Row(i)
 	Tip(r, nil)
 	rows[i] = r
 	return r
+end
+
+-- Значок витрины в строке каталога: предмет в золотой рамке, подсказка — предмет, как в игре,
+-- щелчок — карточка мастера на профессии этого рецепта.
+local function ShowIcon(r, j)
+	local b = r.shows[j]
+	if b then return b end
+	b = CreateFrame("Button", nil, r)
+	b:SetSize(SHOW_SIZE, SHOW_SIZE)
+	local border = b:CreateTexture(nil, "BACKGROUND")
+	border:SetAllPoints()
+	border:SetColorTexture(1, 0.82, 0, 0.6)
+	b.icon = b:CreateTexture(nil, "ARTWORK")
+	b.icon:SetPoint("TOPLEFT", 1, -1)
+	b.icon:SetPoint("BOTTOMRIGHT", -1, 1)
+	b.icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+	local hl = b:CreateTexture(nil, "HIGHLIGHT")
+	hl:SetAllPoints()
+	hl:SetColorTexture(1, 1, 1, 0.2)
+	b:SetScript("OnClick", function(self)
+		if r.it and self.prof then ns.SafeCall("crafters: showcase", Open, r.it.key, self.prof) end
+	end)
+	Tip(b, nil)
+	r.shows[j] = b
+	return b
+end
+
+-- Витрина справа от имени, слева от «Шепнуть»; имя укорачивается на её ширину.
+local function RenderShowcase(r, show)
+	local n = #show
+	for j, s in ipairs(show) do
+		local b = ShowIcon(r, j)
+		b.prof, b.tip = s.prof, Views.CraftShowTip(s.id)
+		b.icon:SetTexture(ns.Crafters.RecipeIcon(s.id) or NO_ICON)
+		ns.Crafters.RecipeName(s.id) -- игра называет рецепт не сразу: к подсказке строки он уже назван
+		b:ClearAllPoints()
+		b:SetPoint("TOPRIGHT", r, "TOPRIGHT", -(ACTION_W + 4 + (n - j) * (SHOW_SIZE + 2)), -3)
+		b:Show()
+	end
+	for j = n + 1, #r.shows do r.shows[j]:Hide() end
+	r.name:SetWidth(n > 0 and NAME_W - n * (SHOW_SIZE + 2) - 2 or NAME_W)
 end
 
 local function FilterChip(id)
@@ -287,6 +337,7 @@ local function RenderList()
 		r.picked:SetShown(viewing ~= nil and it.key == viewing)
 		r.name:SetText(it.name)
 		r.sub:SetText(it.sub)
+		RenderShowcase(r, it.show or {})
 		r.button:SetShown(it.action == "whisper")
 		r.status:SetText(it.action and "" or (it.status or ""))
 		r:Show()
@@ -479,8 +530,16 @@ local function CardChip(i)
 	return chip
 end
 
+-- «Обновить рецепты» у чужой карточки; в своей та же кнопка — «Обновить»: отправить правки
+-- витрины сразу.
 local function Refresh()
-	if not viewing or not viewProf or viewing == ns.myKey then return end
+	if viewing and viewing == ns.myKey then
+		local ok, why, arg = ns.Crafters.Post()
+		cardWhy = not ok and Views.CraftWhy(why, arg) or nil
+		Pane.Render()
+		return
+	end
+	if not viewing or not viewProf then return end
 	local ok, why = ns.Crafters.Want(viewing, viewProf, true)
 	cardWhy = not ok and why ~= "busy" and Views.CraftWhy(why) or nil
 	Pane.Render()
@@ -493,7 +552,7 @@ end
 -- (card.listH). LIST_BOTTOM — низ списка от верха панели: ниже кнопки.
 local RECIPE_H, REAGENT_H, RECIPES_H, LIST_BOTTOM = 22, 16, 166, 292
 local RECIPE_ROWS = math.ceil(RECIPES_H / RECIPE_H) + 1
-local NO_ICON = "Interface\\Icons\\INV_Misc_QuestionMark"
+local RECIPE_NAME_W = SIDE_W - 26 - 26 - 22 -- название рецепта без звёздочки витрины
 local PLUS, MINUS = "Interface\\Buttons\\UI-PlusButton-Up", "Interface\\Buttons\\UI-MinusButton-Up"
 local expanded = {} -- [номер рецепта] = true: реагенты раскрыты, на сессию
 
@@ -550,12 +609,34 @@ local function ReagentLine(r, j)
 	return fs
 end
 
+-- Звёздочка в своей карточке: выставить рецепт на витрину или убрать с неё.
+local function Star(r)
+	local it = r.it
+	if not it or viewing ~= ns.myKey or not viewProf then return end
+	local ok, why = ns.Crafters.SetShow(viewProf, it.id, not it.show)
+	cardWhy = not ok and (why == "full" and L.CRAFT_SHOW_FULL:format(C.CRAFT_SHOW) or L.CRAFT_SHOW_MISSING) or nil
+	Pane.Render()
+end
+
 local function RecipeRow(i)
 	local r = CreateFrame("Button", nil, card.child)
 	r:SetSize(SIDE_W - 26, RECIPE_H)
+	-- Рецепт с витрины подсвечен золотым.
+	r.pin = r:CreateTexture(nil, "BACKGROUND")
+	r.pin:SetAllPoints()
+	r.pin:SetColorTexture(1, 0.82, 0, 0.1)
 	r.hl = r:CreateTexture(nil, "HIGHLIGHT")
 	r.hl:SetAllPoints()
 	r.hl:SetColorTexture(1, 1, 1, 0.07)
+	-- Звёздочка: в чужой карточке — пометка витрины, в своей — переключатель у каждого рецепта.
+	r.star = CreateFrame("Button", nil, r)
+	r.star:SetSize(16, 16)
+	r.star:SetPoint("TOPRIGHT", -22, -3)
+	r.star.icon = r.star:CreateTexture(nil, "ARTWORK")
+	r.star.icon:SetAllPoints()
+	r.star.icon:SetTexture(STAR)
+	r.star:SetScript("OnClick", function() ns.SafeCall("crafters: star", Star, r) end)
+	Tip(r.star, nil)
 	r.icon = r:CreateTexture(nil, "ARTWORK")
 	r.icon:SetSize(18, 18)
 	r.icon:SetPoint("TOPLEFT", 2, -2)
@@ -564,7 +645,7 @@ local function RecipeRow(i)
 	r.toggle:SetPoint("TOPRIGHT", -4, -4)
 	r.name = FS(r, "GameFontHighlightSmall")
 	r.name:SetPoint("TOPLEFT", 26, -5)
-	r.name:SetWidth(SIDE_W - 26 - 26 - 22)
+	r.name:SetWidth(RECIPE_NAME_W)
 	if r.name.SetWordWrap then r.name:SetWordWrap(false) end
 	r.lines = {}
 	r:SetScript("OnClick", function(self) ns.SafeCall("crafters: reagents", Toggle, self) end)
@@ -605,6 +686,19 @@ function PlaceRecipes()
 			for _, x in ipairs(d.reagents or {}) do ns.Crafters.ItemName(x.item) end
 			r.icon:SetTexture(d.icon or NO_ICON)
 			r.name:SetText(Views.CraftRecipeName(it))
+			local own = viewing == ns.myKey
+			local star = own or it.show ~= nil
+			r.pin:SetShown(it.show ~= nil)
+			r.star:SetShown(star)
+			r.star:EnableMouse(own)
+			r.star.icon:SetDesaturated(it.show == nil)
+			r.star.icon:SetAlpha(it.show and 1 or 0.35)
+			r.star.tip = own and function(tt)
+				tt:AddLine(L.CRAFT_SHOW_TITLE, 1, 0.82, 0)
+				tt:AddLine(L.CRAFT_SHOW_TIP:format(C.CRAFT_SHOW), 1, 1, 1, true)
+				tt:AddLine(it.show and L.CRAFT_SHOW_OFF or L.CRAFT_SHOW_ON, 0.5, 0.83, 0.76)
+			end or nil
+			r.name:SetWidth(star and RECIPE_NAME_W - 18 or RECIPE_NAME_W)
 			r.toggle:SetShown(Reagents(it) ~= nil)
 			r.toggle:SetTexture(open and MINUS or PLUS)
 			local lines = open and Views.CraftReagents(d) or {}
@@ -614,7 +708,7 @@ function PlaceRecipes()
 				fs:Show()
 			end
 			for j = #lines + 1, #r.lines do r.lines[j]:Hide() end
-			r.tip = Views.CraftRecipeTip(it.id, open)
+			r.tip = Views.CraftRecipeTip(it.id, open, it.show ~= nil and not own)
 		end
 		index = index + 1
 	end
@@ -652,6 +746,8 @@ local function BuildCard()
 	card.scroll = CreateFrame("ScrollFrame", nil, card, "UIPanelScrollFrameTemplate")
 	card.scroll:SetPoint("TOPLEFT", 0, -126)
 	card.scroll:SetSize(SIDE_W - 24, RECIPES_H)
+	-- Прокрутка сбрасывается и до первой отрисовки карточки (Open): список пока пуст.
+	card.items, card.tops, card.total, card.listH = {}, {}, 0, RECIPES_H
 	card.child = CreateFrame("Frame", nil, card.scroll)
 	card.child:SetSize(SIDE_W - 24, 10)
 	card.scroll:SetScrollChild(card.child)
@@ -678,7 +774,11 @@ local function BuildCard()
 	card.whisper:SetPoint("BOTTOMLEFT", 0, 2)
 	card.refresh = Button(card, L.CRAFT_REFRESH, 124, "refresh", Refresh)
 	card.refresh:SetPoint("LEFT", card.whisper, "RIGHT", 4, 0)
-	TextTip(card.refresh, L.CRAFT_REFRESH, L.CRAFT_REFRESH_TIP)
+	Tip(card.refresh, function(tt)
+		local own = viewing ~= nil and viewing == ns.myKey
+		tt:AddLine(own and L.CRAFT_UPDATE or L.CRAFT_REFRESH, 1, 0.82, 0)
+		tt:AddLine(own and L.CRAFT_UPDATE_TIP or L.CRAFT_REFRESH_TIP, 1, 1, 1, true)
+	end)
 	card.back = Button(card, L.CRAFT_BACK, 64, "back", function() Open(nil) end)
 	card.back:SetPoint("BOTTOMRIGHT", 0, 2)
 end
@@ -712,6 +812,7 @@ local function RenderCard(view)
 	for i = #view.profs + 1, #cardChips do cardChips[i]:Hide() end
 	-- Фильтр уровня задают поля над каталогом; в карточке под состоянием видно, что он действует.
 	local listState = cardWhy or (viewProf and Views.CraftListState(view.key, viewProf)) or ""
+	if view.mine then listState = listState ~= "" and (listState .. "\n" .. view.mine) or view.mine end
 	local note = Views.CraftLevelNote(levels)
 	if note then listState = listState ~= "" and (listState .. "\n" .. note) or note end
 	card.state:SetText(listState)
@@ -751,10 +852,18 @@ local function RenderCard(view)
 	end
 	card.empty:SetText(why)
 	card.whisper:SetShown(not view.own)
-	card.refresh:SetShown(not view.own)
 	card.whisper:SetEnabled(view.whisper)
-	local state = viewProf and ns.Crafters.AskState(view.key, viewProf)
-	card.refresh:SetEnabled(not (state and state.loading))
+	card.refresh:Show()
+	card.refresh:SetText(view.own and L.CRAFT_UPDATE or L.CRAFT_REFRESH)
+	card.refresh:ClearAllPoints()
+	if view.own then
+		card.refresh:SetPoint("BOTTOMLEFT", 0, 2)
+		card.refresh:SetEnabled(ns.Crafters.Dirty())
+	else
+		card.refresh:SetPoint("LEFT", card.whisper, "RIGHT", 4, 0)
+		local state = viewProf and ns.Crafters.AskState(view.key, viewProf)
+		card.refresh:SetEnabled(not (state and state.loading))
+	end
 end
 
 local function RenderSide()

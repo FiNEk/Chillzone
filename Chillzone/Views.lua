@@ -989,17 +989,42 @@ local function InLevels(id, levels)
 	return (not levels.min or level >= levels.min) and (not levels.max or level <= levels.max)
 end
 
--- Рецепты мастера, подходящие под запрос words (nil — любое название) и диапазон уровней levels:
--- до трёх названий и сколько всего. Скрытые персональные (Crafters.ShowBound) не ищутся.
+-- Витрина мастера: { id, prof } по порядку профессий карточки, только профессия prof (nil — все).
+function Views.CraftShowcase(card, prof)
+	local out = {}
+	for _, p in ipairs(card.profs) do
+		if not prof or p.id == prof then
+			for _, id in ipairs(p.show or {}) do out[#out + 1] = { id = id, prof = p.id } end
+		end
+	end
+	return out
+end
+
+-- Рецепт подходит под запрос words (nil — любое название) и диапазон уровней levels. Персональные
+-- скрыты, пока не включён Crafters.ShowBound; рецепт с витрины (pinned) мастер выставил сам.
+local function CraftHit(id, words, levels, all, pinned)
+	local key = words and RecipeKey(id)
+	return (not words or key ~= nil and Fits(key, words)) and InLevels(id, levels)
+		and (all or pinned or not ns.Crafters.RecipeBound(id))
+end
+
+-- Рецепты мастера, подходящие под запрос и уровни (CraftHit): до трёх названий и сколько всего.
+-- Витрина — первой, её рецепты ищутся и без загруженного списка.
 local function CraftHits(card, prof, words, levels)
 	local found, n = {}, 0
 	local all = ns.Crafters.ShowBound()
 	for _, p in ipairs(card.profs) do
 		if not prof or p.id == prof then
+			local pinned = {}
+			for _, id in ipairs(p.show or {}) do
+				pinned[id] = true
+				if CraftHit(id, words, levels, all, true) then
+					n = n + 1
+					if #found < 3 then found[#found + 1] = Codec.Plain(Views.RecipeName(id)) end
+				end
+			end
 			for _, id in ipairs(ns.Crafters.Recipes(card.key, p.id) or {}) do
-				local key = words and RecipeKey(id)
-				if (not words or key and Fits(key, words)) and InLevels(id, levels)
-					and (all or not ns.Crafters.RecipeBound(id)) then
+				if not pinned[id] and CraftHit(id, words, levels, all) then
 					n = n + 1
 					if #found < 3 then found[#found + 1] = Codec.Plain(Views.RecipeName(id)) end
 				end
@@ -1022,9 +1047,12 @@ local function CraftTip(card, presence)
 		for _, p in ipairs(card.profs) do
 			tt:AddLine(Views.CraftIcon(p.id) .. " " .. L.CRAFT_TIP_PROF:format(ns.Crafters.ProfName(p.id), p.skill, p.max, p.n), 1, 1, 1)
 		end
+		local show = {}
+		for i, s in ipairs(Views.CraftShowcase(card)) do show[i] = Codec.Plain(Views.RecipeName(s.id)) end
+		if #show > 0 then tt:AddLine(L.CRAFT_SHOW_LINE:format(table.concat(show, ", ")), 1, 0.82, 0, true) end
 		if card.note ~= "" then tt:AddLine(Codec.Plain(card.note), 0.8, 0.8, 0.8, true) end
 		if not card.own then tt:AddLine(L.CRAFT_TIP_AGE:format(Views.Ago(ns.ServerTime() - card.at)), 0.6, 0.6, 0.6) end
-		tt:AddLine(L.CRAFT_TIP_OPEN, 0.5, 0.83, 0.76)
+		tt:AddLine(card.own and L.CRAFT_TIP_OPEN_OWN or L.CRAFT_TIP_OPEN, 0.5, 0.83, 0.76, true)
 		if not card.own then tt:AddLine(L.TIP_MENU, 0.5, 0.83, 0.76) end
 	end
 end
@@ -1041,6 +1069,7 @@ function Views.CraftCount(n)
 end
 
 -- Одна строка каталога. action "whisper" — мастер в игре или был недавно; иначе status — давность.
+-- show — его витрина (Views.CraftShowcase): значки справа от имени.
 -- Профессии названы словами: «Алхимия 1/75, 3 рецепта». Число рецептов — только когда профессия
 -- одна (или выбран фильтр): с несколькими строка не уместилась бы, оно есть в подсказке.
 local function CraftRow(card, prof, presence, found, more)
@@ -1048,7 +1077,7 @@ local function CraftRow(card, prof, presence, found, more)
 	local row = {
 		key = card.key, card = card, own = card.own, presence = presence, rank = CRAFT_RANK[presence] or 3,
 		name = Views.CraftDot(presence) .. " " .. Views.Name(card.name, card.class) .. "  " .. GREY .. Codec.Plain(card.guild) .. level .. "|r",
-		tip = CraftTip(card, presence), skill = 0,
+		tip = CraftTip(card, presence), skill = 0, show = Views.CraftShowcase(card, prof),
 		-- Для меню правого щелчка (ChatPane.OpenPersonMenu); в группу — только тех, кто в игре.
 		person = not card.own and { name = card.name, class = card.class, guild = card.guild, online = presence == "online" } or nil,
 	}
@@ -1182,10 +1211,16 @@ function Views.CraftCard(key)
 	else
 		line = line .. ", " .. Views.Ago(ns.ServerTime() - card.at)
 	end
+	-- В своей карточке под состоянием списка — витрина и есть ли неотправленные правки.
+	local mine
+	if own then
+		mine = L.CRAFT_SHOW_MINE:format(ns.Crafters.ShowCount(), C.CRAFT_SHOW)
+		if ns.Crafters.Dirty() then mine = mine .. "\n" .. ORANGE .. L.CRAFT_SHOW_DIRTY .. "|r" end
+	end
 	return {
 		key = key, who = card.name, name = Views.CraftDot(own and "own" or presence) .. " " .. Views.Name(card.name, card.class), line = line,
 		note = card.note ~= "" and Codec.Plain(card.note) or nil, profs = card.profs,
-		whisper = presence == "online" or presence == "recent", own = own, card = card,
+		whisper = presence == "online" or presence == "recent", own = own, card = card, mine = mine,
 	}
 end
 
@@ -1200,38 +1235,53 @@ local function RecipeFilter(text)
 	return #words > 0 and words or nil
 end
 
--- Список рецептов одной профессии: { id, name, hit, known }, подходящие под общий поиск query —
--- первыми, без названия — в конце. only — поиск в самой карточке: остаются только рецепты, чьё
--- название подходит (ещё не названные игрой не подходят). levels — только предметы этих уровней
+-- Список рецептов одной профессии: { id, name, hit, known, show }. Витрина мастера (show — её
+-- порядок) — первой, затем подходящие под общий поиск query, без названия — в конце. Пока списка
+-- нет, видна одна витрина. only — поиск в самой карточке: остаются только рецепты, чьё название
+-- подходит (ещё не названные игрой не подходят). levels — только предметы этих уровней
 -- (Views.CraftLevels). Рецепты персональных при поднятии предметов скрыты, пока не включён
--- Crafters.ShowBound. Второе значение — сколько рецептов в списке мастера без учёта only, уровней
--- и скрытых, третье — сколько персональных среди подходящих по уровню.
+-- Crafters.ShowBound; с витрины — нет: их мастер выставил сам. Второе значение — сколько рецептов в
+-- списке мастера без учёта only, уровней и скрытых, третье — сколько скрываемых персональных среди
+-- подходящих по уровню.
 function Views.CraftRecipes(key, prof, query, only, levels)
+	local card
+	if key == ns.myKey then card = ns.Crafters.Own() else card = ns.Crafters.Get(key) end
+	local p = card and CraftProf(card, prof)
 	local ids = ns.Crafters.Recipes(key, prof)
-	if not ids then return {}, 0, 0 end
+	local total = ids and #ids or 0
+	local order, pinned = {}, {}
+	for i, id in ipairs(p and p.show or {}) do
+		pinned[id] = i
+		order[#order + 1] = id
+	end
+	for _, id in ipairs(ids or {}) do
+		if not pinned[id] then order[#order + 1] = id end
+	end
 	local words, keep = Views.CraftWords(query), RecipeFilter(only)
 	local all = ns.Crafters.ShowBound()
 	local items, bound = {}, 0
-	for _, id in ipairs(ids) do
+	for _, id in ipairs(order) do
 		local name = ns.Crafters.RecipeName(id)
 		local k = name and RecipeKey(id)
-		local personal = ns.Crafters.RecipeBound(id) == true
+		local show = pinned[id]
+		local personal = not show and ns.Crafters.RecipeBound(id) == true
 		local inLevels = InLevels(id, levels)
 		if personal and inLevels then bound = bound + 1 end
 		if inLevels and (all or not personal) and (not keep or k and Fits(k, keep)) then
 			items[#items + 1] = {
 				id = id, name = name and Codec.Plain(name) or L.CRAFT_RECIPE_UNKNOWN:format(id), sort = k or "",
-				hit = words ~= nil and k ~= nil and Fits(k, words), known = name ~= nil,
+				hit = words ~= nil and k ~= nil and Fits(k, words), known = name ~= nil, show = show,
 			}
 		end
 	end
 	table.sort(items, function(a, b)
+		if (a.show or 99) ~= (b.show or 99) then return (a.show or 99) < (b.show or 99) end
 		if a.hit ~= b.hit then return a.hit end
 		if a.known ~= b.known then return a.known end
 		if a.sort ~= b.sort then return a.sort < b.sort end
 		return a.id < b.id
 	end)
-	return items, #ids, bound
+	return items, total, bound
 end
 
 -- Название рецепта в строке списка: подходящее под поиск — золотом, без названия — серым.
@@ -1254,18 +1304,35 @@ function Views.CraftReagents(d, size)
 	return lines
 end
 
--- Подсказка строки рецепта: предмет (или заклинание, как у зачарования) так, как его показывает
--- игра, ниже — реагенты и что делает щелчок. open — реагенты уже раскрыты в списке.
-function Views.CraftRecipeTip(id, open)
+-- Предмет рецепта (или заклинание, как у зачарования) в подсказке так, как его показывает игра.
+local function RecipeItemTip(tt, id)
+	local d = ns.Crafters.RecipeDetails(id)
+	local shown = false
+	if d.item and type(tt.SetItemByID) == "function" then
+		shown = pcall(tt.SetItemByID, tt, d.item)
+	elseif type(tt.SetSpellByID) == "function" then
+		shown = pcall(tt.SetSpellByID, tt, id)
+	end
+	if not shown then tt:AddLine(Codec.Plain(Views.RecipeName(id)), 1, 0.82, 0) end
+	return d
+end
+
+-- Подсказка значка витрины в строке каталога: предмет и что делает щелчок.
+function Views.CraftShowTip(id)
 	return function(tt)
-		local d = ns.Crafters.RecipeDetails(id)
-		local shown = false
-		if d.item and type(tt.SetItemByID) == "function" then
-			shown = pcall(tt.SetItemByID, tt, d.item)
-		elseif type(tt.SetSpellByID) == "function" then
-			shown = pcall(tt.SetSpellByID, tt, id)
-		end
-		if not shown then tt:AddLine(Codec.Plain(Views.RecipeName(id)), 1, 0.82, 0) end
+		RecipeItemTip(tt, id)
+		tt:AddLine(" ")
+		tt:AddLine(L.CRAFT_SHOW_PINNED, 1, 0.82, 0)
+		tt:AddLine(L.CRAFT_TIP_OPEN, 0.5, 0.83, 0.76)
+	end
+end
+
+-- Подсказка строки рецепта: предмет, пометка витрины (pinned), ниже — реагенты и что делает
+-- щелчок. open — реагенты уже раскрыты в списке.
+function Views.CraftRecipeTip(id, open, pinned)
+	return function(tt)
+		local d = RecipeItemTip(tt, id)
+		if pinned then tt:AddLine(L.CRAFT_SHOW_PINNED, 1, 0.82, 0) end
 		if not d.reagents or #d.reagents == 0 then return end
 		tt:AddLine(" ")
 		tt:AddLine(L.CRAFT_REAGENTS, 1, 0.82, 0)
@@ -1320,5 +1387,7 @@ function Views.CraftMine()
 	local posted = Crafters.Posted()
 	local status = posted and (Crafters.Dirty() and (ORANGE .. L.CRAFT_CHANGED .. "|r") or (GREEN .. L.CRAFT_POSTED .. "|r"))
 		or L.CRAFT_NOT_POSTED
+	-- Витрина правится в своей карточке: подсказка, как туда попасть.
+	if posted then status = status .. "\n" .. GREY .. L.CRAFT_SHOW_HINT .. "|r" end
 	return { profs = profs, hint = hint, status = status, posted = posted }
 end

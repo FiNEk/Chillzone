@@ -41,9 +41,11 @@
 --         приглашён, отказ) — шёпотом напрямую, без реле.
 -- Мастера: W1~C~st~guild~class~level~profs~note · W1~X~st~guild (карточка снята)   (после 0.14.2)
 --           st     серверное время последней правки карточки, десятичное
---           profs  id:skill:max:n:hash[,...] — не больше CRAFT_PROFS профессий: номер базовой
---                  профессии игры, навык и его предел, сколько рецептов в списке и хеш
---                  упакованного списка (4 знака base36, Codec.IdsHash)
+--           profs  id:skill:max:n:hash[:show][,...] — не больше CRAFT_PROFS профессий: номер
+--                  базовой профессии игры, навык и его предел, сколько рецептов в списке, хеш
+--                  упакованного списка (4 знака base36, Codec.IdsHash) и витрина — номера
+--                  рецептов этой профессии через точку, на всю карточку не больше CRAFT_SHOW;
+--                  испорченная витрина отбрасывается, карточка остаётся
 --           note   свободный текст автора без "~" и "|", до CRAFT_NOTE байт
 --         Идёт только в конверте строки чата M1~A~guild~W1~..., подписанном как M1: S1 по GUILD
 --         своей гильдии и через реле (режим P). Реле, репортёры и чат 0.14.2 и старше поступают с
@@ -692,6 +694,7 @@ end
 ---------------------------------------------------------------------------
 Codec.CRAFT_NOTE = 60
 Codec.CRAFT_PROFS = 5
+Codec.CRAFT_SHOW = 3 -- рецептов на витрине на всю карточку
 Codec.CRAFT_PAGE = 200 -- байт упакованного списка на странице WL
 Codec.CRAFT_MAX_PAGES = 32
 Codec.CRAFT_IDS = 2000 -- номеров в распакованном списке: больше не бывает ни у кого
@@ -801,23 +804,40 @@ function Codec.CraftPages(packed, size)
 	return pages
 end
 
--- c: { mode, st, guild, class, level, profs = { { id, skill, max, n, hash } }, note }. nil — нет
--- времени, гильдии или (у карточки) профессий. Примечание укорачивается, чтобы всё сообщение
--- уместилось в 255 байт.
+-- Витрина одной профессии: номера рецептов без повторов (seen — на всю карточку), пока на
+-- карточку их не больше CRAFT_SHOW. Неподходящие номера пропускаются.
+local function ShowIds(list, seen, out)
+	local ids = {}
+	for _, v in ipairs(type(list) == "table" and list or {}) do
+		local n = tonumber(v)
+		if n and n == floor(n) and n >= 1 and n <= CRAFT_ID_MAX and not seen[n] and out.n < Codec.CRAFT_SHOW then
+			seen[n], out.n = true, out.n + 1
+			ids[#ids + 1] = n
+		end
+	end
+	return ids
+end
+
+-- c: { mode, st, guild, class, level, profs = { { id, skill, max, n, hash, show } }, note }. nil —
+-- нет времени, гильдии или (у карточки) профессий. show — витрина профессии, номера рецептов.
+-- Примечание укорачивается, чтобы всё сообщение уместилось в 255 байт.
 function Codec.EncodeCraft(c)
 	local guild = clean(c.guild)
 	local st = groupId(tostring(floor(tonumber(c.st) or 0)))
 	if not st or guild == "" or LongGuild(guild) then return nil end
 	if c.mode == "X" then return ("W1~X~%d~%s"):format(st, guild) end
 	if c.mode ~= "C" then return nil end
-	local profs, seen = {}, {}
+	local profs, seen, shown, count = {}, {}, {}, { n = 0 }
 	for _, p in ipairs(c.profs or {}) do
 		local id = floor(tonumber(p.id) or 0)
 		local hash = craftHash(p.hash)
 		if id >= 1 and id <= CRAFT_ID_MAX and hash and not seen[id] and #profs < Codec.CRAFT_PROFS then
 			seen[id] = true
-			profs[#profs + 1] = ("%d:%d:%d:%d:%s"):format(id, bounded(p.skill, 0, CRAFT_SKILL_MAX),
+			local entry = ("%d:%d:%d:%d:%s"):format(id, bounded(p.skill, 0, CRAFT_SKILL_MAX),
 				bounded(p.max, 0, CRAFT_SKILL_MAX), bounded(p.n, 0, CRAFT_COUNT_MAX), hash)
+			local show = ShowIds(p.show, shown, count)
+			if #show > 0 then entry = entry .. ":" .. concat(show, ".") end
+			profs[#profs + 1] = entry
 		end
 	end
 	if #profs == 0 then return nil end
@@ -826,8 +846,9 @@ function Codec.EncodeCraft(c)
 	return head .. Codec.GroupText(c.note, math.min(Codec.CRAFT_NOTE, 255 - #head))
 end
 
--- Таблица как у EncodeCraft или nil. Поля после примечания и после хеша профессии не мешают:
--- их добавят следующие версии.
+-- Таблица как у EncodeCraft или nil. Поля после примечания и после витрины профессии не мешают:
+-- их добавят следующие версии. Витрина без чисел или с лишними номерами укорачивается, карточка
+-- из-за неё не отбрасывается.
 function Codec.DecodeCraft(s)
 	if type(s) ~= "string" or #s > 255 then return nil end
 	local mode, rawSt, rest = s:match("^W1~([CX])~(%d+)~(.+)$")
@@ -840,16 +861,23 @@ function Codec.DecodeCraft(s)
 	end
 	local guild, class, level, list, note = rest:match("^([^~|]+)~(%u?%u?)~(%d%d?%d?)~([^~]+)~([^~]*)")
 	if not guild or LongGuild(guild) then return nil end
-	local profs, seen = {}, {}
+	local profs, seen, shown, count = {}, {}, {}, { n = 0 }
 	for entry in (list .. ","):gmatch("([^,]*),") do
-		local id, skill, cap, n, hash = entry:match("^(%d+):(%d+):(%d+):(%d+):(%w+)")
+		local id, skill, cap, n, hash, extra = entry:match("^(%d+):(%d+):(%d+):(%d+):(%w+)(.*)$")
 		id, skill, cap, n, hash = craftNum(id, CRAFT_ID_MAX), craftNum(skill, CRAFT_SKILL_MAX),
 			craftNum(cap, CRAFT_SKILL_MAX), craftNum(n, CRAFT_COUNT_MAX), craftHash(hash)
 		if not id or id < 1 or not skill or not cap or not n or not hash or seen[id] or #profs >= Codec.CRAFT_PROFS then
 			return nil
 		end
 		seen[id] = true
-		profs[#profs + 1] = { id = id, skill = skill, max = cap, n = n, hash = hash }
+		local p = { id = id, skill = skill, max = cap, n = n, hash = hash }
+		local raw = {}
+		for v in (extra:match("^:([%d.]+)") or ""):gmatch("[^.]+") do
+			raw[#raw + 1] = craftNum(v, CRAFT_ID_MAX) or 0
+		end
+		local show = ShowIds(raw, shown, count)
+		if #show > 0 then p.show = show end
+		profs[#profs + 1] = p
 	end
 	return {
 		mode = "C", st = st, guild = guild, class = classFile(class), level = bounded(level, 0, 255),

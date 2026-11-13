@@ -5,7 +5,8 @@
 -- изученных рецептов. Чужое окно (по ссылке, гильдейское, у НИП) и чтение в бою пропускаются.
 -- Чтение и проверка чужого окна портированы из Olympus Crafters.lua (ReadModern, External).
 --
--- Карточка W1 — отмеченные профессии с навыком, числом рецептов и хешем списка, примечание. Она
+-- Карточка W1 — отмеченные профессии с навыком, числом рецептов и хешем списка, витрина (до
+-- CRAFT_SHOW своих рецептов, которые видны в строке каталога и первыми в карточке), примечание. Она
 -- подписывается и расходится только в конверте строки чата (Codec.WrapCraft): S1 по GUILD своей
 -- гильдии и через реле остальным (режим P). Реле, репортёры и чат 0.14.2 и старше пересылают
 -- конверт как строку чата и молча его отбрасывают, поэтому Security.lua новый вид не нужен.
@@ -50,6 +51,7 @@ local cards -- ns.store.crafters.cards: [ключ автора] = карточк
 local lists -- ns.store.crafters.lists: [ключ автора] = { [профессия] = { hash, ids, at } }
 local closed = {} -- [ключ автора] = { at, seq } снятой карточки: старый пакет её не вернёт
 local unpacked = {} -- [ключ автора] = { [профессия] = { hash, ids } }: распакованное на сессию
+local ownSets = {} -- [профессия] = { hash, set }: свои изученные рецепты для проверки витрины
 local asks = {} -- [ключ мастера] = мой запрос списка: { key, name, prof, have, deadline, hash, n, got, pages }
 local failedAsk = {} -- ["ключ:профессия"] = { at, why }: мастер не ответил
 local lastAsk = {} -- ["ключ:профессия"] = когда я спрашивал
@@ -404,19 +406,81 @@ function Crafters.Posted()
 	return saved ~= nil and saved.posted == true
 end
 
--- Отмеченные профессии для карточки: не больше CRAFT_PROFS.
+-- Рецепт есть в своём прочитанном списке профессии.
+local function Learned(prof, id)
+	local p = saved and saved.profs[prof]
+	if not p then return false end
+	local memo = ownSets[prof]
+	if not memo or memo.hash ~= p.hash then
+		memo = { hash = p.hash, set = {} }
+		for _, r in ipairs(Crafters.Recipes(ns.myKey, prof) or {}) do memo.set[r] = true end
+		ownSets[prof] = memo
+	end
+	return memo.set[id] == true
+end
+
+-- Витрина карточки из отметок list (по умолчанию сохранённых): { [профессия] = { номера } } и
+-- сколько всего. Только профессии карточки chosen и изученные рецепты, по порядку отметки, не
+-- больше CRAFT_SHOW. Отметки снятой с карточки профессии хранятся и вернутся вместе с ней.
+local function Showcase(chosen, list)
+	local posted, out, n = {}, {}, 0
+	for _, p in ipairs(chosen) do posted[p.id] = true end
+	for _, s in ipairs(list or saved.show) do
+		if n < C.CRAFT_SHOW and posted[s.prof] and Learned(s.prof, s.id) then
+			out[s.prof] = out[s.prof] or {}
+			table.insert(out[s.prof], s.id)
+			n = n + 1
+		end
+	end
+	return out, n
+end
+
+-- Отмеченные профессии для карточки: не больше CRAFT_PROFS, у каждой — её витрина (show).
 local function Chosen()
 	local out = {}
 	for _, p in ipairs(Crafters.MyProfs()) do
 		if p.post and #out < C.CRAFT_PROFS then out[#out + 1] = p end
 	end
+	local show = Showcase(out)
+	for _, p in ipairs(out) do p.show = show[p.id] end
 	return out
+end
+
+-- Сколько рецептов на своей витрине.
+function Crafters.ShowCount()
+	if not saved then return 0 end
+	return (select(2, Showcase(Chosen())))
+end
+
+-- Поставить свой рецепт профессии prof на витрину (on) или убрать с неё. false, причина: full —
+-- витрина полна, missing — профессии нет в карточке или рецепта нет в её списке.
+function Crafters.SetShow(prof, id, on)
+	if not saved then return false, "failed" end
+	-- Отметки рецептов, которых больше нет в своих списках, при этом выбрасываются.
+	local keep = {}
+	for _, s in ipairs(saved.show) do
+		if not (s.prof == prof and s.id == id) and Learned(s.prof, s.id) then keep[#keep + 1] = s end
+	end
+	if on then
+		local chosen = Chosen()
+		if not HasProf({ profs = chosen }, prof) or not Learned(prof, id) then return false, "missing" end
+		if select(2, Showcase(chosen, keep)) >= C.CRAFT_SHOW then return false, "full" end
+		keep[#keep + 1] = { prof = prof, id = id }
+	end
+	while #keep > C.CRAFT_SHOW * C.CRAFT_PROFS do table.remove(keep, 1) end
+	saved.show = keep
+	Changed()
+	return true
 end
 
 -- Что в карточке, кроме времени, класса и уровня: смена — правка, а не повтор.
 local function Signature()
 	local parts = { tostring(ns.MyGuild()), saved.note or "" }
-	for _, p in ipairs(Chosen()) do parts[#parts + 1] = ("%d:%d:%d:%d:%s"):format(p.id, p.skill, p.max, p.n, p.hash) end
+	for _, p in ipairs(Chosen()) do
+		local entry = ("%d:%d:%d:%d:%s"):format(p.id, p.skill, p.max, p.n, p.hash)
+		if p.show then entry = entry .. ":" .. table.concat(p.show, ".") end
+		parts[#parts + 1] = entry
+	end
 	return table.concat(parts, "~")
 end
 
@@ -792,6 +856,7 @@ end
 -- сессию. По сети они не ходят. Названия реагентов игра может догружать с сервера.
 ---------------------------------------------------------------------------
 local details = {} -- [номер рецепта] = { icon, item, reagents = { { item, n } } }
+local icons = {} -- [номер рецепта] = значок или false: только для витрины в строках каталога
 local itemNames, itemWait = {}, {} -- [предмет] = название; [предмет] = true — игра догружает
 local recipeItems = {} -- [номер рецепта] = предмет или false: рецепт предмета не создаёт
 local itemFacts = {} -- [предмет] = { bound — персональный при поднятии, level — требуемый уровень }
@@ -821,19 +886,37 @@ local function Reagents(id)
 	return out
 end
 
--- { icon, item, reagents } рецепта; поля, которых игра не знает, — nil.
-function Crafters.RecipeDetails(id)
-	local d = details[id]
-	if d then return d end
+-- Значок рецепта и предмет, который он создаёт; чего игра не знает — nil.
+local function Look(id)
 	local T = TradeSkill()
 	local made = Call(T, "GetRecipeOutputItemData", id)
 	local item = type(made) == "table" and type(made.itemID) == "number" and made.itemID > 0 and made.itemID or nil
 	local info = Call(T, "GetRecipeInfo", id)
 	local icon = Texture(type(info) == "table" and info.icon) or Texture(type(made) == "table" and made.icon)
 		or item and Texture(Call(C_Item, "GetItemIconByID", item)) or Texture(Call(C_Spell, "GetSpellTexture", id))
+	return icon, item
+end
+
+-- { icon, item, reagents } рецепта; поля, которых игра не знает, — nil.
+function Crafters.RecipeDetails(id)
+	local d = details[id]
+	if d then return d end
+	local icon, item = Look(id)
 	d = { icon = icon, item = item, reagents = Reagents(id) }
 	details[id] = d
 	return d
+end
+
+-- Только значок рецепта, без реагентов: витрина видна в каждой строке каталога.
+function Crafters.RecipeIcon(id)
+	local d = details[id]
+	if d then return d.icon end
+	local icon = icons[id]
+	if icon == nil then
+		icon = Look(id) or false
+		icons[id] = icon
+	end
+	return icon or nil
 end
 
 function Crafters.ItemIcon(item)
@@ -985,6 +1068,11 @@ local function Valid(card, key)
 	for _, p in ipairs(card.profs) do
 		if type(p) ~= "table" or type(p.id) ~= "number" or type(p.hash) ~= "string" then return false end
 		p.skill, p.max, p.n = tonumber(p.skill) or 0, tonumber(p.max) or 0, tonumber(p.n) or 0
+		local show = {}
+		for _, id in ipairs(type(p.show) == "table" and p.show or {}) do
+			if type(id) == "number" and #show < C.CRAFT_SHOW then show[#show + 1] = id end
+		end
+		p.show = #show > 0 and show or nil
 	end
 	return true
 end
@@ -1003,6 +1091,13 @@ local function Restore()
 			p.readAt = tonumber(p.readAt) or 0
 		end
 	end
+	local show = {}
+	for _, s in ipairs(type(saved.show) == "table" and saved.show or {}) do
+		if type(s) == "table" and type(s.prof) == "number" and type(s.id) == "number" then
+			show[#show + 1] = { prof = s.prof, id = s.id }
+		end
+	end
+	saved.show = show
 	saved.note = type(saved.note) == "string" and saved.note or ""
 	saved.posted = saved.posted == true
 	saved.sentAt = tonumber(saved.sentAt)
