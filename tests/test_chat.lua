@@ -1091,16 +1091,16 @@ T.test("окно: служебные значки под повседневны�
 	T.same(TabColumn(K), { "chat", "groups", "census", "requests", "kingdom", "|", "settings", "manage" }, "глава: 5 и 2")
 	T.same(TabColumn(A), { "chat", "groups", "census", "requests", "kingdom", "|", "settings", "manage" }, "офицер: 5 и 2")
 	T.same(TabColumn(M), { "chat", "groups", "census", "kingdom", "|", "settings" }, "рядовой: без «Заявок» и «Управления»")
-	for _, key in ipairs({ "union", "transfer", "debug", "journal" }) do T.no(rawget(UI.tabs, key), "нет отдельного значка " .. key) end
+	for _, key in ipairs({ "union", "roster", "transfer", "debug", "journal" }) do T.no(rawget(UI.tabs, key), "нет отдельного значка " .. key) end
 
-	-- Главе объединения доступны все четыре раздела; значок открывает первый, потом — последний открытый.
+	-- Главе объединения доступны все пять разделов; значок открывает первый, потом — последний открытый.
 	UI.tabs.manage:Click()
 	T.eq(UI.Current(), "union", "первым — «Объединение»")
 	T.ok(UI.tabs.manage:GetChecked(), "отмечено «Управление»")
 	T.no(UI.tabs.settings:GetChecked())
 	T.ok(UI.switcher:IsShown(), "переключатель разделов виден")
 	T.eq(UI.heading:GetText(), "", "название вкладки заменяет переключатель")
-	for _, key in ipairs({ "union", "transfer", "debug", "journal" }) do T.ok(UI.sections[key]:IsShown(), key) end
+	for _, key in ipairs({ "union", "roster", "transfer", "debug", "journal" }) do T.ok(UI.sections[key]:IsShown(), key) end
 	UI.sections.debug:Click()
 	T.eq(UI.Current(), "debug")
 	T.ok(UI.tabs.manage:GetChecked(), "раздел не меняет отмеченный значок")
@@ -1117,9 +1117,10 @@ T.test("окно: служебные значки под повседневны�
 	T.eq(UI.Current(), "journal", "кнопка в Настройках открывает журнал")
 	T.ok(UI.tabs.manage:GetChecked(), "у главы журнал — раздел «Управления»")
 
-	-- Офицеру главной «Объединение» недоступно: значок ведёт в «Кадры».
+	-- Офицеру главной «Объединение» недоступно: значок ведёт в «Состав», рядом «Кадры».
 	A.ns.UI.tabs.manage:Click()
-	T.eq(A.ns.UI.Current(), "transfer")
+	T.eq(A.ns.UI.Current(), "roster")
+	T.ok(A.ns.UI.sections.transfer:IsShown())
 	T.no(A.ns.UI.sections.union:IsShown(), "кнопки «Объединения» нет")
 	T.ok(A.ns.UI.sections.journal:IsShown())
 
@@ -1141,7 +1142,7 @@ T.test("окно: служебные значки под повседневны�
 	A.env.GameTooltip = { SetOwner = function() end, Show = function() end, Hide = function() end,
 		AddLine = function(_, text) shown[#shown + 1] = text end }
 	A.ns.UI.tabs.manage.scripts.OnEnter(A.ns.UI.tabs.manage)
-	T.same(shown, { L.TAB_MANAGE, L.TAB_TRANSFER .. ", " .. L.TAB_DEBUG .. ", " .. L.TAB_JOURNAL })
+	T.same(shown, { L.TAB_MANAGE, L.TAB_ROSTER .. ", " .. L.TAB_TRANSFER .. ", " .. L.TAB_DEBUG .. ", " .. L.TAB_JOURNAL })
 	Errors(c)
 end)
 

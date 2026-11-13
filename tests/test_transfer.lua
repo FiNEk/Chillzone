@@ -1,4 +1,4 @@
--- Кадры (Transfer.lua, TransferPane.lua, CommandBox.lua): просьбы офицерам гильдии исключить или
+-- Кадры (Transfer.lua, TransferPane.lua, RosterPane.lua, CommandBox.lua): просьбы офицерам гильдии исключить или
 -- пригласить игрока, команды /gremove и /ginvite, которые игрок вводит сам, итог по системным
 -- строкам гильдии и ростеру, права просящего, состав гильдии и очередь исключения.
 local T = ...
@@ -295,67 +295,132 @@ T.test("кадры: раздел «Управления» — просьба с�
 	Errors(c)
 end)
 
-T.test("кадры: состав гильдии — давность входа, отметки и очередь команд", function()
+-- Текст без цветовых кодов игры.
+local function Plain(text) return ((text or ""):gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "")) end
+
+T.test("кадры: «Состав» — давность входа, команда по щелчку и очередь исключения", function()
 	local w, c = Build()
 	w:AddOffline(NORTH, "Старик Давний" .. REALM, 3, 60, "MAGE", 90)
 	w:AddOffline(NORTH, "Сонный Ленивый" .. REALM, 3, 40, "ROGUE", 45)
 	w:AddOffline(NORTH, "Свежий Новый" .. REALM, 3, 20, "PRIEST", 2)
 	local V, L = c.V.ns, c.V.ns.L
 	V.Roster.Scan()
-	V.UI.Toggle("transfer")
-	local f = V.TransferPane.frames
-	T.ok(f.tools:IsShown(), "панель отметок")
+	c.B.ns.UI.Toggle("roster")
+	T.ok(c.B.ns.UI.Current() ~= "roster", "рядовой раздел не видит")
+	V.UI.Toggle("roster")
+	T.eq(V.UI.Current(), "roster")
+	T.ok(V.UI.sections.roster:IsShown(), "«Состав» — раздел «Управления»")
+	local f = V.RosterPane.frames
+	T.ok(f.tools:IsShown(), "строка отметок")
 	T.ok(f.head:IsShown(), "заголовок таблицы")
+	T.no(f.box:IsShown())
 	T.no(f.tools.showAll:IsShown(), "ростер полный — показывать всех не нужно")
-	T.ok(Has(f.members[1].cells[1]:GetText(), "Старик Давний"), "дольше всех не заходивший — сверху")
-	T.eq(f.members[1].cells[4]:GetText(), L.TRANSFER_DAYS:format(90))
+	T.eq(f.tools.info:GetText(), L.TRANSFER_TOTAL:format(#V.Roster.members))
+	T.ok(Has(f.rows[1].cells[1]:GetText(), "Старик Давний"), "дольше всех не заходивший — сверху")
+	T.eq(Plain(f.rows[1].cells[4]:GetText()), L.TRANSFER_DAYS:format(90))
+	T.eq(Plain(f.tools.count:GetText()), "2", "дольше 30 дней не заходили двое")
+	T.ok(f.tools.kick.enabled)
+	-- Сортировка по имени и обратно.
+	f.head.cells[1]:Click()
+	T.ok(Has(f.rows[1].cells[1]:GetText(), "Борис Быстрый"), "по имени")
+	f.head.cells[1]:Click()
+	T.ok(Has(f.rows[1].cells[1]:GetText(), "Старик Давний"), "по имени в обратном порядке")
+	f.head.cells[4]:Click()
+	-- Щелчок по строке — команда для одного игрока; себя исключить нельзя.
 	local selfRow
-	for _, r in ipairs(f.members) do
+	for _, r in ipairs(f.rows) do
 		if r:IsShown() and r.person and V.IsMe(r.person.name) then selfRow = r end
 	end
 	T.ok(selfRow, "своя строка в составе")
-	T.no(selfRow.check.enabled, "себя отметить нельзя")
-	-- Щелчок по строке подставляет игрока в форму.
-	f.members[1]:Click()
-	T.eq(f.input:GetText(), "Старик Давний")
-	-- Сортировка по имени и обратно.
-	f.head.cells[1]:Click()
-	T.ok(Has(f.members[1].cells[1]:GetText(), "Борис Быстрый"), "по имени")
-	f.head.cells[1]:Click()
-	T.ok(Has(f.members[1].cells[1]:GetText(), "Старик Давний"), "по имени в обратном порядке")
-	f.head.cells[4]:Click()
-	-- Отметить не заходивших дольше 30 дней.
-	f.tools.days:SetText("30")
-	f.tools.mark:Click()
-	T.eq(f.tools.kick:GetText(), L.TRANSFER_KICK_CHECKED:format(2))
-	T.ok(f.tools.kick.enabled)
+	selfRow:Click()
+	T.no(f.box:IsShown(), "себя исключить нельзя")
+	f.rows[1]:Click()
+	T.ok(f.box:IsShown(), "щелчок по строке — команда")
+	T.eq(f.box:Command(), "/gremove Старик Давний")
+	T.eq(f.box.title:GetText(), L.COMMAND_KICK .. ":")
+	T.ok(f.box.edit:HasFocus(), "команда выделена для копирования")
+	T.no(f.tools:IsShown(), "строка команды на месте строки отметок")
+	T.ok(f.head:IsShown(), "таблица на месте")
+	T.no(f.box.skip:IsShown(), "одна команда — пропускать нечего")
+	T.ok(f.box.alt:IsShown(), "одного игрока можно перенести")
+	T.eq(f.box.close:GetText(), L.COMMAND_CLOSE)
+	-- Ctrl+C: подсказка меняется, поле отпускает фокус, чтобы следующий Enter открыл чат игры.
+	c.V.ctrl = true
+	f.box.edit:GetScript("OnKeyDown")(f.box.edit, "C")
+	T.eq(f.box.hint:GetText(), L.COMMAND_COPIED)
+	w:Run(1)
+	T.no(f.box.edit:HasFocus(), "после копирования фокус отпущен")
+	T.eq(f.box:Command(), "/gremove Старик Давний", "команда остаётся до сообщения гильдии")
+	-- «Перенести» — игрок в форме «Кадров».
+	f.box.alt:Click()
+	T.eq(V.UI.Current(), "transfer")
+	T.eq(V.TransferPane.frames.input:GetText(), "Старик Давний")
+	T.eq(V.TransferPane.frames.from:GetText(), NORTH)
+	T.no(f.box:IsShown(), "строка команды закрыта")
+	-- Очередь: двое не заходивших дольше 30 дней, самые давние первыми.
+	V.UI.Toggle("roster")
 	f.tools.kick:Click()
 	T.ok(f.box:IsShown(), "очередь команд")
 	T.eq(f.box:Command(), "/gremove Старик Давний")
-	T.ok(Has(f.box.title:GetText(), L.TRANSFER_QUEUE_PROGRESS:format(1, 2)))
+	T.eq(f.box.title:GetText(), L.COMMAND_KICK .. " " .. L.COMMAND_PROGRESS:format(1, 2) .. ":")
 	T.ok(f.box.skip:IsShown())
+	T.no(f.box.alt:IsShown())
+	T.eq(f.box.close:GetText(), L.COMMAND_STOP)
+	T.ok(f.rows[1].current:IsShown(), "текущий игрок подсвечен")
+	T.no(f.rows[2].current:IsShown())
+	f.rows[2]:Click()
+	T.eq(f.box:Command(), "/gremove Старик Давний", "щелчок по строке очередь не сбивает")
+	-- Окно закрыто: очередь идёт, но скрытая строка клавиатуру не забирает.
+	V.UI.Toggle()
+	T.no(f.box.edit:HasFocus())
 	c.V:GuildCommand(f.box:Command())
 	T.ok(Until(w, function() return f.box:Command() == "/gremove Сонный Ленивый" end),
 		"следующая команда — после сообщения гильдии")
-	T.ok(Has(f.box.title:GetText(), L.TRANSFER_QUEUE_PROGRESS:format(2, 2)))
-	T.eq(f.tools.kick:GetText(), L.TRANSFER_KICK_CHECKED:format(1), "исключённый снят с отметок")
+	T.no(f.box.edit:HasFocus(), "окно закрыто — фокус не забран")
+	V.UI.Toggle("roster")
+	T.ok(f.box.edit:HasFocus(), "окно открыто — команда снова выделена")
+	T.eq(f.box.title:GetText(), L.COMMAND_KICK .. " " .. L.COMMAND_PROGRESS:format(2, 2) .. ":")
 	f.box.skip:Click()
 	T.no(f.box:IsShown(), "очередь закончилась")
-	T.eq(f.message:GetText(), L.TRANSFER_QUEUE_DONE:format(1, 2))
-	T.eq(f.tools.kick:GetText(), L.TRANSFER_KICK_CHECKED:format(1), "пропущенный остался отмеченным")
-	f.tools.unmark:Click()
-	T.eq(f.tools.kick:GetText(), L.TRANSFER_KICK_CHECKED:format(0))
+	T.ok(f.tools:IsShown())
+	T.eq(f.tools.info:GetText(), L.TRANSFER_QUEUE_DONE:format(1, 2))
+	T.eq(Plain(f.tools.count:GetText()), "1", "пропущенный остался среди неактивных")
+	-- Порог в днях меняет число.
+	f.tools.days:SetText("100")
+	f.tools.days:GetScript("OnTextChanged")(f.tools.days, true)
+	T.eq(Plain(f.tools.count:GetText()), "0")
 	T.no(f.tools.kick.enabled)
+	T.eq(f.tools.info:GetText(), L.TRANSFER_TOTAL:format(4), "итог очереди сменило число участников, исключённого нет")
 	-- Длинный состав: строк таблицы немного, прокрутка переставляет их на видимую часть.
 	for i = 1, 40 do w:AddOffline(NORTH, ("Игрок%02d Севера" .. REALM):format(i), 3, 30, "MAGE", 100 + i) end
 	V.Roster.Scan()
-	T.ok(Has(f.members[1].cells[1]:GetText(), "Игрок40 Севера"), "сверху дольше всех не заходивший")
-	f.scroll:SetVerticalScroll(f.peopleTop() + 10 * 18)
-	local top
-	for _, r in ipairs(f.members) do
-		if r:IsShown() and (not top or r.index < top.index) then top = r end
+	T.ok(Has(f.rows[1].cells[1]:GetText(), "Игрок40 Севера"), "сверху дольше всех не заходивший")
+	f.scroll:SetVerticalScroll(10 * 18)
+	local function Top()
+		local top
+		for _, r in ipairs(f.rows) do
+			if r:IsShown() and (not top or r.index < top.index) then top = r end
+		end
+		return top
 	end
-	T.ok(Has(top.cells[1]:GetText(), "Игрок30 Севера"), "после прокрутки на 10 строк")
+	T.ok(Has(Top().cells[1]:GetText(), "Игрок30 Севера"), "после прокрутки на 10 строк")
+	-- Очередь прокручивает таблицу к текущему игроку.
+	f.scroll:SetVerticalScroll(0)
+	f.tools.days:SetText("30")
+	f.tools.days:GetScript("OnTextChanged")(f.tools.days, true)
+	f.tools.kick:Click()
+	T.eq(f.box:Command(), "/gremove Игрок40 Севера")
+	for _ = 1, 20 do f.box.skip:Click() end
+	T.eq(f.box:Command(), "/gremove Игрок20 Севера")
+	T.ok(f.scroll:GetVerticalScroll() > 0, "таблица прокручена")
+	local current
+	for _, r in ipairs(f.rows) do
+		if r:IsShown() and r.current:IsShown() then current = r end
+	end
+	T.ok(current and Has(current.cells[1]:GetText(), "Игрок20 Севера"), "строка текущего игрока видна")
+	f.box.close:Click()
+	T.no(f.box:IsShown(), "«Стоп» прекращает очередь")
+	T.eq(f.tools.info:GetText(), L.TRANSFER_QUEUE_DONE:format(0, 41))
 	Errors(c)
 end)
 
@@ -366,19 +431,18 @@ T.test("кадры: неполный ростер — исключение за�
 	local V, L = c.V.ns, c.V.ns.L
 	V.Roster.Scan()
 	T.no(V.Roster.complete, "игроки не в сети скрыты")
+	V.UI.Toggle("roster")
+	local rf = V.RosterPane.frames
+	T.eq(Plain(rf.tools.info:GetText()), L.TRANSFER_ROSTER_PARTIAL, "состав предупреждает о скрытых")
+	T.ok(rf.tools.showAll:IsShown())
+	-- Из своей гильдии — без второго щелчка: просьба никуда не уходит, команда сразу в строке.
 	V.UI.Toggle("transfer")
 	local f = V.TransferPane.frames
-	local partial = false
-	for _, h in ipairs(f.headers) do
-		if h:IsShown() and Has(h.label:GetText(), L.TRANSFER_ROSTER_PARTIAL) then partial = true end
-	end
-	T.ok(partial, "заголовок состава предупреждает о скрытых")
-	T.ok(f.tools.showAll:IsShown())
-	-- Из своей гильдии — без второго щелчка: просьба никуда не уходит, команда сразу в поле.
 	V.TransferPane.Fill(Short(c.B), NORTH, nil)
 	f.kick:Click()
 	T.ok(f.box:IsShown(), "своя команда сразу")
 	T.eq(f.box:Command(), "/gremove " .. Short(c.B))
+	T.no(f.message:IsShown(), "строка команды на месте строки о правах")
 	local task = V.Transfer.Tasks()[1]
 	T.ok(task and task.localStep)
 	-- Бориса нет в неполном ростере, но системной строки не было: ничего не засчитано.
@@ -390,9 +454,11 @@ T.test("кадры: неполный ростер — исключение за�
 	w:GuildSystem(NORTH, c.V.env.ERR_GUILD_REMOVE_SS:format(Short(c.B), c.V:Name()))
 	T.ok(Until(w, function() return task.phase == "done" end), "сообщение гильдии закрыло шаг")
 	T.no(f.box:IsShown())
+	T.ok(f.message:IsShown())
 	-- «Показать всех» — та же настройка, что в окне гильдии.
-	f.tools.showAll:Click()
+	V.UI.Toggle("roster")
+	rf.tools.showAll:Click()
 	T.ok(Until(w, function() return V.Roster.complete end), "ростер снова полный")
-	T.no(f.tools.showAll:IsShown())
+	T.no(rf.tools.showAll:IsShown())
 	Errors(c)
 end)

@@ -1,10 +1,11 @@
 -- Chillzone: окно — как «Гильдия и сообщества»: рамка ButtonFrameTemplate с портретом, вкладки-
 -- значки на правом краю. Сверху повседневные: Чат, Группы, Перепись, Заявки (главам и офицерам),
 -- Королевство. Ниже, с отступом, служебные: Настройки и «Управление».
--- «Управление» собирает четыре раздела с переключателем на месте названия вкладки: «Объединение»
+-- «Управление» собирает пять разделов с переключателем на месте названия вкладки: «Объединение»
 -- (UnionPane.lua: глава главной гильдии управляет составом, офицер гильдии вне объединения запрашивает
--- связь), «Кадры» (TransferPane.lua: главам и офицерам гильдий объединения — исключение и перенос игроков
--- между гильдиями), «Отладка» (Debug.lua, главы и офицеры) и «Журнал» (JournalPane.lua, любой игрок).
+-- связь), «Состав» (RosterPane.lua: состав своей гильдии и исключение по очереди) и «Кадры»
+-- (TransferPane.lua: исключение и перенос игроков между гильдиями) — главам и офицерам гильдий
+-- объединения, «Отладка» (Debug.lua, главы и офицеры) и «Журнал» (JournalPane.lua, любой игрок).
 -- Кому нет ни «Объединения», ни «Кадров», ни «Отладки», значка «Управления» не видит: журнал открывает
 -- кнопка в Настройках.
 -- Чат рисует ChatPane.lua, Перепись — CensusPane.lua, Королевство и Отладку — список строк из Views.lua
@@ -36,6 +37,7 @@ local TABS = {
 -- (UI.Current, UI.Toggle, команды), а значок «Управления» только ведёт к одному из них.
 local SECTIONS = {
 	{ key = "union", text = "TAB_UNION" },
+	{ key = "roster", text = "TAB_ROSTER" },
 	{ key = "transfer", text = "TAB_TRANSFER" },
 	{ key = "debug", text = "TAB_DEBUG" },
 	{ key = "journal", text = "TAB_JOURNAL" },
@@ -564,7 +566,7 @@ end
 -- доступно что-то кроме журнала.
 local function Allowed(key)
 	if key == "requests" then return ns.RecruitSync.IsOfficer() end
-	if key == "transfer" then return ns.Transfer.Rights() ~= nil end
+	if key == "transfer" or key == "roster" then return ns.Transfer.Rights() ~= nil end
 	if key == "debug" then return ns.Debug.Allowed() end
 	if key == "union" then return ns.Security.CanManageUnion() or ns.Security.CanRequestUnion() end
 	if key == "manage" then return Allowed("union") or Allowed("transfer") or Allowed("debug") end
@@ -644,6 +646,7 @@ function UI.Render()
 	SyncTabs()
 	if current ~= "union" then ns.UnionPane.Hide() end
 	if current ~= "transfer" then ns.TransferPane.Hide() end
+	if current ~= "roster" then ns.RosterPane.Hide() end
 	if current ~= "journal" then ns.JournalPane.Hide() end
 	if not ns.IsMember() and not OPEN_TO_ALL[current] then current = "join"
 	elseif ns.IsMember() and current == "join" then current = "census" end
@@ -706,6 +709,12 @@ function UI.Render()
 		scroll:Hide()
 		ns.CensusPane.Hide()
 		ns.TransferPane.Show()
+		return
+	end
+	if current == "roster" then
+		scroll:Hide()
+		ns.CensusPane.Hide()
+		ns.RosterPane.Show()
 		return
 	end
 	if current == "groups" then
@@ -926,6 +935,7 @@ local function Create()
 	ns.GroupsPane.Build(body)
 	ns.UnionPane.Build(body)
 	ns.TransferPane.Build(body)
+	ns.RosterPane.Build(body)
 	ns.JournalPane.Build(body)
 	body:Hide()
 
@@ -934,7 +944,7 @@ local function Create()
 	UI.tabs = tabs
 
 	f:SetScript("OnShow", function() UI.Render() end)
-	f:SetScript("OnHide", function() ns.ChatPane.Hide(); ns.Recruit.Cancel(); ns.UnionPane.Hide(); ns.TransferPane.Hide(); ns.JournalPane.Hide(); ns.GroupsPane.Hide() end)
+	f:SetScript("OnHide", function() ns.ChatPane.Hide(); ns.Recruit.Cancel(); ns.UnionPane.Hide(); ns.TransferPane.Hide(); ns.RosterPane.Hide(); ns.JournalPane.Hide(); ns.GroupsPane.Hide() end)
 	local elapsed, debugElapsed, activityElapsed, pulse = 0, 0, 0, 0
 	f:SetScript("OnUpdate", ns.Perf.Wrap("window update", function(_, dt)
 		elapsed, debugElapsed = elapsed + (dt or 0), debugElapsed + (dt or 0)
@@ -955,7 +965,7 @@ local function Create()
 		elseif elapsed >= 30 then
 			elapsed, debugElapsed = 0, 0
 			if current == "census" or current == "kingdom" or current == "join" or current == "requests" or current == "union"
-				or current == "groups" or current == "transfer" then
+				or current == "groups" or current == "transfer" or current == "roster" then
 				UI.Render()
 			else UI.RenderStatus() end
 		end

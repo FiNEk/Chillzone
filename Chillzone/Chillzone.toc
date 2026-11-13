@@ -61,6 +61,7 @@ Debug.lua
 JournalPane.lua
 UnionPane.lua
 TransferPane.lua
+RosterPane.lua
 UI.lua
 Map.lua
 MapControls.lua

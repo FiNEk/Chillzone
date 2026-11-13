@@ -538,6 +538,8 @@ local function Env(c)
 	end
 	env.GetGuildRosterShowOffline = function() return not c.hideOffline end
 	env.SetGuildRosterShowOffline = function(on) c.hideOffline = not on end
+	-- Зажатый Ctrl: тест ставит c.ctrl перед нажатием клавиши в поле.
+	env.IsControlKeyDown = function() return c.ctrl == true end
 	env.GetGuildRosterInfo = function(i)
 		local r = Rows()[i]
 		if not r then return nil end

@@ -182,7 +182,7 @@ function Pane.BuildInbox(parent)
 	inbox:SetAllPoints(parent)
 	inboxHint = Label(inbox, 16, 14, 570)
 	-- Команда /ginvite встаёт на место подсказки: игра не даёт аддону приглашать.
-	inboxBox = ns.CommandBox.New(inbox, 740, nil, function() Pane.RenderInbox() end)
+	inboxBox = ns.CommandBox.New(inbox, 740, function() Pane.RenderInbox() end)
 	inboxBox:SetPoint("TOPLEFT", 8, -8)
 	local scroll = CreateFrame("ScrollFrame", nil, inbox, "UIPanelScrollFrameTemplate")
 	scroll:SetPoint("TOPLEFT", 16, -58)
@@ -212,7 +212,10 @@ function Pane.RenderInbox()
 	if open then
 		local still = false
 		for _, req in ipairs(reqs) do if req == open then still = true end end
-		if not still then inboxBox:Close() end
+		if not still then
+			inboxBox.req = nil
+			inboxBox:Stop()
+		end
 	end
 	inboxHint:SetShown(not inboxBox:IsShown())
 	inboxEmpty:SetShown(#reqs == 0)
@@ -268,7 +271,7 @@ function Pane.Invite(req)
 	local command = R.Accept(req)
 	if not command or not inboxBox then return end
 	inboxBox.req = req
-	inboxBox:Open(L.RECRUIT_CMD_INVITE:format(U.Display(req.name), req.guild), command, nil, L.RECRUIT_CMD_TIP)
+	inboxBox:Run({ { kind = "I", name = req.name } }, { tip = L.RECRUIT_CMD_TIP })
 	Pane.RenderInbox()
 end
 function Pane.ShowInbox() if inbox then inbox:Show(); Pane.RenderInbox() end end
