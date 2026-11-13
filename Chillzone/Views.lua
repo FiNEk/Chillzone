@@ -1083,14 +1083,19 @@ function Views.CraftProfs()
 	return out
 end
 
--- Карточка мастера для правой панели или nil: { name, line, note, profs, whisper }.
+-- Карточка мастера для правой панели или nil: { name, line, note, profs, whisper, own }. Своя —
+-- размещённая карточка, как её видят остальные; шептать себе и спрашивать свой список незачем.
 function Views.CraftCard(key)
-	local card = ns.Crafters.Get(key)
-	if not card or not U.IsMemberGuild(card.guild) then return nil end
-	local presence = ns.Crafters.Presence(card)
+	local own = key ~= nil and key == ns.myKey
+	local card
+	if own then card = ns.Crafters.Own() else card = ns.Crafters.Get(key) end
+	if not card or not own and not U.IsMemberGuild(card.guild) then return nil end
+	local presence = not own and ns.Crafters.Presence(card)
 	local line = Codec.Plain(card.guild)
 	if card.level and card.level > 0 then line = line .. ", " .. card.level end
-	if presence == "online" then
+	if own then
+		line = line .. ", " .. GOLD .. L.CRAFT_YOU .. "|r"
+	elseif presence == "online" then
 		line = line .. ", " .. GREEN .. L.CRAFT_ONLINE .. "|r"
 	elseif presence == "recent" then
 		line = line .. ", " .. GOLD .. L.CRAFT_RECENT .. "|r"
@@ -1100,7 +1105,7 @@ function Views.CraftCard(key)
 	return {
 		key = key, who = card.name, name = Views.Name(card.name, card.class), line = line,
 		note = card.note ~= "" and Codec.Plain(card.note) or nil, profs = card.profs,
-		whisper = presence ~= "away", card = card,
+		whisper = not own and presence ~= "away", own = own, card = card,
 	}
 end
 

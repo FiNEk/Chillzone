@@ -136,21 +136,25 @@ end
 ---------------------------------------------------------------------------
 -- Каталог
 ---------------------------------------------------------------------------
+-- Своя строка открывает свою размещённую карточку, как её видят остальные, со своим списком
+-- рецептов; «Назад» возвращает к «Моему ремеслу».
 local function Open(key)
 	cardWhy = nil
-	if not key or key == ns.myKey then
+	local own = key ~= nil and key == ns.myKey
+	local c
+	if own then c = ns.Crafters.Own() elseif key then c = ns.Crafters.Get(key) end
+	if not key or own and not c then
 		viewing, viewProf = nil, nil
 		Pane.Render()
 		return
 	end
 	viewing, viewProf = key, nil
-	local c = ns.Crafters.Get(key)
 	for _, p in ipairs(c and c.profs or {}) do
 		if p.id == filter then viewProf = p.id end
 	end
 	viewProf = viewProf or (c and c.profs[1] and c.profs[1].id)
 	-- Нет списка или он устарел — запрос уходит сразу; иначе показывается сохранённый.
-	if viewProf then ns.Crafters.Want(key, viewProf) end
+	if viewProf and not own then ns.Crafters.Want(key, viewProf) end
 	Pane.Render()
 end
 Pane.Open = Open
@@ -397,7 +401,7 @@ end
 ---------------------------------------------------------------------------
 local function Pick(id)
 	viewProf, cardWhy = id, nil
-	if viewing then ns.Crafters.Want(viewing, id) end
+	if viewing and viewing ~= ns.myKey then ns.Crafters.Want(viewing, id) end
 	if card.scroll then card.scroll:SetVerticalScroll(0) end
 	Pane.Render()
 end
@@ -414,7 +418,7 @@ local function CardChip(i)
 end
 
 local function Refresh()
-	if not viewing or not viewProf then return end
+	if not viewing or not viewProf or viewing == ns.myKey then return end
 	local ok, why = ns.Crafters.Want(viewing, viewProf, true)
 	cardWhy = not ok and why ~= "busy" and Views.CraftWhy(why) or nil
 	Pane.Render()
@@ -473,6 +477,8 @@ local function RenderCard(view)
 	if viewProf then text = Views.CraftRecipes(view.key, viewProf, query) end
 	card.text:SetText(text)
 	card.child:SetHeight(math.max(10, text ~= "" and card.text:GetStringHeight() or 10))
+	card.whisper:SetShown(not view.own)
+	card.refresh:SetShown(not view.own)
 	card.whisper:SetEnabled(view.whisper)
 	local state = viewProf and ns.Crafters.AskState(view.key, viewProf)
 	card.refresh:SetEnabled(not (state and state.loading))
