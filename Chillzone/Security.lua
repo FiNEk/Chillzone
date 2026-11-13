@@ -923,7 +923,7 @@ end
 local function SameLink(p, nonce, guild, name, public)
     return p.nonce == nonce and p.guild == guild and p.name == name and p.public == public
 end
--- Ход запроса связи: в чат и на вкладку «Объединение».
+-- Ход запроса связи: в чат и в раздел «Объединение».
 local function LinkNotice(text, ...)
     if select("#", ...) > 0 then text = text:format(...) end
     ns.Print("%s", text)

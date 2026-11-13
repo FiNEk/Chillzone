@@ -1001,15 +1001,17 @@ local function DebugText(cl)
 	return table.concat(out, "\n")
 end
 
-T.test("окно: вкладка «Отладка» — главам и офицерам", function()
+T.test("окно: раздел «Отладка» — главам и офицерам", function()
 	local w, c = Build()
 	local A, M, B, V = c.A, c.M, c.B, c.V
 	A.ns.UI.Toggle("debug")
 	T.eq(A.ns.UI.Current(), "debug", "офицер главной видит «Отладку»")
-	T.ok(A.ns.UI.tabs.debug:IsShown(), "значок вкладки виден")
+	T.ok(A.ns.UI.tabs.manage:IsShown(), "значок «Управления» виден")
+	T.ok(A.ns.UI.sections.debug:IsShown(), "кнопка раздела видна")
 	M.ns.UI.Toggle("debug")
 	T.eq(M.ns.UI.Current(), "chat", "рядовому вместо «Отладки» — чат")
-	T.no(M.ns.UI.tabs.debug:IsShown(), "значка у рядового нет")
+	T.no(M.ns.UI.tabs.manage:IsShown(), "значка «Управления» у рядового нет")
+	T.no(M.ns.UI.sections.debug:IsShown(), "кнопки раздела у рядового нет")
 	M:Slash("/chillzone", "diag")
 	T.ok(M:Saw("только для глав и офицеров") >= 1, "команда рядовому отказывает")
 	T.eq(M.ns.UI.Current(), "chat", "окно осталось на чате")
@@ -1048,13 +1050,98 @@ T.test("окно: вкладка «Отладка» — главам и офиц
 	B.ns.db.errors = {}
 	e.down = nil
 
-	-- Окно на «Отладке» обновляется само; офицер потерял флаг звания — вкладка закрылась.
+	-- Окно на «Отладке» обновляется само; офицер потерял флаг звания — раздел закрылся.
 	A.ns.UI.frame.scripts.OnUpdate(A.ns.UI.frame, 6)
 	w.guilds["Чиллзон"].officers = { [0] = true }
 	A:Fire("GUILD_RANKS_UPDATE")
 	w:Run(30)
 	T.eq(A.ns.UI.Current(), "chat", "без офицерского флага — снова чат")
-	T.no(A.ns.UI.tabs.debug:IsShown(), "значок пропал")
+	T.no(A.ns.UI.sections.debug:IsShown(), "кнопка раздела пропала")
+	T.no(A.ns.UI.tabs.manage:IsShown(), "без «Отладки» и «Объединения» значка «Управления» нет")
+	Errors(c)
+end)
+
+-- Видимые значки сверху вниз по якорям; «|» — отступ перед служебной группой.
+local function TabColumn(cl)
+	local UI, keys = cl.ns.UI, {}
+	for key, b in pairs(UI.tabs) do
+		keys[b] = key
+		b.SetPoint = function(self, _, rel, _, _, y) self.anchor = { rel = rel, y = y } end
+	end
+	UI.Render()
+	local below = {}
+	for b in pairs(keys) do
+		if b:IsShown() then below[b.anchor.rel] = b end
+	end
+	local out, b = {}, below[UI.frame]
+	while b do
+		if b.anchor.y ~= -20 and b.anchor.rel ~= UI.frame then out[#out + 1] = "|" end
+		out[#out + 1] = keys[b]
+		b = below[b]
+	end
+	return out
+end
+
+T.test("окно: служебные значки под повседневными, «Управление» собирает разделы", function()
+	local _, c = Build()
+	local K, A, M = c.K, c.A, c.M
+	local UI = K.ns.UI
+	local L = K.ns.L
+	for _, cl in ipairs({ K, A, M }) do cl.ns.UI.Toggle("chat") end
+	T.same(TabColumn(K), { "chat", "groups", "census", "requests", "kingdom", "|", "settings", "manage" }, "глава: 5 и 2")
+	T.same(TabColumn(A), { "chat", "groups", "census", "requests", "kingdom", "|", "settings", "manage" }, "офицер: 5 и 2")
+	T.same(TabColumn(M), { "chat", "groups", "census", "kingdom", "|", "settings" }, "рядовой: без «Заявок» и «Управления»")
+	for _, key in ipairs({ "union", "debug", "journal" }) do T.no(rawget(UI.tabs, key), "нет отдельного значка " .. key) end
+
+	-- Главе объединения доступны все три раздела; значок открывает первый, потом — последний открытый.
+	UI.tabs.manage:Click()
+	T.eq(UI.Current(), "union", "первым — «Объединение»")
+	T.ok(UI.tabs.manage:GetChecked(), "отмечено «Управление»")
+	T.no(UI.tabs.settings:GetChecked())
+	T.ok(UI.switcher:IsShown(), "переключатель разделов виден")
+	T.eq(UI.heading:GetText(), "", "название вкладки заменяет переключатель")
+	for _, key in ipairs({ "union", "debug", "journal" }) do T.ok(UI.sections[key]:IsShown(), key) end
+	UI.sections.debug:Click()
+	T.eq(UI.Current(), "debug")
+	T.ok(UI.tabs.manage:GetChecked(), "раздел не меняет отмеченный значок")
+	UI.tabs.chat:Click()
+	T.no(UI.switcher:IsShown(), "вне «Управления» переключателя нет")
+	UI.tabs.manage:Click()
+	T.eq(UI.Current(), "debug", "значок помнит последний раздел")
+	UI.sections.journal:Click()
+	T.eq(UI.Current(), "journal")
+	T.ok(K.ns.JournalPane.frames.pane:IsShown(), "журнал на месте")
+	UI.tabs.settings:Click()
+	T.no(K.ns.JournalPane.frames.pane:IsShown(), "журнал спрятан")
+	UI.journalButton:Click()
+	T.eq(UI.Current(), "journal", "кнопка в Настройках открывает журнал")
+	T.ok(UI.tabs.manage:GetChecked(), "у главы журнал — раздел «Управления»")
+
+	-- Офицеру главной «Объединение» недоступно: значок ведёт в «Отладку».
+	A.ns.UI.tabs.manage:Click()
+	T.eq(A.ns.UI.Current(), "debug")
+	T.no(A.ns.UI.sections.union:IsShown(), "кнопки «Объединения» нет")
+	T.ok(A.ns.UI.sections.journal:IsShown())
+
+	-- Рядовой открывает журнал из Настроек: отмечены Настройки, переключателя нет, название — «Журнал».
+	M.ns.UI.tabs.settings:Click()
+	M.ns.UI.journalButton:Click()
+	T.eq(M.ns.UI.Current(), "journal")
+	T.ok(M.ns.JournalPane.frames.pane:IsShown())
+	T.ok(M.ns.UI.tabs.settings:GetChecked(), "журнал рядового принадлежит Настройкам")
+	T.no(M.ns.UI.switcher:IsShown())
+	T.eq(M.ns.UI.heading:GetText(), L.TAB_JOURNAL)
+	M.ns.UI.Toggle("manage")
+	T.eq(M.ns.UI.Current(), "journal", "без «Управления» его единственный раздел — журнал")
+	M:Slash("/chillzone", "journal")
+	T.eq(M.ns.UI.Current(), "journal", "команда журнала у рядового работает")
+
+	-- Подсказка значка перечисляет доступные разделы.
+	local shown = {}
+	A.env.GameTooltip = { SetOwner = function() end, Show = function() end, Hide = function() end,
+		AddLine = function(_, text) shown[#shown + 1] = text end }
+	A.ns.UI.tabs.manage.scripts.OnEnter(A.ns.UI.tabs.manage)
+	T.same(shown, { L.TAB_MANAGE, L.TAB_DEBUG .. ", " .. L.TAB_JOURNAL })
 	Errors(c)
 end)
 
