@@ -977,7 +977,20 @@ local function CraftTip(card)
 	end
 end
 
+-- Навык профессии «1/75»; предела может не быть.
+function Views.CraftSkill(p)
+	if p.max and p.max > 0 then return L.CRAFT_SKILL:format(p.skill, p.max) end
+	return tostring(p.skill)
+end
+
+-- «3 рецепта».
+function Views.CraftCount(n)
+	return n .. " " .. U.Plural(n, L.CRAFT_RECIPES_1, L.CRAFT_RECIPES_2, L.CRAFT_RECIPES_5)
+end
+
 -- Одна строка каталога. action "whisper" — мастер в игре или был недавно; иначе status — давность.
+-- Профессии названы словами: «Алхимия 1/75, 3 рецепта». Число рецептов — только когда профессия
+-- одна (или выбран фильтр): с несколькими строка не уместилась бы, оно есть в подсказке.
 local function CraftRow(card, prof, presence, found, more)
 	local level = (card.level and card.level > 0) and (", " .. card.level) or ""
 	local row = {
@@ -985,12 +998,18 @@ local function CraftRow(card, prof, presence, found, more)
 		name = Views.Name(card.name, card.class) .. "  " .. GREY .. Codec.Plain(card.guild) .. level .. "|r",
 		tip = CraftTip(card), skill = 0,
 	}
-	local skills = {}
+	local shown = {}
 	for _, p in ipairs(card.profs) do
 		if not prof or p.id == prof then
-			skills[#skills + 1] = Views.CraftIcon(p.id) .. " " .. WHITE .. p.skill .. "|r" .. GREY .. " (" .. p.n .. ")|r"
+			shown[#shown + 1] = p
 			row.skill = math.max(row.skill, p.skill)
 		end
+	end
+	local skills = {}
+	for _, p in ipairs(shown) do
+		local text = Views.CraftIcon(p.id) .. " " .. WHITE .. ns.Crafters.ProfName(p.id) .. " " .. Views.CraftSkill(p) .. "|r"
+		if #shown == 1 then text = text .. GREY .. ", " .. Views.CraftCount(p.n) .. "|r" end
+		skills[#skills + 1] = text
 	end
 	if found and #found > 0 then
 		local names = table.concat(found, ", ")

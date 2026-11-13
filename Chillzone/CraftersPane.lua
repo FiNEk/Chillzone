@@ -586,11 +586,18 @@ local function RenderCard(view)
 	card.name:SetText(view.name)
 	card.line:SetText(view.line)
 	card.note:SetText(view.note or "")
+	-- «Алхимия 1/75», если все профессии помещаются в ширину панели, иначе только «1/75».
+	local full = 0
+	for i, p in ipairs(view.profs) do
+		local chip = CardChip(i)
+		chip:SetLabel(Views.CraftIcon(p.id, 14) .. " " .. ns.Crafters.ProfName(p.id) .. " " .. Views.CraftSkill(p))
+		full = full + chip.w + 4
+	end
 	local x = 0
 	for i, p in ipairs(view.profs) do
 		local chip = CardChip(i)
 		chip.id = p.id
-		chip:SetLabel(Views.CraftIcon(p.id, 14) .. " " .. p.skill)
+		if full - 4 > SIDE_W then chip:SetLabel(Views.CraftIcon(p.id, 14) .. " " .. Views.CraftSkill(p)) end
 		chip.tip = function(tt)
 			tt:AddLine(ns.Crafters.ProfName(p.id), 1, 0.82, 0)
 			tt:AddLine(L.CRAFT_TIP_PROF:format(ns.Crafters.ProfName(p.id), p.skill, p.max, p.n), 1, 1, 1, true)
