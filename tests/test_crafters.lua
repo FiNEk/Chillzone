@@ -1047,6 +1047,50 @@ T.test("crafters pane: каталог, поиск по рецептам и ка�
 	T.eq(#c.V:Leaks(), 0)
 end)
 
+T.test("crafters pane: правый щелчок по мастеру — меню с шёпотом", function()
+	local w, c = Build()
+	Master(c.A)
+	Master(c.K, "кую и я")
+	local L = c.V.ns.L
+	c.A:Slash("/chillzone", "crafters")
+	local f = c.A.ns.CraftersPane.frames
+	local menu = c.A.ns.ChatPane.PersonMenu()
+	local function Right(r) r:GetScript("OnClick")(r, "RightButton") end
+	-- Левый щелчок — карточка, меню не открывается.
+	local karl = PaneRow(c.A, c.K)
+	karl:GetScript("OnClick")(karl, "LeftButton")
+	T.ok(f.card:IsShown(), "левый — карточка")
+	T.no(menu:IsShown(), "левый — без меню")
+	-- Правый — меню; согильдиец в игре, его можно и пригласить.
+	karl = PaneRow(c.A, c.K)
+	Right(karl)
+	T.ok(menu:IsShown(), "меню открыто")
+	T.ok(menu.title:GetText():find("Карл Великий", 1, true), "в заголовке мастер")
+	T.eq(menu.invite.enabled, true, "в игре — приглашение доступно")
+	menu.whisper:GetScript("OnClick")(menu.whisper)
+	T.no(menu:IsShown(), "меню закрылось")
+	T.eq(c.A.ns.UI.Current(), "chat", "шёпот — вкладка чата")
+	T.eq(c.A.ns.ChatPane.frames.box:GetText(), "/w Карл Великий ", "шёпот мастеру в поле окна")
+	-- Своя строка меню не открывает, в её подсказке нет правого щелчка.
+	c.A:Slash("/chillzone", "crafters")
+	local own = PaneRow(c.A, c.A)
+	Right(own)
+	T.no(menu:IsShown(), "себе меню не нужно")
+	T.no(Tip(c.A, own):find(L.TIP_MENU, 1, true))
+	T.ok(Tip(c.A, PaneRow(c.A, c.K)):find(L.TIP_MENU, 1, true), "у чужого — подсказка про правый щелчок")
+	-- Мастер другой гильдии без отметки «в игре»: шёпот есть, приглашения нет.
+	Master(c.V, "шью")
+	w:Run(c.A.ns.Config.FRESH + 60)
+	c.A.ns.CraftersPane.Render()
+	local vera = PaneRow(c.A, c.V)
+	T.ok(vera, "Вера в каталоге")
+	T.no(vera.button:IsShown(), "кнопки «Шепнуть» в строке нет")
+	Right(vera)
+	T.ok(menu:IsShown(), "меню есть и без отметки «в игре»")
+	T.eq(menu.invite.enabled, false, "в группу — только тех, кто в игре")
+	NoErrors(c.A, "Арагорн")
+end)
+
 T.test("crafters pane: значок, реагенты и подсказка рецепта", function()
 	local w, c = Build()
 	Master(c.A)

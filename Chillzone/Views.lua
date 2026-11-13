@@ -974,6 +974,7 @@ local function CraftTip(card)
 		if card.note ~= "" then tt:AddLine(Codec.Plain(card.note), 0.8, 0.8, 0.8, true) end
 		if not card.own then tt:AddLine(L.CRAFT_TIP_AGE:format(Views.Ago(ns.ServerTime() - card.at)), 0.6, 0.6, 0.6) end
 		tt:AddLine(L.CRAFT_TIP_OPEN, 0.5, 0.83, 0.76)
+		if not card.own then tt:AddLine(L.TIP_MENU, 0.5, 0.83, 0.76) end
 	end
 end
 
@@ -997,6 +998,8 @@ local function CraftRow(card, prof, presence, found, more)
 		key = card.key, card = card, own = card.own, presence = presence, rank = CRAFT_RANK[presence] or 3,
 		name = Views.Name(card.name, card.class) .. "  " .. GREY .. Codec.Plain(card.guild) .. level .. "|r",
 		tip = CraftTip(card), skill = 0,
+		-- Для меню правого щелчка (ChatPane.OpenPersonMenu); в группу — только тех, кто в игре.
+		person = not card.own and { name = card.name, class = card.class, guild = card.guild, online = presence == "online" } or nil,
 	}
 	local shown = {}
 	for _, p in ipairs(card.profs) do

@@ -198,8 +198,16 @@ local function Row(i)
 	for _, fs in ipairs({ r.name, r.sub, r.right, r.status }) do
 		if fs.SetWordWrap then fs:SetWordWrap(false) end
 	end
-	r:SetScript("OnClick", function(self)
-		if self.it then ns.SafeCall("crafters: open", Open, self.it.key) end
+	-- Правый щелчок — то же меню человека, что в чате и переписи: шёпот и приглашение в группу.
+	-- Шёпот есть и у мастера без отметки «в игре»: онлайн чужой гильдии виден не всегда.
+	r:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+	r:SetScript("OnClick", function(self, button)
+		if not self.it then return end
+		if button == "RightButton" then
+			if self.it.person then ns.SafeCall("crafters: menu", ns.ChatPane.OpenPersonMenu, self, self.it.person, Whisper) end
+			return
+		end
+		ns.SafeCall("crafters: open", Open, self.it.key)
 	end)
 	Tip(r, nil)
 	rows[i] = r
