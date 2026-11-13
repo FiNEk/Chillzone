@@ -996,6 +996,7 @@ T.test("crafters pane: каталог, поиск по рецептам и ка�
 	local f = c.V.ns.CraftersPane.frames
 	T.ok(f.pane:IsShown(), "вкладка открыта")
 	T.eq(c.V.ns.UI.Current(), "crafters")
+	T.eq(c.V.ns.UI.heading:GetText(), "Мастера профессий", "название вкладки в шапке окна")
 	local row = PaneRow(c.V, c.A)
 	T.ok(row, "строка мастера")
 	T.ok(row.name:GetText():find("Арагорн Светлый", 1, true))
