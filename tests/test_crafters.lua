@@ -379,6 +379,10 @@ T.test("crafters: без C_TradeSkillUI вкладка объясняет, чт�
 	T.eq(d.ns.Crafters.RecipeName(2660), nil, "название ещё не спрошено")
 	w:Run(1)
 	T.eq(d.ns.Crafters.RecipeName(2660), "Грубое точило", "названия берутся у C_Spell")
+	local info = d.ns.Crafters.RecipeDetails(2660)
+	T.no(info.icon, "значка нет")
+	T.no(info.reagents, "реагентов нет")
+	T.eq(d.ns.Views.CraftReagents(info), "")
 	NoErrors(d, "Дина")
 	T.eq(#d:Leaks(), 0)
 end)
@@ -726,6 +730,17 @@ T.test("crafters: длинный список приходит страница�
 	T.eq(#(V.Crafters.Recipes(key, 164) or {}), 500)
 	local _, n = V.Views.CraftRecipes(key, 164, "")
 	T.eq(n, 500)
+	-- В карточке строк столько, сколько видно; прокрутка меняет их содержимое.
+	V.UI.Toggle("crafters")
+	V.CraftersPane.Open(key)
+	local f = V.CraftersPane.frames
+	T.ok(#f.recipes <= 8, "строк в карточке: " .. #f.recipes)
+	for _, r in ipairs(f.recipes) do T.ok(r:IsShown(), "все строки заняты") end
+	T.eq(f.recipes[1].it.id, 11000)
+	f.card.scroll:SetVerticalScroll(30 * 100)
+	T.eq(f.recipes[1].it.id, 10000 + 101 * 1000, "после прокрутки — сто первый")
+	T.ok(f.recipes[1].name:GetText():find(V.L.CRAFT_RECIPE_UNKNOWN:format(111000), 1, true))
+	V.UI.Toggle("chat")
 	-- Борису страницы приходят с ошибкой: список не сохраняется, он видит почему.
 	local send = c.A.ns.Comm.Send
 	c.A.ns.Comm.Send = function(dist, payload, opts)
@@ -878,9 +893,27 @@ local function Tip(c, owner)
 	c.env.GameTooltip = {
 		SetOwner = function() end, Show = function() end, Hide = function() end,
 		AddLine = function(_, text) lines[#lines + 1] = text end,
+		SetItemByID = function(_, id) lines[#lines + 1] = "item " .. id end,
+		SetSpellByID = function(_, id) lines[#lines + 1] = "spell " .. id end,
 	}
 	owner:GetScript("OnEnter")(owner)
 	return table.concat(lines, "\n")
+end
+
+-- Видимые строки списка рецептов в карточке, сверху вниз.
+local function RecipeRows(viewer)
+	local out = {}
+	for _, r in ipairs(viewer.ns.CraftersPane.frames.recipes) do
+		if r:IsShown() then out[#out + 1] = r end
+	end
+	return out
+end
+
+-- Названия видимых рецептов в карточке, по строке на рецепт.
+local function CardText(viewer)
+	local names = {}
+	for i, r in ipairs(RecipeRows(viewer)) do names[i] = r.name:GetText() end
+	return table.concat(names, "\n")
 end
 
 -- Строка каталога с мастером author.
@@ -924,7 +957,7 @@ T.test("crafters pane: каталог, поиск по рецептам и ка�
 	T.ok(f.card.name:GetText():find("Арагорн Светлый", 1, true))
 	T.eq(f.card.state:GetText(), L.CRAFT_ASKING)
 	w:Run(20)
-	T.ok(f.card.text:GetText():find("Грубое точило", 1, true), "рецепты показаны")
+	T.ok(CardText(c.V):find("Грубое точило", 1, true), "рецепты показаны")
 	T.ok(f.card.state:GetText():find(L.CRAFT_LIST_AT:format(""), 1, true), "когда получен список")
 	T.ok(PaneRow(c.V, c.A).right:GetText():find(L.CRAFT_ONLINE, 1, true), "ответил — в игре")
 	-- Поиск по названию рецепта находит мастера и поднимает рецепты наверх.
@@ -932,7 +965,7 @@ T.test("crafters pane: каталог, поиск по рецептам и ка�
 	w:Run(1)
 	row = PaneRow(c.V, c.A)
 	T.ok(row and row.sub:GetText():find("Медная кольчуга, Медные поножи", 1, true), "подходящие рецепты в строке")
-	T.ok(f.card.text:GetText():find("^|cffffd100Медная кольчуга"), "подходящие — первыми")
+	T.ok(CardText(c.V):find("^|cffffd100Медная кольчуга"), "подходящие — первыми")
 	T.eq(f.loaded:GetText(), L.CRAFT_LOADED:format(1, 1))
 	c.V.ns.CraftersPane.Search("зелье")
 	T.no(PaneRow(c.V, c.A), "никого")
@@ -947,6 +980,52 @@ T.test("crafters pane: каталог, поиск по рецептам и ка�
 	T.eq(c.V.ns.UI.Current(), "chat")
 	NoErrors(c.V, "Вера")
 	T.eq(#c.V:Leaks(), 0)
+end)
+
+T.test("crafters pane: значок, реагенты и подсказка рецепта", function()
+	local w, c = Build()
+	Master(c.A)
+	local L = c.V.ns.L
+	-- Названия реагентов игра догружает: сначала видны значок и число, потом и название.
+	local B = c.B.ns
+	local info = B.Crafters.RecipeDetails(2662)
+	T.eq(info.item, 2854, "предмет рецепта")
+	T.eq(info.icon, 134583, "значок рецепта")
+	T.same(info.reagents, { { item = 2840, n = 6 }, { item = 2320, n = 2 } }, "необязательный реагент пропущен")
+	T.eq(B.Views.CraftReagents(info), "|T132840:12|t 6, |T132320:12|t 2")
+	w:Run(1)
+	T.eq(B.Views.CraftReagents(info), "|T132840:12|t 6 Медный слиток, |T132320:12|t 2 Грубая нить")
+	T.eq(c.B.itemLoads, 2, "каждый предмет догружается один раз")
+	B.Views.CraftReagents(info)
+	T.eq(c.B.itemLoads, 2)
+	-- Зачарование: предмета нет, подсказка — заклинание.
+	local enchant = B.Crafters.RecipeDetails(7418)
+	T.no(enchant.item)
+	T.eq(enchant.icon, 136244)
+	local lines = {}
+	B.Views.CraftRecipeTip(7418)({
+		AddLine = function(_, text) lines[#lines + 1] = text end,
+		SetSpellByID = function(_, id) lines[#lines + 1] = "spell " .. id end,
+	})
+	T.eq(lines[1], "spell 7418")
+	-- Во вкладке: строка со значком, названием и реагентами, подсказка — предмет и реагенты.
+	c.V.ns.UI.Toggle("crafters")
+	PaneRow(c.V, c.A):Click()
+	w:Run(20)
+	local row
+	for _, r in ipairs(RecipeRows(c.V)) do
+		if r.it.id == 2662 then row = r end
+	end
+	T.ok(row, "строка рецепта")
+	T.eq(row.icon:GetTexture(), 134583)
+	T.ok(row.name:GetText():find("Медные поножи", 1, true))
+	T.ok(row.reagents:GetText():find("6 Медный слиток", 1, true), "реагенты перерисованы после догрузки")
+	local tip = Tip(c.V, row)
+	T.ok(tip:find("^item 2854"), "подсказка — предмет игры")
+	T.ok(tip:find(L.CRAFT_REAGENTS, 1, true))
+	T.ok(tip:find("2 Грубая нить", 1, true))
+	NoErrors(c.V, "Вера")
+	NoErrors(c.B, "Борис")
 end)
 
 T.test("crafters pane: своё ремесло — отметка, примечание, размещение и снятие", function()
@@ -994,8 +1073,8 @@ T.test("crafters pane: своё ремесло — отметка, примеч�
 	T.ok(f.card.name:GetText():find("Арагорн Светлый", 1, true))
 	T.ok(f.card.line:GetText():find(L.CRAFT_YOU, 1, true), "это вы")
 	T.eq(f.card.note:GetText(), "кую на заказ")
-	T.ok(f.card.text:GetText():find("Грубое точило", 1, true), "свои рецепты по названиям")
-	T.no(f.card.text:GetText():find(L.CRAFT_RECIPE_UNKNOWN:format(3115), 1, true), "неизученный не показан")
+	T.ok(CardText(c.A):find("Грубое точило", 1, true), "свои рецепты по названиям")
+	T.no(CardText(c.A):find(L.CRAFT_RECIPE_UNKNOWN:format(3115), 1, true), "неизученный не показан")
 	T.ok(f.card.state:GetText():find(L.CRAFT_LIST_MINE:format(""), 1, true), "свой список")
 	T.no(f.card.whisper:IsShown(), "себе не шепчут")
 	T.no(f.card.refresh:IsShown(), "свой список не спрашивают")

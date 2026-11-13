@@ -17,7 +17,20 @@ Wow.RECIPE_NAMES = {
 	[2660] = "Грубое точило", [2661] = "Медная кольчуга", [2662] = "Медные поножи", [2663] = "Медные наручи",
 	[2664] = "Рунический медный пояс", [3115] = "Тяжёлое точило", [3116] = "Грубый точильный камень",
 	[7408] = "Тяжёлая медная кольчуга", [9983] = "Медный когтевой клинок", [16639] = "Плотное точило",
-	[2149] = "Кожаные ботинки", [2152] = "Лёгкая обработанная кожа", [3104] = "Бронзовый топор",
+	[2149] = "Кожаные ботинки", [2152] = "Лёгкая обработанная кожа", [3104] = "Бронзовый топор", [7418] = "Чары для наручей",
+}
+-- Предмет, значок и реагенты рецепта (C_TradeSkillUI.GetRecipeOutputItemData, GetRecipeInfo().icon,
+-- GetRecipeSchematic): reagents — { предмет, число[, необязательный] }. Рецепт без предмета — как у
+-- зачарования. Названия предметов (C_Item) клиент знает только после догрузки с сервера.
+Wow.RECIPES = {
+	[2660] = { item = 2862, icon = 135248, reagents = { { 2835, 1 } } },
+	[2661] = { item = 2852, icon = 132624, reagents = { { 2840, 8 } } },
+	[2662] = { item = 2854, icon = 134583, reagents = { { 2840, 6 }, { 2320, 2 }, { 4357, 1, true } } },
+	[7418] = { icon = 136244, reagents = { { 10940, 1 } } },
+}
+Wow.ITEM_NAMES = {
+	[2862] = "Грубое точило", [2852] = "Медная кольчуга", [2854] = "Медные поножи", [2835] = "Грубый камень",
+	[2840] = "Медный слиток", [2320] = "Грубая нить", [4357] = "Грубый порох", [10940] = "Странная пыль",
 }
 local NOT_FOUND = "No player named '%s' is currently playing."
 
@@ -310,6 +323,8 @@ local function NewFrame(c, name)
 	function methods.CreateFontString() return NewFrame(c) end
 	function methods.CreateTexture() return NewFrame(c) end
 	function methods.SetText(self, t) self.text = t or "" end
+	function methods.SetTexture(self, t) self.texture = t end
+	function methods.GetTexture(self) return rawget(self, "texture") end
 	function methods.GetText(self) return self.text end
 	function methods.GetStringHeight(self) return 14 * (1 + select(2, self.text:gsub("\n", ""))) end
 	function methods.Click(self) if self.scripts.OnClick then self.scripts.OnClick(self) end end
@@ -665,7 +680,18 @@ local function Env(c)
 			local learned = p and p.recipes and p.recipes[id]
 			local name = Wow.RECIPE_NAMES[id]
 			if learned == nil and not name then return nil end
-			return { recipeID = id, name = name, learned = learned == true }
+			return { recipeID = id, name = name, learned = learned == true, icon = Wow.RECIPES[id] and Wow.RECIPES[id].icon }
+		end,
+		GetRecipeOutputItemData = function(id)
+			local r = Wow.RECIPES[id]
+			return { itemID = r and r.item }
+		end,
+		GetRecipeSchematic = function(id)
+			local slots = {}
+			for _, x in ipairs(Wow.RECIPES[id] and Wow.RECIPES[id].reagents or {}) do
+				slots[#slots + 1] = { reagents = { { itemID = x[1] } }, quantityRequired = x[2], required = not x[3] }
+			end
+			return { recipeID = id, reagentSlotSchematics = slots }
 		end,
 		IsTradeSkillLinked = function() return c.profession ~= nil and c.profession.linked == true end,
 		IsTradeSkillGuild = function() return false end,
@@ -673,6 +699,19 @@ local function Env(c)
 		IsNPCCrafting = function() return c.profession ~= nil and c.profession.npc == true end,
 	}
 	env.C_Spell = { GetSpellName = function(id) return Wow.RECIPE_NAMES[id] end }
+	c.items = {} -- предметы, названия которых клиент уже догрузил
+	c.itemLoads = 0
+	env.C_Item = {
+		GetItemNameByID = function(id) return c.items[id] and Wow.ITEM_NAMES[id] or nil end,
+		GetItemIconByID = function(id) return Wow.ITEM_NAMES[id] and 130000 + id or nil end,
+		RequestLoadItemDataByID = function(id)
+			c.itemLoads = c.itemLoads + 1
+			w:Schedule(w.now + 0.1, function()
+				c.items[id] = true
+				c:Fire("GET_ITEM_INFO_RECEIVED", id, Wow.ITEM_NAMES[id] ~= nil)
+			end, c)
+		end,
+	}
 	if c.noTradeSkill then env.C_TradeSkillUI = nil end
 	c.stubs = {}
 	for k in pairs(env) do c.stubs[k] = true end

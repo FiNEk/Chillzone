@@ -25,7 +25,7 @@ local SEARCH_DELAY = 0.25
 
 local pane, search, searchHint, loaded, list, listChild, empty, side
 local mine, card
-local rows, filters, profRows, cardChips = {}, {}, {}, {}
+local rows, filters, profRows, cardChips, recipeRows = {}, {}, {}, {}, {}
 local allChip
 local filter -- номер профессии или nil — все
 local query = ""
@@ -424,6 +424,58 @@ local function Refresh()
 	Pane.Render()
 end
 
+-- Список рецептов в карточке: строка — значок, название и реагенты. Строк столько, сколько
+-- видно, их содержимое меняется при прокрутке: у мастера бывает несколько сотен рецептов.
+local RECIPE_H, RECIPES_H = 30, 188
+local RECIPE_ROWS = math.ceil(RECIPES_H / RECIPE_H) + 1
+local NO_ICON = "Interface\\Icons\\INV_Misc_QuestionMark"
+
+local function RecipeRow(i)
+	local r = CreateFrame("Button", nil, card.child)
+	r:SetSize(SIDE_W - 26, RECIPE_H)
+	r.hl = r:CreateTexture(nil, "HIGHLIGHT")
+	r.hl:SetAllPoints()
+	r.hl:SetColorTexture(1, 1, 1, 0.07)
+	r.icon = r:CreateTexture(nil, "ARTWORK")
+	r.icon:SetSize(22, 22)
+	r.icon:SetPoint("LEFT", 2, 0)
+	r.name = FS(r, "GameFontHighlightSmall")
+	r.name:SetPoint("TOPLEFT", 30, -3)
+	r.name:SetWidth(SIDE_W - 58)
+	r.reagents = FS(r, "GameFontDisableSmall")
+	r.reagents:SetPoint("BOTTOMLEFT", 30, 3)
+	r.reagents:SetWidth(SIDE_W - 58)
+	for _, fs in ipairs({ r.name, r.reagents }) do
+		if fs.SetWordWrap then fs:SetWordWrap(false) end
+	end
+	Tip(r, nil)
+	recipeRows[i] = r
+	return r
+end
+
+-- Видимые строки списка по текущей прокрутке.
+local function PlaceRecipes()
+	local items = card.items or {}
+	local offset = card.scroll:GetVerticalScroll() or 0
+	local first = math.floor(offset / RECIPE_H) + 1
+	for i = 1, RECIPE_ROWS do
+		local r = recipeRows[i] or RecipeRow(i)
+		local index = first + i - 1
+		local it = items[index]
+		r:SetShown(it ~= nil)
+		r.it = it
+		if it then
+			r:ClearAllPoints()
+			r:SetPoint("TOPLEFT", card.child, "TOPLEFT", 0, -(index - 1) * RECIPE_H)
+			local d = ns.Crafters.RecipeDetails(it.id)
+			r.icon:SetTexture(d.icon or NO_ICON)
+			r.name:SetText(Views.CraftRecipeName(it))
+			r.reagents:SetText(Views.CraftReagents(d))
+			r.tip = Views.CraftRecipeTip(it.id)
+		end
+	end
+end
+
 local function BuildCard()
 	card = CreateFrame("Frame", nil, side)
 	card:SetAllPoints(side)
@@ -433,13 +485,11 @@ local function BuildCard()
 	card.state = Label(card, 0, 88, nil, "GameFontDisableSmall")
 	card.scroll = CreateFrame("ScrollFrame", nil, card, "UIPanelScrollFrameTemplate")
 	card.scroll:SetPoint("TOPLEFT", 0, -104)
-	card.scroll:SetSize(SIDE_W - 24, 188)
+	card.scroll:SetSize(SIDE_W - 24, RECIPES_H)
 	card.child = CreateFrame("Frame", nil, card.scroll)
 	card.child:SetSize(SIDE_W - 24, 10)
 	card.scroll:SetScrollChild(card.child)
-	card.text = FS(card.child, "GameFontHighlightSmall")
-	card.text:SetPoint("TOPLEFT", 2, 0)
-	card.text:SetWidth(SIDE_W - 28)
+	card.scroll:HookScript("OnVerticalScroll", function() ns.SafeCall("crafters recipes", PlaceRecipes) end)
 	card.whisper = Button(card, L.CRAFT_WHISPER, 86, "card whisper", function()
 		local c = viewing and ns.Crafters.Get(viewing)
 		if c then Whisper(c.name) end
@@ -473,10 +523,12 @@ local function RenderCard(view)
 	end
 	for i = #view.profs + 1, #cardChips do cardChips[i]:Hide() end
 	card.state:SetText(cardWhy or (viewProf and Views.CraftListState(view.key, viewProf)) or "")
-	local text = ""
-	if viewProf then text = Views.CraftRecipes(view.key, viewProf, query) end
-	card.text:SetText(text)
-	card.child:SetHeight(math.max(10, text ~= "" and card.text:GetStringHeight() or 10))
+	card.items = viewProf and Views.CraftRecipes(view.key, viewProf, query) or {}
+	card.child:SetHeight(math.max(10, #card.items * RECIPE_H))
+	-- Список стал короче прокрутки: вернуть её в допустимые пределы.
+	local most = math.max(0, #card.items * RECIPE_H - RECIPES_H)
+	if (card.scroll:GetVerticalScroll() or 0) > most then card.scroll:SetVerticalScroll(most) end
+	PlaceRecipes()
 	card.whisper:SetShown(not view.own)
 	card.refresh:SetShown(not view.own)
 	card.whisper:SetEnabled(view.whisper)
@@ -507,7 +559,7 @@ function Pane.Build(parent)
 	Pane.frames.pane, Pane.frames.rows, Pane.frames.filters = pane, rows, filters
 	Pane.frames.search, Pane.frames.mine, Pane.frames.card = search, mine, card
 	Pane.frames.profs, Pane.frames.cardChips, Pane.frames.all = profRows, cardChips, allChip
-	Pane.frames.empty, Pane.frames.loaded = empty, loaded
+	Pane.frames.empty, Pane.frames.loaded, Pane.frames.recipes = empty, loaded, recipeRows
 	pane:Hide()
 	return pane
 end

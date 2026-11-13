@@ -1109,11 +1109,11 @@ function Views.CraftCard(key)
 	}
 end
 
--- Список рецептов одной профессии одной строкой: подходящие под запрос — первыми и золотом,
+-- Список рецептов одной профессии: { id, name, hit, known }, подходящие под запрос — первыми,
 -- без названия — в конце. Второе значение — сколько рецептов.
 function Views.CraftRecipes(key, prof, query)
 	local ids = ns.Crafters.Recipes(key, prof)
-	if not ids then return "", 0 end
+	if not ids then return {}, 0 end
 	local words = Views.CraftWords(query)
 	local items = {}
 	for _, id in ipairs(ids) do
@@ -1130,11 +1130,49 @@ function Views.CraftRecipes(key, prof, query)
 		if a.sort ~= b.sort then return a.sort < b.sort end
 		return a.id < b.id
 	end)
-	local lines = {}
-	for i, it in ipairs(items) do
-		lines[i] = it.hit and (GOLD .. it.name .. "|r") or it.known and it.name or (GREY .. it.name .. "|r")
+	return items, #items
+end
+
+-- Название рецепта в строке списка: подходящее под поиск — золотом, без названия — серым.
+function Views.CraftRecipeName(it)
+	return it.hit and (GOLD .. it.name .. "|r") or it.known and it.name or (GREY .. it.name .. "|r")
+end
+
+local ITEM_ICON = "|T%s:%d|t"
+
+-- Реагенты одной строкой: «значок число название», через запятую. Пока игра догружает название,
+-- видны значок и число. Пусто — игра реагентов не знает.
+function Views.CraftReagents(d)
+	local parts = {}
+	for _, r in ipairs(d and d.reagents or {}) do
+		local icon = ns.Crafters.ItemIcon(r.item)
+		local name = ns.Crafters.ItemName(r.item)
+		parts[#parts + 1] = (icon and ITEM_ICON:format(icon, 12) .. " " or "") .. r.n .. (name and " " .. Codec.Plain(name) or "")
 	end
-	return table.concat(lines, "\n"), #items
+	return table.concat(parts, ", ")
+end
+
+-- Подсказка строки рецепта: предмет (или заклинание, как у зачарования) так, как его показывает
+-- игра, ниже — реагенты.
+function Views.CraftRecipeTip(id)
+	return function(tt)
+		local d = ns.Crafters.RecipeDetails(id)
+		local shown = false
+		if d.item and type(tt.SetItemByID) == "function" then
+			shown = pcall(tt.SetItemByID, tt, d.item)
+		elseif type(tt.SetSpellByID) == "function" then
+			shown = pcall(tt.SetSpellByID, tt, id)
+		end
+		if not shown then tt:AddLine(Codec.Plain(Views.RecipeName(id)), 1, 0.82, 0) end
+		if not d.reagents or #d.reagents == 0 then return end
+		tt:AddLine(" ")
+		tt:AddLine(L.CRAFT_REAGENTS, 1, 0.82, 0)
+		for _, r in ipairs(d.reagents) do
+			local icon = ns.Crafters.ItemIcon(r.item)
+			local name = ns.Crafters.ItemName(r.item)
+			tt:AddLine((icon and ITEM_ICON:format(icon, 14) .. " " or "") .. r.n .. " " .. (name and Codec.Plain(name) or L.CRAFT_ITEM_LOADING), 1, 1, 1)
+		end
+	end
 end
 
 -- Строка над списком рецептов: что со списком и запросом.

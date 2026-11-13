@@ -783,6 +783,85 @@ function Crafters.NamesPending()
 end
 
 ---------------------------------------------------------------------------
+-- Значок, предмет и реагенты рецепта: у игры по номеру, только для видимых строк, с кэшем на
+-- сессию. По сети они не ходят. Названия реагентов игра может догружать с сервера.
+---------------------------------------------------------------------------
+local details = {} -- [номер рецепта] = { icon, item, reagents = { { item, n } } }
+local itemNames, itemWait = {}, {} -- [предмет] = название; [предмет] = true — игра догружает
+local itemRedraw = false
+
+local function Call(t, f, ...)
+	local fn = type(t) == "table" and t[f]
+	if type(fn) ~= "function" then return nil end
+	local ok, a, b = pcall(fn, ...)
+	if ok then return a, b end
+end
+
+local function Texture(v)
+	if type(v) == "number" and v > 0 or type(v) == "string" and v ~= "" then return v end
+end
+
+-- Обязательные реагенты из схемы рецепта; необязательные (required = false) пропускаются.
+local function Reagents(id)
+	local s = Call(TradeSkill(), "GetRecipeSchematic", id, false)
+	if type(s) ~= "table" or type(s.reagentSlotSchematics) ~= "table" then return nil end
+	local out = {}
+	for _, slot in ipairs(s.reagentSlotSchematics) do
+		local r = type(slot) == "table" and slot.required ~= false and type(slot.reagents) == "table" and slot.reagents[1]
+		local item, n = type(r) == "table" and r.itemID, type(slot) == "table" and tonumber(slot.quantityRequired)
+		if type(item) == "number" and item > 0 and n and n > 0 then out[#out + 1] = { item = item, n = n } end
+	end
+	return out
+end
+
+-- { icon, item, reagents } рецепта; поля, которых игра не знает, — nil.
+function Crafters.RecipeDetails(id)
+	local d = details[id]
+	if d then return d end
+	local T = TradeSkill()
+	local made = Call(T, "GetRecipeOutputItemData", id)
+	local item = type(made) == "table" and type(made.itemID) == "number" and made.itemID > 0 and made.itemID or nil
+	local info = Call(T, "GetRecipeInfo", id)
+	local icon = Texture(type(info) == "table" and info.icon) or Texture(type(made) == "table" and made.icon)
+		or item and Texture(Call(C_Item, "GetItemIconByID", item)) or Texture(Call(C_Spell, "GetSpellTexture", id))
+	d = { icon = icon, item = item, reagents = Reagents(id) }
+	details[id] = d
+	return d
+end
+
+function Crafters.ItemIcon(item)
+	return Texture(Call(C_Item, "GetItemIconByID", item))
+end
+
+-- Название предмета или nil: тогда игра догружает его, и вкладка перерисуется.
+function Crafters.ItemName(item)
+	local n = itemNames[item]
+	if n then return n end
+	n = Call(C_Item, "GetItemNameByID", item)
+	if type(n) == "string" and n ~= "" then
+		itemNames[item] = n
+		return n
+	end
+	if not itemWait[item] and type(C_Item) == "table" then
+		itemWait[item] = true
+		Call(C_Item, "RequestLoadItemDataByID", item)
+	end
+	return nil
+end
+
+-- Ответы игры на догрузку приходят пачкой: перерисовка одна на пачку.
+local function ItemLoaded(item)
+	if not itemWait[item] then return end
+	itemWait[item] = nil
+	if itemRedraw then return end
+	itemRedraw = true
+	ns.After(0.2, "crafters items", function()
+		itemRedraw = false
+		ns.Fire("CRAFTERS_NAMES")
+	end)
+end
+
+---------------------------------------------------------------------------
 -- Расписание
 ---------------------------------------------------------------------------
 local function Tick()
@@ -884,6 +963,7 @@ ns.On("LOGIN", function()
 	for _, event in ipairs({ "TRADE_SKILL_LIST_UPDATE", "TRADE_SKILL_DATA_SOURCE_CHANGED" }) do
 		pcall(ns.RegisterEvent, event, function() if shown then Soon() end end)
 	end
+	pcall(ns.RegisterEvent, "GET_ITEM_INFO_RECEIVED", ItemLoaded)
 end)
 
 ns.Status(function()

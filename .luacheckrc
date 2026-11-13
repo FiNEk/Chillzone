@@ -35,6 +35,7 @@ read_globals = {
 	"C_AddOns",
 	"C_ChatInfo",
 	"C_GuildInfo",
+	"C_Item",
 	"C_FriendList",
 	"C_InputInterfaceStyle",
 	"C_LFGList",
