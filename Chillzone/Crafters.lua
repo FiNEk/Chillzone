@@ -255,27 +255,31 @@ end)
 
 ---------------------------------------------------------------------------
 -- Кто в игре: "online" — согильдиец по ростеру, чужой в списке Online или только что ответил на
--- запрос рецептов; "recent" — карточку подписали недавно; "away" — давность карточки.
+-- запрос рецептов; "recent" — карточку подписали недавно; "offline" — по ростеру или списку
+-- Online мастера в игре нет; "away" — списка гильдии нет, известна только давность карточки.
+-- listed — есть ли мастер в списке Online его гильдии (false — список есть, мастера в нём нет);
+-- nil — посмотреть самим.
 ---------------------------------------------------------------------------
-function Crafters.Presence(card, online)
+function Crafters.Presence(card, listed)
 	if card.own then return "online" end
 	local key = card.key
 	if U.GuildKey(card.guild) == U.GuildKey(ns.MyGuild()) and ns.Roster.Fresh() then
-		return ns.Roster.online[key] and "online" or "away"
+		return ns.Roster.online[key] and "online" or "offline"
 	end
 	if answered[key] and ns.Now() - answered[key] < C.CRAFT_ANSWERED then return "online" end
-	if online == nil then
+	if listed == nil then
 		local list = ns.Online.Get(card.guild)
-		online = false
-		if list and not list.loading and not list.failed then
+		if list and list.at then
+			listed = false
 			for _, p in ipairs(list.people or {}) do
-				if U.Key(p.name) == key then online = true; break end
+				if U.Key(p.name) == key then listed = true; break end
 			end
 		end
 	end
-	if online then return "online" end
+	if listed then return "online" end
+	-- Список бывает старше карточки: подписанная недавно значит, что мастер заходил после него.
 	if ns.ServerTime() - card.at < C.FRESH then return "recent" end
-	return "away"
+	return listed == false and "offline" or "away"
 end
 
 ---------------------------------------------------------------------------
@@ -789,6 +793,8 @@ end
 ---------------------------------------------------------------------------
 local details = {} -- [номер рецепта] = { icon, item, reagents = { { item, n } } }
 local itemNames, itemWait = {}, {} -- [предмет] = название; [предмет] = true — игра догружает
+local recipeItems = {} -- [номер рецепта] = предмет или false: рецепт предмета не создаёт
+local itemBinds = {} -- [предмет] = true — персональный при поднятии, false — нет
 local itemRedraw = false
 
 local function Call(t, f, ...)
@@ -848,6 +854,66 @@ function Crafters.ItemName(item)
 		Call(C_Item, "RequestLoadItemDataByID", item)
 	end
 	return nil
+end
+
+-- Предмет, который создаёт рецепт, или nil. Только номер, без значка и реагентов: фильтру
+-- персональных он нужен для всего списка мастера сразу.
+function Crafters.RecipeItem(id)
+	local item = recipeItems[id]
+	if item == nil then
+		local made = Call(TradeSkill(), "GetRecipeOutputItemData", id)
+		item = type(made) == "table" and type(made.itemID) == "number" and made.itemID > 0 and made.itemID or false
+		recipeItems[id] = item
+	end
+	return item or nil
+end
+
+-- Четырнадцатое значение GetItemInfo — тип привязки; без названия игра предмета ещё не знает.
+local function PickBind(ok, name, ...)
+	if ok and name then return (select(13, ...)) end
+end
+
+local function BindType(item)
+	local get = type(C_Item) == "table" and C_Item.GetItemInfo
+	if type(get) ~= "function" then get = GetItemInfo end
+	if type(get) ~= "function" then return nil end
+	return PickBind(pcall(get, item))
+end
+
+-- Предмет становится персональным при поднятии (тип привязки 1): true или false. nil — игра
+-- ещё не знает предмет: она его догружает, и вкладка перерисуется.
+function Crafters.ItemBound(item)
+	local bound = itemBinds[item]
+	if bound ~= nil then return bound end
+	if itemWait[item] then return nil end
+	local bind = BindType(item)
+	if type(bind) == "number" then
+		itemBinds[item] = bind == 1
+		return itemBinds[item]
+	end
+	if type(C_Item) == "table" then
+		itemWait[item] = true
+		Call(C_Item, "RequestLoadItemDataByID", item)
+	end
+	return nil
+end
+
+-- Рецепт создаёт персональный при поднятии предмет: такой мастер не сможет передать. Рецепт без
+-- предмета (зачарование) — false; nil — пока неизвестно.
+function Crafters.RecipeBound(id)
+	local item = Crafters.RecipeItem(id)
+	if not item then return false end
+	return Crafters.ItemBound(item)
+end
+
+-- Показывать ли такие рецепты. Настройка общая для персонажей, по умолчанию они скрыты.
+function Crafters.ShowBound()
+	return ns.db.settings.craftBound == true
+end
+
+function Crafters.SetShowBound(on)
+	ns.db.settings.craftBound = on and true or nil
+	ns.Fire("CRAFTERS_NAMES")
 end
 
 -- Ответы игры на догрузку приходят пачкой: перерисовка одна на пачку.

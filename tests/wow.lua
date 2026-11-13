@@ -18,6 +18,7 @@ Wow.RECIPE_NAMES = {
 	[2664] = "Рунический медный пояс", [3115] = "Тяжёлое точило", [3116] = "Грубый точильный камень",
 	[7408] = "Тяжёлая медная кольчуга", [9983] = "Медный когтевой клинок", [16639] = "Плотное точило",
 	[2149] = "Кожаные ботинки", [2152] = "Лёгкая обработанная кожа", [3104] = "Бронзовый топор", [7418] = "Чары для наручей",
+	[16988] = "Шлем львиного сердца",
 }
 -- Предмет, значок и реагенты рецепта (C_TradeSkillUI.GetRecipeOutputItemData, GetRecipeInfo().icon,
 -- GetRecipeSchematic): reagents — { предмет, число[, необязательный] }. Рецепт без предмета — как у
@@ -27,11 +28,16 @@ Wow.RECIPES = {
 	[2661] = { item = 2852, icon = 132624, reagents = { { 2840, 8 } } },
 	[2662] = { item = 2854, icon = 134583, reagents = { { 2840, 6 }, { 2320, 2 }, { 4357, 1, true } } },
 	[7418] = { icon = 136244, reagents = { { 10940, 1 } } },
+	[16988] = { item = 12640, icon = 133073, reagents = { { 12359, 80 } } },
 }
 Wow.ITEM_NAMES = {
 	[2862] = "Грубое точило", [2852] = "Медная кольчуга", [2854] = "Медные поножи", [2835] = "Грубый камень",
 	[2840] = "Медный слиток", [2320] = "Грубая нить", [4357] = "Грубый порох", [10940] = "Странная пыль",
+	[12640] = "Шлем львиного сердца", [12359] = "Ториевый слиток",
 }
+-- Тип привязки предмета (14-е значение GetItemInfo): 1 — персональный при поднятии, 2 — при
+-- надевании; остальные — 0.
+Wow.ITEM_BIND = { [12640] = 1, [2852] = 2, [2854] = 2 }
 local NOT_FOUND = "No player named '%s' is currently playing."
 
 local World = {}
@@ -706,7 +712,15 @@ local function Env(c)
 	env.C_Spell = { GetSpellName = function(id) return Wow.RECIPE_NAMES[id] end }
 	c.items = {} -- предметы, названия которых клиент уже догрузил
 	c.itemLoads = 0
+	local function ItemInfo(id)
+		local name = c.items[id] and Wow.ITEM_NAMES[id]
+		if not name then return nil end
+		return name, "|Hitem:" .. id .. "|h[" .. name .. "]|h", 2, 20, 15, "Armor", "Mail", 1, "", 130000 + id, 100, 4, 3,
+			Wow.ITEM_BIND[id] or 0
+	end
+	env.GetItemInfo = ItemInfo
 	env.C_Item = {
+		GetItemInfo = ItemInfo,
 		GetItemNameByID = function(id) return c.items[id] and Wow.ITEM_NAMES[id] or nil end,
 		GetItemIconByID = function(id) return Wow.ITEM_NAMES[id] and 130000 + id or nil end,
 		RequestLoadItemDataByID = function(id)

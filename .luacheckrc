@@ -65,6 +65,7 @@ read_globals = {
 	"GetGuildInfo",
 	"GetGuildRosterInfo",
 	"GetGuildRosterLastOnline",
+	"GetItemInfo",
 	"GetNormalizedRealmName",
 	"GetNumGroupMembers",
 	"GetNumGuildMembers",

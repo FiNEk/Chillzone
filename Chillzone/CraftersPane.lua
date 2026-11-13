@@ -4,9 +4,11 @@
 -- Crafters.lua.
 --
 -- Поля ввода — свои EditBox, штатные popup и выпадающие списки не используются (taint). Поле
--- ввода и окна чата игры вкладка не трогает: «Шепнуть» открывает шёпот на вкладке чата окна.
+-- ввода и окна чата игры вкладка не трогает: «Шепнуть» и меню правого щелчка открывают шёпот
+-- через ChatPane.Whisper.
 local ADDON, ns = ...
 
+local U = ns.Util
 local L = ns.L
 local C = ns.Config
 local Codec = ns.Codec
@@ -18,7 +20,7 @@ ns.CraftersPane = Pane
 local LIST_W = 468 -- каталог; справа от него полоса прокрутки
 local SIDE_X, SIDE_W = 512, 282
 local ROW_H = 38
-local ACTION_W, INFO_W = 84, 70
+local ACTION_W = 84
 local PROF_ROWS = 6
 local LIST_TOP = 60
 local SEARCH_DELAY = 0.25
@@ -193,17 +195,13 @@ local function Row(i)
 	r.status = FS(r, "GameFontHighlightSmall", "CENTER")
 	r.status:SetPoint("RIGHT", -4, 0)
 	r.status:SetWidth(ACTION_W - 4)
-	r.right = FS(r, "GameFontHighlightSmall", "RIGHT")
-	r.right:SetPoint("TOPRIGHT", -(ACTION_W + 4), -6)
-	r.right:SetWidth(INFO_W)
-	local textWidth = LIST_W - 6 - ACTION_W - INFO_W - 12
 	r.name = FS(r, "GameFontHighlight")
 	r.name:SetPoint("TOPLEFT", 6, -5)
-	r.name:SetWidth(textWidth)
+	r.name:SetWidth(LIST_W - 6 - ACTION_W - 8)
 	r.sub = FS(r, "GameFontHighlightSmall")
 	r.sub:SetPoint("BOTTOMLEFT", 6, 6)
 	r.sub:SetWidth(LIST_W - 6 - ACTION_W - 8)
-	for _, fs in ipairs({ r.name, r.sub, r.right, r.status }) do
+	for _, fs in ipairs({ r.name, r.sub, r.status }) do
 		if fs.SetWordWrap then fs:SetWordWrap(false) end
 	end
 	-- Правый щелчок — то же меню человека, что в чате и переписи: шёпот и приглашение в группу.
@@ -259,9 +257,23 @@ local function RenderFilters()
 	Mark(allChip, filter == nil)
 end
 
+-- Кто из мастеров других гильдий в игре, видно по их спискам Online: пока вкладка на экране,
+-- спрашиваем списки гильдий из показанных строк. Частоту и повторы ограничивает Online.Want.
+local function WantOnline(items)
+	local asked = {}
+	for _, it in ipairs(items) do
+		local gk = not it.own and U.GuildKey(it.card.guild)
+		if gk and not asked[gk] then
+			asked[gk] = true
+			ns.Online.Want(it.card.guild)
+		end
+	end
+end
+
 local function RenderList()
 	RenderFilters()
 	local items, total, found = Views.CraftRows(filter, query)
+	WantOnline(items)
 	local y = 0
 	for i, it in ipairs(items) do
 		local r = Row(i)
@@ -273,7 +285,6 @@ local function RenderList()
 		r.picked:SetShown(viewing ~= nil and it.key == viewing)
 		r.name:SetText(it.name)
 		r.sub:SetText(it.sub)
-		r.right:SetText(it.right or "")
 		r.button:SetShown(it.action == "whisper")
 		r.status:SetText(it.action and "" or (it.status or ""))
 		r:Show()
@@ -614,6 +625,17 @@ local function BuildCard()
 	card.empty:SetPoint("TOPLEFT", card.scroll, "TOPLEFT", 4, -4)
 	card.empty:SetWidth(SIDE_W - 32)
 	card.empty:SetText(L.CRAFT_RECIPE_NONE)
+	-- Рецепты персональных при поднятии предметов мастер передать не сможет, поэтому они скрыты.
+	-- Переключатель справа от поиска есть, пока такие рецепты есть в списке.
+	card.bound = Chip(card, "", "bound", function()
+		card.scroll:SetVerticalScroll(0)
+		ns.Crafters.SetShowBound(not ns.Crafters.ShowBound())
+	end)
+	Tip(card.bound, function(tt)
+		tt:AddLine(L.CRAFT_BOUND_TITLE, 1, 0.82, 0)
+		tt:AddLine(L.CRAFT_BOUND_TIP, 1, 1, 1, true)
+		tt:AddLine(ns.Crafters.ShowBound() and L.CRAFT_BOUND_HIDE or L.CRAFT_BOUND_SHOW, 0.5, 0.83, 0.76)
+	end)
 	card.whisper = Button(card, L.CRAFT_WHISPER, 86, "card whisper", function()
 		local c = viewing and ns.Crafters.Get(viewing)
 		if c then Whisper(c.name) end
@@ -654,19 +676,35 @@ local function RenderCard(view)
 	end
 	for i = #view.profs + 1, #cardChips do cardChips[i]:Hide() end
 	card.state:SetText(cardWhy or (viewProf and Views.CraftListState(view.key, viewProf)) or "")
+	local total, bound
+	if viewProf then
+		card.items, total, bound = Views.CraftRecipes(view.key, viewProf, query, card.query)
+	else
+		card.items, total, bound = {}, 0, 0
+	end
 	-- Состояние бывает в две строки (отказ, «Мастер изменил список»): поле поиска и список встают
-	-- под него, а список становится короче.
+	-- под него, а список становится короче. Справа от поля — переключатель персональных.
 	local top = 88 + math.max(12, math.ceil(card.state:GetStringHeight() or 0)) + 2
+	local width = SIDE_W - 24
+	card.bound:SetShown(bound > 0)
+	if bound > 0 then
+		card.bound:SetLabel(L.CRAFT_BOUND:format(bound))
+		Mark(card.bound, ns.Crafters.ShowBound())
+		card.bound:ClearAllPoints()
+		card.bound:SetPoint("TOPRIGHT", card, "TOPLEFT", width, -top)
+		width = width - card.bound.w - 4
+	end
+	card.search:SetWidth(width)
 	card.search:ClearAllPoints()
 	card.search:SetPoint("TOPLEFT", 0, -top)
 	card.scroll:ClearAllPoints()
 	card.scroll:SetPoint("TOPLEFT", 0, -(top + 24))
 	card.listH = math.max(RECIPE_H, math.min(RECIPES_H, LIST_BOTTOM - top - 24))
 	card.scroll:SetHeight(card.listH)
-	local total
-	if viewProf then card.items, total = Views.CraftRecipes(view.key, viewProf, query, card.query) else card.items, total = {}, 0 end
 	Resize()
+	-- Пусто: ничего не подошло под поиск или все рецепты списка — персональные.
 	card.empty:SetShown(#card.items == 0 and total > 0)
+	card.empty:SetText(card.query == "" and bound > 0 and L.CRAFT_RECIPE_ALL_BOUND or L.CRAFT_RECIPE_NONE)
 	card.whisper:SetShown(not view.own)
 	card.refresh:SetShown(not view.own)
 	card.whisper:SetEnabled(view.whisper)
@@ -749,3 +787,4 @@ local function Redraw()
 end
 ns.On("CRAFTERS", Redraw)
 ns.On("CRAFTERS_NAMES", Redraw)
+ns.On("ONLINE", Redraw)
