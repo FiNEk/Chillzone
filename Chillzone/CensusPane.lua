@@ -81,10 +81,9 @@ local function Tooltip(owner)
 	return GameTooltip
 end
 
--- «Шёпот» из меню человека в карточке — в поле окна чата.
+-- «Шёпот» из меню человека в карточке — в поле чата игры (в режиме геймпада — в окне Chillzone).
 local function Whisper(name)
-	ns.UI.Toggle("chat")
-	ns.ChatPane.WhisperTo(name)
+	ns.ChatPane.Whisper(name)
 end
 
 ---------------------------------------------------------------------------

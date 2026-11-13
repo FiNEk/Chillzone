@@ -807,7 +807,8 @@ T.test("окно: правый щелчок в списке людей откр�
 	T.no(menu:IsShown(), "меню закрылось после выбора")
 	click(vera, "RightButton")
 	Press(menu.whisper)
-	T.eq(box:GetText(), "/w Вера Верная ", "шёпот в поле окна")
+	T.same(B.tells, { "Вера Верная" }, "шёпот в поле чата игры, имя без реалма")
+	T.eq(box:GetText(), "", "поле окна не трогается")
 	T.eq(#B.partyInvites, 1, "шёпот не приглашает")
 	-- Себя и того, кто не в игре, не приглашаем.
 	click(me, "RightButton")
@@ -851,6 +852,39 @@ T.test("окно: правый щелчок в списке людей откр�
 	T.eq(#B.partyInvites, 1, "старое API не вызвано")
 	B.env.C_PartyInfo, B.env.InviteUnit = nil, nil
 	T.no(B.ns.ChatPane.InviteToGroup(vera.person), "API нет")
+	Errors(c)
+end)
+
+T.test("окно: «Шёпот» — поле чата игры, в режиме геймпада и без API — поле окна", function()
+	local _, c = Build()
+	local B = c.B
+	local P = B.ns.ChatPane
+	B.ns.UI.Toggle("census")
+	P.Whisper("Вера Верная-CAMWOWUS2Realm7PvE")
+	T.same(B.tells, { "Вера Верная" }, "ChatFrameUtil.SendTell, имя без реалма")
+	T.eq(B.ns.UI.Current(), "census", "окно Chillzone не переключается")
+	-- Старый клиент: глобальная ChatFrame_SendTell.
+	local old = {}
+	B.env.ChatFrameUtil.SendTell = nil
+	B.env.ChatFrame_SendTell = function(name) old[#old + 1] = name end
+	P.Whisper("Глеб Гордый")
+	T.same(old, { "Глеб Гордый" }, "ChatFrame_SendTell")
+	-- Режим геймпада: поле игры не открываем, шёпот — в поле окна.
+	B.env.C_InputInterfaceStyle = { GetCurrentStyle = function() return 1 end }
+	B.env.Enum = { InputDeviceInterfaceType = { Gamepad = 1 } }
+	P.Whisper("Глеб Гордый")
+	T.eq(#old, 1, "в режиме геймпада поле игры не открывается")
+	T.eq(B.ns.UI.Current(), "chat", "открыт чат окна")
+	T.eq(P.frames.box:GetText(), "/w Глеб Гордый ", "шёпот в поле окна")
+	-- Без API — тоже поле окна.
+	B.env.C_InputInterfaceStyle, B.env.Enum, B.env.ChatFrame_SendTell = nil, nil, nil
+	B.ns.UI.Toggle("census")
+	P.frames.box:SetText("")
+	P.Whisper("Вера Верная")
+	T.eq(B.ns.UI.Current(), "chat")
+	T.eq(P.frames.box:GetText(), "/w Вера Верная ")
+	P.Whisper("")
+	T.same(B.tells, { "Вера Верная" }, "пустое имя ничего не открывает")
 	Errors(c)
 end)
 
@@ -1061,7 +1095,8 @@ T.test("окно: раздел «Отладка» — главам и офице
 	Errors(c)
 end)
 
--- Видимые значки сверху вниз по якорям; «|» — отступ перед служебной группой.
+-- Видимые значки сверху вниз по якорям; «|» — отступ перед служебной группой. Второе значение —
+-- нижний край столбца от верха окна: значок 32, отступы из якорей.
 local function TabColumn(cl)
 	local UI, keys = cl.ns.UI, {}
 	for key, b in pairs(UI.tabs) do
@@ -1073,13 +1108,17 @@ local function TabColumn(cl)
 	for b in pairs(keys) do
 		if b:IsShown() then below[b.anchor.rel] = b end
 	end
-	local out, b = {}, below[UI.frame]
+	local out, b, gap, bottom = {}, below[UI.frame], nil, 0
 	while b do
-		if b.anchor.y ~= -20 and b.anchor.rel ~= UI.frame then out[#out + 1] = "|" end
+		if b.anchor.rel ~= UI.frame then
+			gap = gap or b.anchor.y
+			if b.anchor.y ~= gap then out[#out + 1] = "|" end
+		end
+		bottom = bottom - b.anchor.y + 32
 		out[#out + 1] = keys[b]
 		b = below[b]
 	end
-	return out
+	return out, bottom
 end
 
 T.test("окно: служебные значки под повседневными, «Управление» собирает разделы", function()
@@ -1088,9 +1127,11 @@ T.test("окно: служебные значки под повседневны�
 	local UI = K.ns.UI
 	local L = K.ns.L
 	for _, cl in ipairs({ K, A, M }) do cl.ns.UI.Toggle("chat") end
-	T.same(TabColumn(K), { "chat", "groups", "census", "requests", "kingdom", "|", "settings", "manage" }, "глава: 5 и 2")
-	T.same(TabColumn(A), { "chat", "groups", "census", "requests", "kingdom", "|", "settings", "manage" }, "офицер: 5 и 2")
-	T.same(TabColumn(M), { "chat", "groups", "census", "kingdom", "|", "settings" }, "рядовой: без «Заявок» и «Управления»")
+	local column, bottom = TabColumn(K)
+	T.same(column, { "chat", "groups", "crafters", "census", "requests", "kingdom", "|", "settings", "manage" }, "глава: 6 и 2")
+	T.ok(bottom <= 426, "столбец главы не ниже окна высотой 426: " .. bottom)
+	T.same(TabColumn(A), { "chat", "groups", "crafters", "census", "requests", "kingdom", "|", "settings", "manage" }, "офицер: 6 и 2")
+	T.same(TabColumn(M), { "chat", "groups", "crafters", "census", "kingdom", "|", "settings" }, "рядовой: без «Заявок» и «Управления»")
 	for _, key in ipairs({ "union", "roster", "transfer", "debug", "journal" }) do T.no(rawget(UI.tabs, key), "нет отдельного значка " .. key) end
 
 	-- Главе объединения доступны все пять разделов; значок открывает первый, потом — последний открытый.
@@ -1295,8 +1336,8 @@ T.test("перепись: список гильдий и карточка выб
 	local menu = B.ns.ChatPane.PersonMenu()
 	T.ok(menu:IsShown(), "правый щелчок открывает меню")
 	menu.whisper.scripts.OnClick(menu.whisper)
-	T.eq(B.ns.UI.Current(), "chat", "«Шёпот» открывает чат")
-	T.eq(B.ns.ChatPane.frames.box:GetText(), "/w Вера Верная ", "и шёпот в поле")
+	T.eq(B.tells[#B.tells], "Вера Верная", "«Шёпот» — в поле чата игры")
+	T.eq(B.ns.UI.Current(), "census", "окно остаётся на переписи")
 	-- Другая гильдия: главная.
 	B.ns.UI.Toggle("census")
 	P.Select(key("Чиллзон"))

@@ -11,6 +11,35 @@ local T = ...
 local Wow = {}
 
 local SERVER0 = 1793000000
+-- Названия рецептов, которые знает игра (C_Spell.GetSpellName, C_TradeSkillUI.GetRecipeInfo).
+-- Номер 2660 и его название проверены в игре 2026-11-13.
+Wow.RECIPE_NAMES = {
+	[2660] = "Грубое точило", [2661] = "Медная кольчуга", [2662] = "Медные поножи", [2663] = "Медные наручи",
+	[2664] = "Рунический медный пояс", [3115] = "Тяжёлое точило", [3116] = "Грубый точильный камень",
+	[7408] = "Тяжёлая медная кольчуга", [9983] = "Медный когтевой клинок", [16639] = "Плотное точило",
+	[2149] = "Кожаные ботинки", [2152] = "Лёгкая обработанная кожа", [3104] = "Бронзовый топор", [7418] = "Чары для наручей",
+	[16988] = "Шлем львиного сердца",
+}
+-- Предмет, значок и реагенты рецепта (C_TradeSkillUI.GetRecipeOutputItemData, GetRecipeInfo().icon,
+-- GetRecipeSchematic): reagents — { предмет, число[, необязательный] }. Рецепт без предмета — как у
+-- зачарования. Названия предметов (C_Item) клиент знает только после догрузки с сервера.
+Wow.RECIPES = {
+	[2660] = { item = 2862, icon = 135248, reagents = { { 2835, 1 } } },
+	[2661] = { item = 2852, icon = 132624, reagents = { { 2840, 8 } } },
+	[2662] = { item = 2854, icon = 134583, reagents = { { 2840, 6 }, { 2320, 2 }, { 4357, 1, true } } },
+	[7418] = { icon = 136244, reagents = { { 10940, 1 } } },
+	[16988] = { item = 12640, icon = 133073, reagents = { { 12359, 80 } } },
+}
+Wow.ITEM_NAMES = {
+	[2862] = "Грубое точило", [2852] = "Медная кольчуга", [2854] = "Медные поножи", [2835] = "Грубый камень",
+	[2840] = "Медный слиток", [2320] = "Грубая нить", [4357] = "Грубый порох", [10940] = "Странная пыль",
+	[12640] = "Шлем львиного сердца", [12359] = "Ториевый слиток",
+}
+-- Тип привязки предмета (14-е значение GetItemInfo): 1 — персональный при поднятии, 2 — при
+-- надевании; остальные — 0.
+Wow.ITEM_BIND = { [12640] = 1, [2852] = 2, [2854] = 2 }
+-- Требуемый уровень предмета (5-е значение GetItemInfo); остальные — 0.
+Wow.ITEM_LEVEL = { [2852] = 7, [2854] = 9, [12640] = 56 }
 local NOT_FOUND = "No player named '%s' is currently playing."
 
 local World = {}
@@ -356,6 +385,8 @@ local function NewFrame(c, name)
 	function methods.CreateFontString() return NewFrame(c) end
 	function methods.CreateTexture() return NewFrame(c) end
 	function methods.SetText(self, t) self.text = t or "" end
+	function methods.SetTexture(self, t) self.texture = t end
+	function methods.GetTexture(self) return rawget(self, "texture") end
 	function methods.GetText(self) return self.text end
 	function methods.GetStringHeight(self) return 14 * (1 + select(2, self.text:gsub("\n", ""))) end
 	function methods.Click(self) if self.scripts.OnClick then self.scripts.OnClick(self) end end
@@ -440,6 +471,8 @@ local function Env(c)
 	env.UnitIsGroupLeader = function() return c.party ~= nil and c.partyLeader ~= false end
 	env.GetNormalizedRealmName = function() return c.realm end
 	env.GetRealmName = function() return c.realm end
+	-- Версия интерфейса: по умолчанию классическая, как у Forever; c.interface — другой клиент.
+	env.GetBuildInfo = function() return "1.15.7", "60000", "Jan 1 2026", c.interface or 11507 end
 	env.UnitFactionGroup = function() return c.faction end
 	env.UnitClass = function() return CLASS_LOCAL[c.class], c.class end
 	env.UnitLevel = function() return c.level end
@@ -666,7 +699,12 @@ local function Env(c)
 		c.filters[event] = c.filters[event] or {}
 		table.insert(c.filters[event], fn)
 	end
-	env.ChatFrameUtil = { InsertLink = function() return false end }
+	-- SendTell: шёпот в штатном поле чата игры; c.tells — кому открыт.
+	c.tells = {}
+	env.ChatFrameUtil = {
+		InsertLink = function() return false end,
+		SendTell = function(name) c.tells[#c.tells + 1] = name end,
+	}
 	if c.chatFilterAPI == "modern" then
 		env.ChatFrameUtil.AddMessageEventFilter = AddChatFilter
 	else
@@ -710,6 +748,70 @@ local function Env(c)
 	env.RAID_CLASS_COLORS = {}
 	env.CLASS_ICON_TCOORDS = { DRUID = { 0.74, 0.98, 0, 0.25 }, PALADIN = { 0, 0.25, 0.5, 0.75 } }
 	env.ERR_CHAT_PLAYER_NOT_FOUND_S = "No player named '%s' is currently playing."
+	-- Окно профессии (Crafters.lua): c.profession = { id, skill, max, recipes = { [номер] = изучен },
+	-- linked — чужое окно по ссылке, npc — окно у НИП }. Client:OpenProfession открывает его.
+	env.C_TradeSkillUI = {
+		GetBaseProfessionInfo = function()
+			local p = c.profession
+			if not p then return { professionID = 0 } end
+			return { professionID = p.id, professionName = "?", skillLevel = p.skill, maxSkillLevel = p.max }
+		end,
+		GetChildProfessionInfo = function()
+			local p = c.profession
+			return p and { skillLevel = p.skill, maxSkillLevel = p.max } or {}
+		end,
+		GetAllRecipeIDs = function()
+			local out = {}
+			for id in pairs(c.profession and c.profession.recipes or {}) do out[#out + 1] = id end
+			table.sort(out)
+			return out
+		end,
+		GetRecipeInfo = function(id)
+			local p = c.profession
+			local learned = p and p.recipes and p.recipes[id]
+			local name = Wow.RECIPE_NAMES[id]
+			if learned == nil and not name then return nil end
+			return { recipeID = id, name = name, learned = learned == true, icon = Wow.RECIPES[id] and Wow.RECIPES[id].icon }
+		end,
+		GetRecipeOutputItemData = function(id)
+			local r = Wow.RECIPES[id]
+			return { itemID = r and r.item }
+		end,
+		GetRecipeSchematic = function(id)
+			local slots = {}
+			for _, x in ipairs(Wow.RECIPES[id] and Wow.RECIPES[id].reagents or {}) do
+				slots[#slots + 1] = { reagents = { { itemID = x[1] } }, quantityRequired = x[2], required = not x[3] }
+			end
+			return { recipeID = id, reagentSlotSchematics = slots }
+		end,
+		IsTradeSkillLinked = function() return c.profession ~= nil and c.profession.linked == true end,
+		IsTradeSkillGuild = function() return false end,
+		IsTradeSkillGuildMember = function() return false end,
+		IsNPCCrafting = function() return c.profession ~= nil and c.profession.npc == true end,
+	}
+	env.C_Spell = { GetSpellName = function(id) return Wow.RECIPE_NAMES[id] end }
+	c.items = {} -- предметы, названия которых клиент уже догрузил
+	c.itemLoads = 0
+	local function ItemInfo(id)
+		local name = c.items[id] and Wow.ITEM_NAMES[id]
+		if not name then return nil end
+		return name, "|Hitem:" .. id .. "|h[" .. name .. "]|h", 2, 20, Wow.ITEM_LEVEL[id] or 0, "Armor", "Mail", 1, "", 130000 + id, 100, 4, 3,
+			Wow.ITEM_BIND[id] or 0
+	end
+	env.GetItemInfo = ItemInfo
+	env.C_Item = {
+		GetItemInfo = ItemInfo,
+		GetItemNameByID = function(id) return c.items[id] and Wow.ITEM_NAMES[id] or nil end,
+		GetItemIconByID = function(id) return Wow.ITEM_NAMES[id] and 130000 + id or nil end,
+		RequestLoadItemDataByID = function(id)
+			c.itemLoads = c.itemLoads + 1
+			w:Schedule(w.now + 0.1, function()
+				c.items[id] = true
+				c:Fire("GET_ITEM_INFO_RECEIVED", id, Wow.ITEM_NAMES[id] ~= nil)
+			end, c)
+		end,
+	}
+	if c.noTradeSkill then env.C_TradeSkillUI = nil end
 	env.ERR_GUILD_REMOVE_SS, env.ERR_GUILD_LEAVE_S, env.ERR_GUILD_JOIN_S = ERR_GUILD_REMOVE_SS, ERR_GUILD_LEAVE_S, ERR_GUILD_JOIN_S
 	c.stubs = {}
 	for k in pairs(env) do c.stubs[k] = true end
@@ -732,7 +834,7 @@ function World:Client(opts)
 		world = self, first = opts.first, surname = opts.surname, realm = opts.realm or "CAMWOWUS2Realm7PvE",
 		faction = opts.faction or "Alliance", guild = opts.guild, rank = opts.rank or 3, class = opts.class or "MAGE",
 		level = opts.level or 60, zone = opts.zone or "Штормград", online = true, clockSkew = opts.clockSkew,
-		chatFilterAPI = opts.chatFilterAPI,
+		chatFilterAPI = opts.chatFilterAPI, noTradeSkill = opts.noTradeSkill, interface = opts.interface,
 		handlers = {}, filters = {}, printed = {}, joined = {}, joinedById = {},
 		named = {}, hooks = {}, bindings = {},
 	}, Client)
@@ -741,7 +843,7 @@ function World:Client(opts)
 	c.ns = {}
 	for _, f in ipairs(T.tocFiles()) do
 		if (not f:find("^libs/") or f == "libs/Ed25519.lua")
-			and not (opts.legacy and (f == "Issuers.lua" or f == "IssuerRevocations.lua" or f == "UnionAuthority.lua" or f == "TrustCatalog.lua" or f == "Online.lua" or f == "Pull.lua" or f == "Channel.lua" or f == "Groups.lua")) then
+			and not (opts.legacy and (f == "Issuers.lua" or f == "IssuerRevocations.lua" or f == "UnionAuthority.lua" or f == "TrustCatalog.lua" or f == "Online.lua" or f == "Pull.lua" or f == "Channel.lua" or f == "Groups.lua" or f == "Crafters.lua")) then
 			if opts.legacy and (f == "Config.lua" or f == "Util.lua" or f == "Security.lua" or f == "Relay.lua" or f == "Census.lua") then
 				local chunk = assert(loadfile(T.ROOT .. "/tests/legacy/0.9/" .. f))
 				setfenv(chunk, c.env)("Chillzone", c.ns)
@@ -773,6 +875,18 @@ end
 
 function Client:Name()
 	return self.first .. " " .. self.surname
+end
+
+-- Открыть окно профессии: p — { id, skill, max, recipes = { [номер] = изучен }, linked, npc }.
+-- Аддон читает его через полсекунды после события: нужно World:Run.
+function Client:OpenProfession(p)
+	self.profession = p
+	self:Fire("TRADE_SKILL_SHOW")
+end
+
+function Client:CloseProfession()
+	self.profession = nil
+	self:Fire("TRADE_SKILL_CLOSE")
 end
 
 function Client:Guid()
