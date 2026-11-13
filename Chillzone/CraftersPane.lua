@@ -26,11 +26,13 @@ local LIST_TOP = 60
 local SEARCH_DELAY = 0.25
 
 local pane, search, searchHint, loaded, list, listChild, empty, side
+local levelLo, levelHi -- требуемый уровень предмета «от» и «до»
 local mine, card
 local rows, filters, profRows, cardChips, recipeRows = {}, {}, {}, {}, {}
 local allChip
 local filter -- номер профессии или nil — все
 local query = ""
+local levels -- диапазон уровней (Views.CraftLevels) или nil
 local viewing, viewProf -- мастер и его профессия на правой панели; nil — своё ремесло
 local mineWhy, cardWhy -- отказ последнего действия: показывается до следующего
 local searchToken, recipeToken = 0, 0 -- отложенный поиск в каталоге и в рецептах карточки
@@ -272,7 +274,7 @@ end
 
 local function RenderList()
 	RenderFilters()
-	local items, total, found = Views.CraftRows(filter, query)
+	local items, total, found = Views.CraftRows(filter, query, levels)
 	WantOnline(items)
 	local y = 0
 	for i, it in ipairs(items) do
@@ -306,13 +308,32 @@ local function Searched()
 	ns.After(SEARCH_DELAY, "crafters search", function()
 		if token ~= searchToken or not search then return end
 		query = search:GetText() or ""
+		levels = Views.CraftLevels(levelLo:GetText(), levelHi:GetText())
 		if list then list:SetVerticalScroll(0) end
 		Pane.Render()
 	end)
 end
 
+-- Поле уровня: две цифры, подсказка «от» или «до» внутри, пока поле пустое.
+local function LevelInput(hint)
+	local box = Input(pane, 32, 2)
+	box:SetNumeric(true)
+	box:SetJustifyH("CENTER")
+	box.hint = FS(box, "GameFontDisableSmall", "CENTER")
+	box.hint:SetPoint("CENTER")
+	box.hint:SetText(hint)
+	box:SetScript("OnTextChanged", function(self)
+		self.hint:SetShown((self:GetText() or "") == "" and not self:HasFocus())
+		Searched()
+	end)
+	box:SetScript("OnEditFocusGained", function(self) self.hint:Hide() end)
+	box:SetScript("OnEditFocusLost", function(self) self.hint:SetShown((self:GetText() or "") == "") end)
+	TextTip(box, L.CRAFT_LEVEL_TITLE, L.CRAFT_LEVEL_TIP)
+	return box
+end
+
 local function BuildList()
-	search = Input(pane, 220, 60)
+	search = Input(pane, 178, 60)
 	search:SetPoint("TOPLEFT", 8, -6)
 	searchHint = FS(search, "GameFontDisableSmall")
 	searchHint:SetPoint("LEFT", 8, 0)
@@ -324,9 +345,23 @@ local function BuildList()
 	search:SetScript("OnEditFocusGained", function() searchHint:Hide() end)
 	search:SetScript("OnEditFocusLost", function(self) searchHint:SetShown((self:GetText() or "") == "") end)
 	TextTip(search, L.CRAFT_SEARCH, L.CRAFT_SEARCH_TIP)
+	-- Требуемый уровень предмета, как на аукционе: «Уровень [от] — [до]».
+	local label = FS(pane, "GameFontHighlightSmall")
+	label:SetPoint("LEFT", search, "RIGHT", 8, 0)
+	label:SetText(L.CRAFT_LEVEL)
+	levelLo = LevelInput(L.CRAFT_LEVEL_FROM)
+	levelLo:SetPoint("LEFT", label, "RIGHT", 4, 0)
+	local dash = FS(pane, "GameFontHighlightSmall")
+	dash:SetPoint("LEFT", levelLo, "RIGHT", 2, 0)
+	dash:SetText("—")
+	levelHi = LevelInput(L.CRAFT_LEVEL_TO)
+	levelHi:SetPoint("LEFT", dash, "RIGHT", 2, 0)
+	levelLo:SetScript("OnTabPressed", function() levelHi:SetFocus() end)
+	levelHi:SetScript("OnTabPressed", function() levelLo:SetFocus() end)
+	-- Справа от уровней остаётся около 140 точек: длинная надпись переносится на вторую строку.
 	loaded = FS(pane, "GameFontDisableSmall", "RIGHT")
-	loaded:SetPoint("TOPRIGHT", pane, "TOPLEFT", LIST_W + 8, -11)
-	loaded:SetWidth(LIST_W - 240)
+	loaded:SetPoint("RIGHT", pane, "TOPLEFT", LIST_W + 8, -17)
+	loaded:SetWidth(LIST_W - 324)
 
 	allChip = Chip(pane, L.CRAFT_FILTER_ALL, "filter all", function()
 		filter = nil
@@ -678,7 +713,7 @@ local function RenderCard(view)
 	card.state:SetText(cardWhy or (viewProf and Views.CraftListState(view.key, viewProf)) or "")
 	local total, bound
 	if viewProf then
-		card.items, total, bound = Views.CraftRecipes(view.key, viewProf, query, card.query)
+		card.items, total, bound = Views.CraftRecipes(view.key, viewProf, query, card.query, levels)
 	else
 		card.items, total, bound = {}, 0, 0
 	end
@@ -702,9 +737,15 @@ local function RenderCard(view)
 	card.listH = math.max(RECIPE_H, math.min(RECIPES_H, LIST_BOTTOM - top - 24))
 	card.scroll:SetHeight(card.listH)
 	Resize()
-	-- Пусто: ничего не подошло под поиск или все рецепты списка — персональные.
+	-- Пусто: ничего не подошло под поиск, нет рецептов этих уровней или все подходящие — персональные.
 	card.empty:SetShown(#card.items == 0 and total > 0)
-	card.empty:SetText(card.query == "" and bound > 0 and L.CRAFT_RECIPE_ALL_BOUND or L.CRAFT_RECIPE_NONE)
+	local why = L.CRAFT_RECIPE_NONE
+	if card.query == "" and bound > 0 then
+		why = L.CRAFT_RECIPE_ALL_BOUND
+	elseif card.query == "" and levels then
+		why = L.CRAFT_RECIPE_NO_LEVEL
+	end
+	card.empty:SetText(why)
 	card.whisper:SetShown(not view.own)
 	card.refresh:SetShown(not view.own)
 	card.whisper:SetEnabled(view.whisper)
@@ -736,6 +777,7 @@ function Pane.Build(parent)
 	Pane.frames.search, Pane.frames.mine, Pane.frames.card = search, mine, card
 	Pane.frames.profs, Pane.frames.cardChips, Pane.frames.all = profRows, cardChips, allChip
 	Pane.frames.empty, Pane.frames.loaded, Pane.frames.recipes = empty, loaded, recipeRows
+	Pane.frames.levelLo, Pane.frames.levelHi = levelLo, levelHi
 	pane:Hide()
 	return pane
 end
@@ -756,6 +798,8 @@ end
 function Pane.Hide()
 	if not pane or not pane:IsShown() then return end
 	search:ClearFocus()
+	levelLo:ClearFocus()
+	levelHi:ClearFocus()
 	card.search:ClearFocus()
 	mine.note:ClearFocus()
 	pane:Hide()
@@ -767,6 +811,17 @@ function Pane.Search(text)
 	search:SetText(text or "")
 	searchToken = searchToken + 1
 	query = text or ""
+	Pane.Render()
+end
+
+-- Уровни из кода (тесты): сразу, без паузы на набор.
+function Pane.Levels(lo, hi)
+	if not levelLo then return end
+	levelLo:SetText(lo and tostring(lo) or "")
+	levelHi:SetText(hi and tostring(hi) or "")
+	searchToken = searchToken + 1
+	levels = Views.CraftLevels(lo, hi)
+	if list then list:SetVerticalScroll(0) end
 	Pane.Render()
 end
 

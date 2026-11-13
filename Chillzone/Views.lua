@@ -954,18 +954,38 @@ local function CraftProf(card, prof)
 	end
 end
 
--- Рецепты мастера, чьи названия подходят под запрос: до трёх названий и сколько всего.
--- Скрытые персональные (Crafters.ShowBound) не ищутся.
-local function CraftHits(card, prof, words)
+-- Диапазон требуемого уровня предмета из полей «от» и «до», как на аукционе: { min, max }
+-- (одна граница может быть nil) или nil — оба поля пустые. Перепутанные границы меняются местами.
+function Views.CraftLevels(lo, hi)
+	lo, hi = tonumber(lo), tonumber(hi)
+	lo, hi = lo and math.floor(lo), hi and math.floor(hi)
+	if not lo and not hi then return nil end
+	if lo and hi and lo > hi then lo, hi = hi, lo end
+	return { min = lo, max = hi }
+end
+
+-- Предмет рецепта в диапазоне уровней. Рецепт без предмета (зачарование) и предмет, который
+-- игра ещё догружает, в диапазон не попадают.
+local function InLevels(id, levels)
+	if not levels then return true end
+	local level = ns.Crafters.RecipeLevel(id)
+	if type(level) ~= "number" then return false end
+	return (not levels.min or level >= levels.min) and (not levels.max or level <= levels.max)
+end
+
+-- Рецепты мастера, подходящие под запрос words (nil — любое название) и диапазон уровней levels:
+-- до трёх названий и сколько всего. Скрытые персональные (Crafters.ShowBound) не ищутся.
+local function CraftHits(card, prof, words, levels)
 	local found, n = {}, 0
 	local all = ns.Crafters.ShowBound()
 	for _, p in ipairs(card.profs) do
 		if not prof or p.id == prof then
 			for _, id in ipairs(ns.Crafters.Recipes(card.key, p.id) or {}) do
-				local key = RecipeKey(id)
-				if key and Fits(key, words) and (all or not ns.Crafters.RecipeBound(id)) then
+				local key = words and RecipeKey(id)
+				if (not words or key and Fits(key, words)) and InLevels(id, levels)
+					and (all or not ns.Crafters.RecipeBound(id)) then
 					n = n + 1
-					if #found < 3 then found[#found + 1] = Codec.Plain(ns.Crafters.RecipeName(id)) end
+					if #found < 3 then found[#found + 1] = Codec.Plain(Views.RecipeName(id)) end
 				end
 			end
 		end
@@ -1046,12 +1066,14 @@ local function CraftRow(card, prof, presence, found, more)
 	return row
 end
 
--- Строки каталога: prof — только эта профессия (nil — все), query — поиск. Второе значение —
--- сколько мастеров всего, третье при поиске — { loaded, of }: у скольких из подходящих по
--- профессии загружены списки рецептов.
-function Views.CraftRows(prof, query)
+-- Строки каталога: prof — только эта профессия (nil — все), query — поиск, levels — диапазон
+-- уровней предметов (Views.CraftLevels). Второе значение — сколько мастеров всего, третье при
+-- поиске или уровнях — { loaded, of }: у скольких из подходящих по профессии загружены списки
+-- рецептов.
+function Views.CraftRows(prof, query, levels)
 	local Crafters = ns.Crafters
 	local words = Views.CraftWords(query)
+	local searching = words ~= nil or levels ~= nil
 	local cards = Crafters.Cards()
 	local own = Crafters.Own()
 	if own then table.insert(cards, 1, own) end
@@ -1077,14 +1099,19 @@ function Views.CraftRows(prof, query)
 	for _, card in ipairs(cards) do
 		if not prof or CraftProf(card, prof) then
 			local fit, found, more = true, nil, 0
-			if words then
+			if searching then
 				of = of + 1
 				if card.own or Crafters.HasList(card.key, prof) then loaded = loaded + 1 end
-				local names = {}
-				for _, p in ipairs(card.profs) do names[#names + 1] = Crafters.ProfName(p.id) end
-				fit = Fits(SearchKey(card.name .. card.guild .. card.note .. table.concat(names)), words)
-				if not fit then
-					found, more = CraftHits(card, prof, words)
+				local named = true -- имя, гильдия, профессии или примечание подходят под слова
+				if words then
+					local names = {}
+					for _, p in ipairs(card.profs) do names[#names + 1] = Crafters.ProfName(p.id) end
+					named = Fits(SearchKey(card.name .. card.guild .. card.note .. table.concat(names)), words)
+				end
+				-- Уровень — только по рецептам: нужен хотя бы один рецепт в диапазоне, а если мастер
+				-- не подошёл под слова, его название должно подходить под них.
+				if levels or not named then
+					found, more = CraftHits(card, prof, not named and words or nil, levels)
 					fit = more > 0
 				end
 			end
@@ -1099,7 +1126,7 @@ function Views.CraftRows(prof, query)
 		if a.skill ~= b.skill then return a.skill > b.skill end
 		return a.card.name < b.card.name
 	end)
-	return out, #cards, words and { loaded = loaded, of = of } or nil
+	return out, #cards, searching and { loaded = loaded, of = of } or nil
 end
 
 -- Профессии, которые есть в каталоге (и в своей карточке), по порядку Crafters.PROFS.
@@ -1159,10 +1186,11 @@ end
 
 -- Список рецептов одной профессии: { id, name, hit, known }, подходящие под общий поиск query —
 -- первыми, без названия — в конце. only — поиск в самой карточке: остаются только рецепты, чьё
--- название подходит (ещё не названные игрой не подходят). Рецепты персональных при поднятии
--- предметов скрыты, пока не включён Crafters.ShowBound. Второе значение — сколько рецептов в
--- списке мастера без учёта only и скрытых, третье — сколько из них персональных.
-function Views.CraftRecipes(key, prof, query, only)
+-- название подходит (ещё не названные игрой не подходят). levels — только предметы этих уровней
+-- (Views.CraftLevels). Рецепты персональных при поднятии предметов скрыты, пока не включён
+-- Crafters.ShowBound. Второе значение — сколько рецептов в списке мастера без учёта only, уровней
+-- и скрытых, третье — сколько персональных среди подходящих по уровню.
+function Views.CraftRecipes(key, prof, query, only, levels)
 	local ids = ns.Crafters.Recipes(key, prof)
 	if not ids then return {}, 0, 0 end
 	local words, keep = Views.CraftWords(query), RecipeFilter(only)
@@ -1172,8 +1200,9 @@ function Views.CraftRecipes(key, prof, query, only)
 		local name = ns.Crafters.RecipeName(id)
 		local k = name and RecipeKey(id)
 		local personal = ns.Crafters.RecipeBound(id) == true
-		if personal then bound = bound + 1 end
-		if (all or not personal) and (not keep or k and Fits(k, keep)) then
+		local inLevels = InLevels(id, levels)
+		if personal and inLevels then bound = bound + 1 end
+		if inLevels and (all or not personal) and (not keep or k and Fits(k, keep)) then
 			items[#items + 1] = {
 				id = id, name = name and Codec.Plain(name) or L.CRAFT_RECIPE_UNKNOWN:format(id), sort = k or "",
 				hit = words ~= nil and k ~= nil and Fits(k, words), known = name ~= nil,

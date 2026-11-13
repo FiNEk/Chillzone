@@ -794,7 +794,7 @@ end
 local details = {} -- [номер рецепта] = { icon, item, reagents = { { item, n } } }
 local itemNames, itemWait = {}, {} -- [предмет] = название; [предмет] = true — игра догружает
 local recipeItems = {} -- [номер рецепта] = предмет или false: рецепт предмета не создаёт
-local itemBinds = {} -- [предмет] = true — персональный при поднятии, false — нет
+local itemFacts = {} -- [предмет] = { bound — персональный при поднятии, level — требуемый уровень }
 local itemRedraw = false
 
 local function Call(t, f, ...)
@@ -856,8 +856,8 @@ function Crafters.ItemName(item)
 	return nil
 end
 
--- Предмет, который создаёт рецепт, или nil. Только номер, без значка и реагентов: фильтру
--- персональных он нужен для всего списка мастера сразу.
+-- Предмет, который создаёт рецепт, или nil. Только номер, без значка и реагентов: фильтрам
+-- персональных и уровня он нужен для всего списка мастера сразу.
 function Crafters.RecipeItem(id)
 	local item = recipeItems[id]
 	if item == nil then
@@ -868,34 +868,42 @@ function Crafters.RecipeItem(id)
 	return item or nil
 end
 
--- Четырнадцатое значение GetItemInfo — тип привязки; без названия игра предмета ещё не знает.
-local function PickBind(ok, name, ...)
-	if ok and name then return (select(13, ...)) end
+-- Из ответа GetItemInfo: пятое значение — требуемый уровень, четырнадцатое — тип привязки
+-- (1 — персональный при поднятии). Без названия игра предмета ещё не знает.
+local function PickFacts(ok, name, _, _, _, level, ...)
+	if not ok or not name then return nil end
+	return { bound = select(9, ...) == 1, level = type(level) == "number" and level or 0 }
 end
 
-local function BindType(item)
+local function ItemInfo(item)
 	local get = type(C_Item) == "table" and C_Item.GetItemInfo
 	if type(get) ~= "function" then get = GetItemInfo end
 	if type(get) ~= "function" then return nil end
-	return PickBind(pcall(get, item))
+	return PickFacts(pcall(get, item))
 end
 
--- Предмет становится персональным при поднятии (тип привязки 1): true или false. nil — игра
--- ещё не знает предмет: она его догружает, и вкладка перерисуется.
-function Crafters.ItemBound(item)
-	local bound = itemBinds[item]
-	if bound ~= nil then return bound end
+-- { bound, level } предмета или nil: игра ещё не знает предмет, она его догружает, и вкладка
+-- перерисуется.
+local function ItemFacts(item)
+	local facts = itemFacts[item]
+	if facts then return facts end
 	if itemWait[item] then return nil end
-	local bind = BindType(item)
-	if type(bind) == "number" then
-		itemBinds[item] = bind == 1
-		return itemBinds[item]
+	facts = ItemInfo(item)
+	if facts then
+		itemFacts[item] = facts
+		return facts
 	end
 	if type(C_Item) == "table" then
 		itemWait[item] = true
 		Call(C_Item, "RequestLoadItemDataByID", item)
 	end
 	return nil
+end
+
+-- Предмет становится персональным при поднятии: true или false, nil — пока неизвестно.
+function Crafters.ItemBound(item)
+	local facts = ItemFacts(item)
+	if facts then return facts.bound end
 end
 
 -- Рецепт создаёт персональный при поднятии предмет: такой мастер не сможет передать. Рецепт без
@@ -906,7 +914,17 @@ function Crafters.RecipeBound(id)
 	return Crafters.ItemBound(item)
 end
 
--- Показывать ли такие рецепты. Настройка общая для персонажей, по умолчанию они скрыты.
+-- Требуемый уровень предмета, который создаёт рецепт (0 — без требования). false — рецепт
+-- предмета не создаёт (зачарование), nil — пока неизвестно.
+function Crafters.RecipeLevel(id)
+	local item = Crafters.RecipeItem(id)
+	if not item then return false end
+	local facts = ItemFacts(item)
+	return facts and facts.level
+end
+
+-- Показывать ли рецепты персональных предметов. Настройка общая для персонажей, по умолчанию
+-- они скрыты.
 function Crafters.ShowBound()
 	return ns.db.settings.craftBound == true
 end

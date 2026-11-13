@@ -1202,6 +1202,64 @@ T.test("crafters pane: поиск в списке рецептов карточ�
 	NoErrors(c.V, "Вера")
 end)
 
+T.test("crafters pane: фильтр по уровню предмета, как на аукционе", function()
+	local w, c = Build()
+	Master(c.A) -- точило без уровня, кольчуга 7, поножи 9
+	Master(c.K, "и я кую")
+	local V, P, L = c.V.ns, c.V.ns.CraftersPane, c.V.ns.L
+	T.eq(V.Views.CraftLevels("", ""), nil, "оба поля пустые — фильтра нет")
+	T.same(V.Views.CraftLevels("20", ""), { min = 20 })
+	T.same(V.Views.CraftLevels("30", "10"), { min = 10, max = 30 }, "границы меняются местами")
+	V.UI.Toggle("crafters")
+	local f = P.frames
+	T.eq(f.levelLo.hint:GetText(), L.CRAFT_LEVEL_FROM)
+	T.ok(Tip(c.V, f.levelHi):find(L.CRAFT_LEVEL_TIP, 1, true))
+	-- Пока списки не загружены, по уровню мастеров не найти: уровень есть только у рецептов.
+	P.Levels(8, 10)
+	T.no(PaneRow(c.V, c.A), "список не загружен")
+	T.eq(f.loaded:GetText(), L.CRAFT_LOADED:format(0, 2))
+	P.Levels()
+	PaneRow(c.V, c.A):Click()
+	w:Run(20)
+	T.eq(#RecipeRows(c.V), 3, "без уровня — все")
+	-- Поножи — девятого уровня: в строке и в карточке остаются только они.
+	P.Levels(8, 10)
+	local row = PaneRow(c.V, c.A)
+	T.ok(row and row.sub:GetText():find("Медные поножи", 1, true), "в строке — рецепт этого уровня")
+	T.no(row.sub:GetText():find("кольчуга", 1, true))
+	T.no(PaneRow(c.V, c.K), "список Карла не загружен")
+	T.eq(f.loaded:GetText(), L.CRAFT_LOADED:format(1, 2))
+	T.eq(CardText(c.V), "Медные поножи")
+	-- Одна граница: «до 7» — и предметы без требования уровня.
+	P.Levels(nil, 7)
+	T.eq(CardText(c.V), "Грубое точило\nМедная кольчуга")
+	-- Со словами: мастер не подошёл по имени — нужны рецепты, подходящие и по названию, и по уровню.
+	P.Search("медн")
+	row = PaneRow(c.V, c.A)
+	T.ok(row and row.sub:GetText():find("Медная кольчуга", 1, true))
+	T.no(row.sub:GetText():find("поножи", 1, true), "поножи не того уровня")
+	-- Мастер подошёл по имени — в строке его рецепты этого уровня.
+	P.Search("арагорн")
+	row = PaneRow(c.V, c.A)
+	T.ok(row and row.sub:GetText():find("Грубое точило, Медная кольчуга", 1, true))
+	P.Search("")
+	-- Рецептов этого уровня нет: в карточке подсказка.
+	P.Levels(50, 60)
+	T.no(PaneRow(c.V, c.A))
+	T.eq(#RecipeRows(c.V), 0)
+	T.ok(f.card.empty:IsShown())
+	T.eq(f.card.empty:GetText(), L.CRAFT_RECIPE_NO_LEVEL)
+	-- Набор в полях: фильтр после паузы.
+	P.Levels()
+	f.levelLo:SetText("9")
+	f.levelLo:GetScript("OnTextChanged")(f.levelLo)
+	T.eq(#RecipeRows(c.V), 3, "сразу не перерисовывается")
+	w:Run(0.3)
+	T.eq(CardText(c.V), "Медные поножи", "от 9")
+	T.ok(PaneRow(c.V, c.A))
+	NoErrors(c.V, "Вера")
+end)
+
 T.test("crafters pane: рецепты персональных предметов скрыты переключателем", function()
 	local w, c = Build()
 	Learn(c.A, Smith(150, { [2660] = true, [2661] = true, [16988] = true }))

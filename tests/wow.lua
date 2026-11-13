@@ -38,6 +38,8 @@ Wow.ITEM_NAMES = {
 -- Тип привязки предмета (14-е значение GetItemInfo): 1 — персональный при поднятии, 2 — при
 -- надевании; остальные — 0.
 Wow.ITEM_BIND = { [12640] = 1, [2852] = 2, [2854] = 2 }
+-- Требуемый уровень предмета (5-е значение GetItemInfo); остальные — 0.
+Wow.ITEM_LEVEL = { [2852] = 7, [2854] = 9, [12640] = 56 }
 local NOT_FOUND = "No player named '%s' is currently playing."
 
 local World = {}
@@ -715,7 +717,7 @@ local function Env(c)
 	local function ItemInfo(id)
 		local name = c.items[id] and Wow.ITEM_NAMES[id]
 		if not name then return nil end
-		return name, "|Hitem:" .. id .. "|h[" .. name .. "]|h", 2, 20, 15, "Armor", "Mail", 1, "", 130000 + id, 100, 4, 3,
+		return name, "|Hitem:" .. id .. "|h[" .. name .. "]|h", 2, 20, Wow.ITEM_LEVEL[id] or 0, "Armor", "Mail", 1, "", 130000 + id, 100, 4, 3,
 			Wow.ITEM_BIND[id] or 0
 	end
 	env.GetItemInfo = ItemInfo
