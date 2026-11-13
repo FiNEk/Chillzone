@@ -55,6 +55,13 @@
 --         совпал) — шёпотом напрямую, без реле и без подписи.
 --         Список рецептов: номера по возрастанию, каждый — разность с предыдущим варинтом из
 --         знаков 0-9A-Za-z-_ (5 бит на знак; знаки с номером 32 и выше — число продолжается).
+-- Желания: V1~C~st~guild~class~level~items · V1~X~st~guild (список снят)   (после 0.15.0)
+--           st     серверное время последней правки списка, десятичное
+--           items  номера предметов, упакованные как список рецептов (Codec.PackIds), не больше
+--                  WISH_ITEMS; что не уместилось в 255 байт, отбрасывается с конца по важности
+--         Идёт только в конверте строки чата M1~A~guild~V1~..., как карточка мастера: S1 по GUILD
+--         своей гильдии и через реле (режим P). Реле, репортёры и чат 0.15.0 и старше его
+--         пересылают и молча отбрасывают.
 -- Кадры (Transfer.lua, после 0.14.2; прежние версии их не знают): шёпотом напрямую, без реле.
 --         TQ~1~id~K|I~guild~имя~другая~fp~st   просьба офицерам guild: K — исключить имя из неё,
 --                                              I — пригласить в неё; другая — вторая гильдия
@@ -897,6 +904,78 @@ end
 function Codec.UnwrapCraft(s)
 	local guild, msg = (type(s) == "string" and s or ""):match("^M1~A~([^~|]+)~(W1~.+)$")
 	if not guild or #msg > 255 or msg:match("^W1~[CX]~%d+~([^~|]+)") ~= guild then return nil end
+	return msg, guild
+end
+
+---------------------------------------------------------------------------
+-- Желания (Wishes.lua): карточка V1 — предметы, которые игрок ищет.
+-- По сети идут только номера предметов: названия каждый клиент берёт у игры сам.
+---------------------------------------------------------------------------
+Codec.WISH_ITEMS = 30 -- предметов в карточке: больше не уместится в 255 байт с длинной гильдией
+local WISH_ITEM_MAX = 9999999
+
+-- Номера предметов по порядку важности: целые положительные, без повторов, не больше max.
+function Codec.WishIds(list, max)
+	local seen, out = {}, {}
+	for _, v in ipairs(type(list) == "table" and list or {}) do
+		local n = tonumber(v)
+		if n and n == floor(n) and n >= 1 and n <= WISH_ITEM_MAX and not seen[n] and #out < (max or Codec.WISH_ITEMS) then
+			seen[n] = true
+			out[#out + 1] = n
+		end
+	end
+	return out
+end
+
+-- w: { mode, st, guild, class, level, items = { номера по важности } }. nil — нет времени,
+-- гильдии или (у карточки) предметов. Предметы упаковываются по возрастанию (Codec.PackIds);
+-- если все не умещаются в 255 байт, отбрасываются последние по важности.
+function Codec.EncodeWish(w)
+	local guild = clean(w.guild)
+	local st = groupId(tostring(floor(tonumber(w.st) or 0)))
+	if not st or guild == "" or LongGuild(guild) then return nil end
+	if w.mode == "X" then return ("V1~X~%d~%s"):format(st, guild) end
+	if w.mode ~= "C" then return nil end
+	local ids = Codec.WishIds(w.items)
+	local head = ("V1~C~%d~%s~%s~%d~"):format(st, guild, classCode(w.class), bounded(w.level, 0, 255))
+	for n = #ids, 1, -1 do
+		local packed = Codec.PackIds({ unpack(ids, 1, n) }, Codec.WISH_ITEMS)
+		if #head + #packed <= 255 then return head .. packed end
+	end
+	return nil
+end
+
+-- Таблица как у EncodeWish или nil. Предметы — по возрастанию номера. Поля после списка не
+-- мешают: их добавят следующие версии.
+function Codec.DecodeWish(s)
+	if type(s) ~= "string" or #s > 255 then return nil end
+	local mode, rawSt, rest = s:match("^V1~([CX])~(%d+)~(.+)$")
+	local st = groupId(rawSt)
+	if not st then return nil end
+	if mode == "X" then
+		local guild = rest:match("^([^~|]+)")
+		if not guild or LongGuild(guild) then return nil end
+		return { mode = "X", st = st, guild = guild }
+	end
+	local guild, class, level, packed = rest:match("^([^~|]+)~(%u?%u?)~(%d%d?%d?)~([%w_-]+)")
+	if not guild or LongGuild(guild) then return nil end
+	local items = Codec.UnpackIds(packed, Codec.WISH_ITEMS)
+	if not items or #items == 0 then return nil end
+	return { mode = "C", st = st, guild = guild, class = classFile(class), level = bounded(level, 0, 255), items = items }
+end
+
+-- Карточка в конверте строки чата: M1~A~guild~<V1 целиком>, как Codec.WrapCraft. Реле, репортёры
+-- и чат 0.15.0 и старше пересылают её как строку и молча отбрасывают (третье поле не номер).
+function Codec.WrapWish(msg)
+	local guild = type(msg) == "string" and #msg <= 255 and msg:match("^V1~[CX]~%d+~([^~|]+)")
+	if not guild then return nil end
+	return "M1~A~" .. guild .. "~" .. msg
+end
+
+-- Вложенное V1 и гильдия или nil: это не конверт карточки желаний.
+function Codec.UnwrapWish(s)
+	local guild, msg = (type(s) == "string" and s or ""):match("^M1~A~([^~|]+)~(V1~.+)$")
+	if not guild or #msg > 255 or msg:match("^V1~[CX]~%d+~([^~|]+)") ~= guild then return nil end
 	return msg, guild
 end
 

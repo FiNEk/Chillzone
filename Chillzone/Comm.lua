@@ -447,8 +447,8 @@ end
 -- relay = имя реле }. sender — автор (для RM/RG — origin из конверта).
 function Comm.Dispatch(msg, sender, dist, ctx)
 	local kind = msg:sub(1, 2)
-	-- Объявление о группе (Codec.WrapGroup) и карточку мастера (Codec.WrapCraft) в конверте строки
-	-- чата читают доска и каталог, а не чат. Конверт приходит только подписанным: без ctx он
+	-- Объявление о группе (Codec.WrapGroup), карточку мастера (Codec.WrapCraft) и список желаний
+	-- (Codec.WrapWish) в конверте строки чата читают доска и каталоги, а не чат. Конверт приходит только подписанным: без ctx он
 	-- остаётся строкой, и чат его отбросит.
 	if kind == "M1" and ctx then
 		local group = Codec.UnwrapGroup(msg)
@@ -456,7 +456,12 @@ function Comm.Dispatch(msg, sender, dist, ctx)
 			msg, kind, ctx.wrapped = group, "G1", true
 		else
 			local card = Codec.UnwrapCraft(msg)
-			if card then msg, kind, ctx.wrapped = card, "W1", true end
+			if card then
+				msg, kind, ctx.wrapped = card, "W1", true
+			else
+				local wish = Codec.UnwrapWish(msg)
+				if wish then msg, kind, ctx.wrapped = wish, "V1", true end
+			end
 		end
 	end
 	local h = handlers[kind]
