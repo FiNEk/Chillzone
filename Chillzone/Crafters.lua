@@ -79,6 +79,23 @@ function Crafters.ProfOrder(id)
 	return ORDER[id] or 100 + (tonumber(id) or 0) / 1e7
 end
 
+-- С какой версии интерфейса профессия есть в игре: ювелирное дело — с TBC, начертание — с WotLK.
+local SINCE = { [755] = 20000, [773] = 30000 }
+local gameProfs
+
+-- Профессии, которые есть в этом клиенте, по порядку PROFS: фильтр каталога показывает их все,
+-- даже без мастеров, чтобы было видно, что таких нет.
+function Crafters.GameProfs()
+	if not gameProfs then
+		local ui = tonumber((select(4, GetBuildInfo()))) or 0
+		gameProfs = {}
+		for _, id in ipairs(Crafters.PROFS) do
+			if ui >= (SINCE[id] or 0) then gameProfs[#gameProfs + 1] = id end
+		end
+	end
+	return gameProfs
+end
+
 ---------------------------------------------------------------------------
 -- Каталог
 ---------------------------------------------------------------------------

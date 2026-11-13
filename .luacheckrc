@@ -83,6 +83,7 @@ read_globals = {
 	"JoinChannelByName",
 	"hooksecurefunc",
 	"GetRealmName",
+	"GetBuildInfo",
 	"GetServerTime",
 	"GetTime",
 	"GetTimePreciseSec",

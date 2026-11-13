@@ -1174,14 +1174,21 @@ function Views.CraftRows(prof, query, levels)
 	return out, #cards, searching and { loaded = loaded, of = of } or nil
 end
 
--- Профессии, которые есть в каталоге (и в своей карточке), по порядку Crafters.PROFS.
+-- Профессии для фильтра по порядку Crafters.PROFS: все, что есть в игре, и те, что пришли
+-- в карточках из других клиентов. Второе значение — { [номер] = true } у тех, где мастера есть
+-- (в каталоге или своя размещённая карточка).
 function Views.CraftProfs()
-	local seen, out = {}, {}
+	local seen, has, out = {}, {}, {}
+	for _, id in ipairs(ns.Crafters.GameProfs()) do
+		seen[id] = true
+		out[#out + 1] = id
+	end
 	local cards = ns.Crafters.Cards()
 	local own = ns.Crafters.Own()
 	if own then cards[#cards + 1] = own end
 	for _, card in ipairs(cards) do
 		for _, p in ipairs(card.profs) do
+			has[p.id] = true
 			if not seen[p.id] then
 				seen[p.id] = true
 				out[#out + 1] = p.id
@@ -1189,7 +1196,7 @@ function Views.CraftProfs()
 		end
 	end
 	table.sort(out, function(a, b) return ns.Crafters.ProfOrder(a) < ns.Crafters.ProfOrder(b) end)
-	return out
+	return out, has
 end
 
 -- Карточка мастера для правой панели или nil: { name, line, note, profs, whisper, own, posted }.
@@ -1212,16 +1219,10 @@ function Views.CraftCard(key)
 	else
 		line = line .. ", " .. Views.Ago(ns.ServerTime() - card.at)
 	end
-	-- В своей карточке под состоянием списка — витрина и есть ли неотправленные правки.
-	local mine
-	if own then
-		mine = L.CRAFT_SHOW_MINE:format(ns.Crafters.ShowCount(), C.CRAFT_SHOW)
-		if ns.Crafters.Dirty() then mine = mine .. "\n" .. ORANGE .. L.CRAFT_SHOW_DIRTY .. "|r" end
-	end
 	return {
 		key = key, who = card.name, name = Views.CraftDot(own and "own" or presence) .. " " .. Views.Name(card.name, card.class), line = line,
 		note = card.note ~= "" and Codec.Plain(card.note) or nil, profs = card.profs,
-		whisper = presence == "online" or presence == "recent", own = own, card = card, mine = mine,
+		whisper = presence == "online" or presence == "recent", own = own, card = card,
 		posted = not own or card.posted,
 	}
 end
@@ -1352,7 +1353,8 @@ function Views.CraftListState(key, prof)
 	end
 	local _, entry = ns.Crafters.Recipes(key, prof)
 	local ago = entry and Views.Ago(ns.ServerTime() - (entry.at or 0))
-	if key == ns.myKey then return entry and L.CRAFT_LIST_MINE:format(ago) or L.CRAFT_NO_LIST end
+	-- Над своим списком подписи нет: когда он прочитан, видно в «Моём ремесле».
+	if key == ns.myKey then return not entry and L.CRAFT_NO_LIST or nil end
 	local failed = ask and ask.failed and (ask.why == "offline" and L.CRAFT_OFFLINE or ask.why == "broken"
 		and L.CRAFT_BROKEN or L.CRAFT_SILENT)
 	if failed then return ORANGE .. failed .. "|r" end

@@ -327,7 +327,7 @@ local function Feed(cl, o)
 	local cert = o.cert or { key = ns.Util.Key(name), name = name, guild = guild }
 	local msg = ns.Codec.EncodeCraft({
 		mode = o.mode or "C", st = at, guild = guild, class = "PRIEST", level = 21, note = o.note,
-		profs = { { id = 164, skill = o.skill or 1, max = 75, n = 1, hash = "0001" } },
+		profs = { { id = o.prof or 164, skill = o.skill or 1, max = 75, n = 1, hash = "0001" } },
 	})
 	ns.Crafters.Receive(msg, name, o.dist or "RELAY", o.ctx or {
 		authenticated = true, certificate = cert, wire = ("S1~fp~%d~%d~x"):format(at, o.seq or 1),
@@ -1139,6 +1139,46 @@ T.test("crafters pane: каталог, поиск по рецептам и ка�
 	T.eq(#c.V:Leaks(), 0)
 end)
 
+T.test("crafters pane: в фильтре все профессии игры, у пустой — «мастеров нет»", function()
+	local w, c = Build()
+	Master(c.A)
+	local L = c.V.ns.L
+	c.V:Slash("/chillzone", "crafters")
+	local f = c.V.ns.CraftersPane.frames
+	for _, id in ipairs({ 164, 165, 197, 171, 202, 333, 186, 185, 129 }) do
+		T.ok(f.filters[id] and f.filters[id]:IsShown(), "в фильтре и без мастеров: " .. id)
+	end
+	T.no(f.filters[755], "ювелирного дела в классическом клиенте нет")
+	T.no(f.filters[773], "начертания тоже")
+	-- Кожевников нет: так и написано.
+	f.filters[165]:Click()
+	T.no(PaneRow(c.V, c.A))
+	T.ok(f.empty:IsShown())
+	T.eq(f.empty:GetText(), L.CRAFT_EMPTY_PROF:format("Кожевничество"))
+	-- Кузнецы есть, но под поиск никто не подошёл — прежняя строка.
+	f.filters[164]:Click()
+	T.ok(PaneRow(c.V, c.A))
+	c.V.ns.CraftersPane.Search("зелье")
+	w:Run(1)
+	T.no(PaneRow(c.V, c.A))
+	T.eq(f.empty:GetText(), L.CRAFT_EMPTY_FILTER:format(1))
+	c.V.ns.CraftersPane.Search("")
+	w:Run(1)
+	-- Профессия из карточки клиента, где она есть, попадает в фильтр и здесь.
+	Feed(c.V, { prof = 755, name = "Карл Великий", guild = "Чиллзон" })
+	c.V.ns.CraftersPane.Render()
+	T.ok(f.filters[755] and f.filters[755]:IsShown(), "ювелирное дело из чужой карточки")
+	f.filters[755]:Click()
+	T.ok(PaneRow(c.V, c.K), "ювелир Карл")
+	f.all:Click()
+	-- Клиент TBC знает ювелирное дело, WotLK — ещё и начертание.
+	local tbc = w:Client({ first = "Тимур", surname = "Тбсов", interface = 20505 })
+	T.same(tbc.ns.Crafters.GameProfs(), { 164, 165, 197, 171, 202, 333, 755, 186, 185, 129 })
+	local wotlk = w:Client({ first = "Влад", surname = "Лич", interface = 30403 })
+	T.same(wotlk.ns.Crafters.GameProfs(), { 164, 165, 197, 171, 202, 333, 755, 773, 186, 185, 129 })
+	NoErrors(c.V, "Вера")
+end)
+
 T.test("crafters pane: значок «в игре» по спискам гильдий и ростеру", function()
 	local w, c = Build()
 	Master(c.A)
@@ -1545,11 +1585,10 @@ T.test("crafters pane: своё ремесло — отметка, примеч�
 	T.eq(f.card.note:GetText(), "кую на заказ")
 	T.ok(CardText(c.A):find("Грубое точило", 1, true), "свои рецепты по названиям")
 	T.no(CardText(c.A):find(L.CRAFT_RECIPE_UNKNOWN:format(3115), 1, true), "неизученный не показан")
-	T.ok(f.card.state:GetText():find(L.CRAFT_LIST_MINE:format(""), 1, true), "свой список")
+	T.eq(f.card.state:GetText(), "", "над своим списком подписи нет")
 	T.no(f.card.whisper:IsShown(), "себе не шепчут")
 	T.eq(f.card.refresh:GetText(), L.CRAFT_UPDATE, "свой список не спрашивают: кнопка отправляет правки")
 	T.no(f.card.refresh.enabled, "правок нет")
-	T.ok(f.card.state:GetText():find(L.CRAFT_SHOW_MINE:format(0, 3), 1, true), "витрина пуста")
 	f.cardChips[1]:Click()
 	T.eq(#wr, 0, "своей карточке запрос WR не нужен")
 	f.card.back:Click()
@@ -1636,8 +1675,7 @@ T.test("crafters pane: витрина — значки в строке, перв
 	rows = RecipeRows(c.A)
 	T.same({ rows[1].it.id, rows[2].it.id, rows[3].it.id }, { 2662, 2660, 2661 })
 	for _, r in ipairs(rows) do T.ok(r.star:IsShown(), "звёздочка у каждого рецепта") end
-	T.ok(fa.card.state:GetText():find(L.CRAFT_SHOW_MINE:format(2, 3), 1, true), "на витрине два из трёх")
-	T.no(fa.card.state:GetText():find(L.CRAFT_SHOW_DIRTY, 1, true))
+	T.eq(fa.card.state:GetText(), "", "над своим списком подписи нет")
 	T.eq(fa.card.refresh:GetText(), L.CRAFT_UPDATE)
 	T.no(fa.card.refresh.enabled, "правок нет")
 	T.ok(Tip(c.A, rows[1].star):find(L.CRAFT_SHOW_OFF, 1, true))
@@ -1646,9 +1684,8 @@ T.test("crafters pane: витрина — значки в строке, перв
 	T.same(Cr.Own().profs[1].show, { 2662, 2661 })
 	rows = RecipeRows(c.A)
 	T.same({ rows[1].it.id, rows[2].it.id, rows[3].it.id }, { 2662, 2661, 2660 }, "отмеченный поднялся к витрине")
-	T.ok(fa.card.state:GetText():find(L.CRAFT_SHOW_MINE:format(3, 3), 1, true))
-	T.ok(fa.card.state:GetText():find(L.CRAFT_SHOW_DIRTY, 1, true), "правка ещё не ушла")
-	T.ok(fa.card.refresh.enabled)
+	T.eq(fa.card.state:GetText(), "")
+	T.ok(fa.card.refresh.enabled, "правка ещё не ушла")
 	-- Витрина полна: четвёртый не встаёт, объяснение — над списком.
 	rows[3].star:Click()
 	T.eq(fa.card.state:GetText():match("^[^\n]*"), L.CRAFT_SHOW_FULL:format(3))
@@ -1699,8 +1736,7 @@ T.test("crafters pane: витрина до размещения — чернов
 	T.ok(Tip(c.A, f.card.refresh):find(L.CRAFT_POST_TIP, 1, true))
 	rows[3].star:Click()
 	T.same(Cr.Own(true).profs[1].show, { 2662 })
-	T.ok(f.card.state:GetText():find(L.CRAFT_SHOW_MINE:format(1, 3), 1, true))
-	T.no(f.card.state:GetText():find(L.CRAFT_SHOW_DIRTY, 1, true), "у черновика правок нет")
+	T.eq(f.card.state:GetText(), "", "над черновиком подписи нет")
 	T.eq(#wires, 0, "до размещения в сеть ничего не ушло")
 	-- «Разместить» в карточке: витрина и примечание из поля уходят сразу.
 	f.card.refresh:Click()

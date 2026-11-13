@@ -471,6 +471,8 @@ local function Env(c)
 	env.UnitIsGroupLeader = function() return c.party ~= nil and c.partyLeader ~= false end
 	env.GetNormalizedRealmName = function() return c.realm end
 	env.GetRealmName = function() return c.realm end
+	-- Версия интерфейса: по умолчанию классическая, как у Forever; c.interface — другой клиент.
+	env.GetBuildInfo = function() return "1.15.7", "60000", "Jan 1 2026", c.interface or 11507 end
 	env.UnitFactionGroup = function() return c.faction end
 	env.UnitClass = function() return CLASS_LOCAL[c.class], c.class end
 	env.UnitLevel = function() return c.level end
@@ -832,7 +834,7 @@ function World:Client(opts)
 		world = self, first = opts.first, surname = opts.surname, realm = opts.realm or "CAMWOWUS2Realm7PvE",
 		faction = opts.faction or "Alliance", guild = opts.guild, rank = opts.rank or 3, class = opts.class or "MAGE",
 		level = opts.level or 60, zone = opts.zone or "Штормград", online = true, clockSkew = opts.clockSkew,
-		chatFilterAPI = opts.chatFilterAPI, noTradeSkill = opts.noTradeSkill,
+		chatFilterAPI = opts.chatFilterAPI, noTradeSkill = opts.noTradeSkill, interface = opts.interface,
 		handlers = {}, filters = {}, printed = {}, joined = {}, joinedById = {},
 		named = {}, hooks = {}, bindings = {},
 	}, Client)

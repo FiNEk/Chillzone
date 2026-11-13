@@ -37,6 +37,7 @@ local mine, card
 local rows, filters, profRows, cardChips, recipeRows = {}, {}, {}, {}, {}
 local allChip
 local filter -- номер профессии или nil — все
+local withMasters = {} -- { [профессия] = true }, у которых в каталоге есть мастера
 local query = ""
 local levels -- диапазон уровней (Views.CraftLevels) или nil
 local viewing, viewProf -- мастер и его профессия на правой панели; nil — своё ремесло
@@ -289,7 +290,9 @@ local function FilterChip(id)
 end
 
 local function RenderFilters()
-	local profs, x, present = Views.CraftProfs(), 8, {}
+	local profs, has = Views.CraftProfs()
+	local x, present = 8, {}
+	withMasters = has
 	allChip:ClearAllPoints()
 	allChip:SetPoint("TOPLEFT", pane, "TOPLEFT", x, -34)
 	x = x + allChip.w + 4
@@ -305,7 +308,7 @@ local function RenderFilters()
 	for id, chip in pairs(filters) do
 		if not present[id] then chip:Hide() end
 	end
-	-- Профессия пропала из каталога — фильтр по ней ничего бы не показал.
+	-- Профессии нет в игре, и её карточки пропали из каталога — фильтра по ней больше нет.
 	if filter and not present[filter] then filter = nil end
 	Mark(allChip, filter == nil)
 end
@@ -349,7 +352,13 @@ local function RenderList()
 	if not ns.IsMember() then
 		empty:SetText(L.CRAFT_NOT_MEMBER)
 	else
-		empty:SetText(total > 0 and L.CRAFT_EMPTY_FILTER:format(total) or L.CRAFT_EMPTY)
+		local why = L.CRAFT_EMPTY
+		if total > 0 and filter and not withMasters[filter] then
+			why = L.CRAFT_EMPTY_PROF:format(ns.Crafters.ProfName(filter))
+		elseif total > 0 then
+			why = L.CRAFT_EMPTY_FILTER:format(total)
+		end
+		empty:SetText(why)
 	end
 	loaded:SetText(found and L.CRAFT_LOADED:format(found.loaded, found.of) or "")
 end
@@ -840,7 +849,6 @@ local function RenderCard(view)
 	for i = #view.profs + 1, #cardChips do cardChips[i]:Hide() end
 	-- Фильтр уровня задают поля над каталогом; в карточке под состоянием видно, что он действует.
 	local listState = cardWhy or (viewProf and Views.CraftListState(view.key, viewProf)) or ""
-	if view.mine then listState = listState ~= "" and (listState .. "\n" .. view.mine) or view.mine end
 	local note = Views.CraftLevelNote(levels)
 	if note then listState = listState ~= "" and (listState .. "\n" .. note) or note end
 	card.state:SetText(listState)
@@ -852,7 +860,8 @@ local function RenderCard(view)
 	end
 	-- Состояние бывает в две строки (отказ, «Мастер изменил список»): поле поиска и список встают
 	-- под него, а список становится короче. Справа от поля — переключатель персональных.
-	local top = 88 + math.max(12, math.ceil(card.state:GetStringHeight() or 0)) + 2
+	-- Над своим списком подписи обычно нет: тогда поле поиска встаёт сразу под профессии.
+	local top = 88 + (listState ~= "" and math.max(12, math.ceil(card.state:GetStringHeight() or 0)) + 2 or 0)
 	local width = SIDE_W - 24
 	card.bound:SetShown(bound > 0)
 	if bound > 0 then
