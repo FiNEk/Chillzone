@@ -807,7 +807,8 @@ T.test("окно: правый щелчок в списке людей откр�
 	T.no(menu:IsShown(), "меню закрылось после выбора")
 	click(vera, "RightButton")
 	Press(menu.whisper)
-	T.eq(box:GetText(), "/w Вера Верная ", "шёпот в поле окна")
+	T.same(B.tells, { "Вера Верная" }, "шёпот в поле чата игры, имя без реалма")
+	T.eq(box:GetText(), "", "поле окна не трогается")
 	T.eq(#B.partyInvites, 1, "шёпот не приглашает")
 	-- Себя и того, кто не в игре, не приглашаем.
 	click(me, "RightButton")
@@ -851,6 +852,39 @@ T.test("окно: правый щелчок в списке людей откр�
 	T.eq(#B.partyInvites, 1, "старое API не вызвано")
 	B.env.C_PartyInfo, B.env.InviteUnit = nil, nil
 	T.no(B.ns.ChatPane.InviteToGroup(vera.person), "API нет")
+	Errors(c)
+end)
+
+T.test("окно: «Шёпот» — поле чата игры, в режиме геймпада и без API — поле окна", function()
+	local _, c = Build()
+	local B = c.B
+	local P = B.ns.ChatPane
+	B.ns.UI.Toggle("census")
+	P.Whisper("Вера Верная-CAMWOWUS2Realm7PvE")
+	T.same(B.tells, { "Вера Верная" }, "ChatFrameUtil.SendTell, имя без реалма")
+	T.eq(B.ns.UI.Current(), "census", "окно Chillzone не переключается")
+	-- Старый клиент: глобальная ChatFrame_SendTell.
+	local old = {}
+	B.env.ChatFrameUtil.SendTell = nil
+	B.env.ChatFrame_SendTell = function(name) old[#old + 1] = name end
+	P.Whisper("Глеб Гордый")
+	T.same(old, { "Глеб Гордый" }, "ChatFrame_SendTell")
+	-- Режим геймпада: поле игры не открываем, шёпот — в поле окна.
+	B.env.C_InputInterfaceStyle = { GetCurrentStyle = function() return 1 end }
+	B.env.Enum = { InputDeviceInterfaceType = { Gamepad = 1 } }
+	P.Whisper("Глеб Гордый")
+	T.eq(#old, 1, "в режиме геймпада поле игры не открывается")
+	T.eq(B.ns.UI.Current(), "chat", "открыт чат окна")
+	T.eq(P.frames.box:GetText(), "/w Глеб Гордый ", "шёпот в поле окна")
+	-- Без API — тоже поле окна.
+	B.env.C_InputInterfaceStyle, B.env.Enum, B.env.ChatFrame_SendTell = nil, nil, nil
+	B.ns.UI.Toggle("census")
+	P.frames.box:SetText("")
+	P.Whisper("Вера Верная")
+	T.eq(B.ns.UI.Current(), "chat")
+	T.eq(P.frames.box:GetText(), "/w Вера Верная ")
+	P.Whisper("")
+	T.same(B.tells, { "Вера Верная" }, "пустое имя ничего не открывает")
 	Errors(c)
 end)
 
@@ -1301,8 +1335,8 @@ T.test("перепись: список гильдий и карточка выб
 	local menu = B.ns.ChatPane.PersonMenu()
 	T.ok(menu:IsShown(), "правый щелчок открывает меню")
 	menu.whisper.scripts.OnClick(menu.whisper)
-	T.eq(B.ns.UI.Current(), "chat", "«Шёпот» открывает чат")
-	T.eq(B.ns.ChatPane.frames.box:GetText(), "/w Вера Верная ", "и шёпот в поле")
+	T.eq(B.tells[#B.tells], "Вера Верная", "«Шёпот» — в поле чата игры")
+	T.eq(B.ns.UI.Current(), "census", "окно остаётся на переписи")
 	-- Другая гильдия: главная.
 	B.ns.UI.Toggle("census")
 	P.Select(key("Чиллзон"))

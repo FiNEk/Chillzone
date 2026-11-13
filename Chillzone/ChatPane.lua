@@ -5,8 +5,10 @@
 --
 -- Чего панель не делает (правила Olympus ChatWindow.lua — иначе следующий /cast или /target
 -- игрока блокируется как «испорченный» аддоном):
--- - не трогает поле ввода и окна чата игры: не вызывает ChatFrame_OpenChat, ChatFrame_SendTell,
---   ChatFrameUtil.*, ChatEdit_*, SetItemRef, HandleModifiedItemClick и не меняет их скрипты;
+-- - не трогает поле ввода и окна чата игры: не вызывает ChatFrame_OpenChat, ChatFrameUtil.*,
+--   ChatEdit_*, SetItemRef, HandleModifiedItemClick и не меняет их скрипты. Одно исключение —
+--   ChatPane.Whisper: щелчок по «Шёпот» открывает поле игры через SendTell, как у Olympus с мышью и
+--   клавиатурой; в режиме геймпада — нет. После него в игре проверяют /cast и /target;
 -- - своё поле ввода само фокус не берёт: только щелчок, клик по метке или Enter, пока окно открыто;
 -- - Enter («Открыть чат») перехватывается своей кнопкой только при открытом окне или на экране
 --   поля вкладки «Чиллзон» и не в бою, в режиме геймпада — никогда.
@@ -393,7 +395,32 @@ local function OnArrow(self, key)
 end
 
 -- Шёпот из окна: «/w Имя Фамилия » в нашем поле, курсор в конце.
+-- Шёпот в поле окна Chillzone: щелчок по имени в его чате.
 function ChatPane.WhisperTo(name)
+	ChatLinks.Whisper(box, name)
+end
+
+-- Штатный шёпот игры: ChatFrameUtil.SendTell, на старых клиентах ChatFrame_SendTell; nil — нет.
+local function NativeTell()
+	local api = rawget(_G, "ChatFrameUtil")
+	local send = type(api) == "table" and api.SendTell
+	if type(send) ~= "function" then send = rawget(_G, "ChatFrame_SendTell") end
+	return type(send) == "function" and send or nil
+end
+
+-- Кнопки «Шёпот» и «Шепнуть» (меню человека, «Группы», «Мастера профессий»): поле чата игры с
+-- «/w Имя Фамилия », как у Olympus с мышью и клавиатурой. Только из щелчка игрока; скрипты,
+-- атрибуты и методы игрового поля аддон не меняет. В режиме геймпада (Olympus там тоже не открывает
+-- поле игры: его taint читает чат геймпада) и без API — поле окна Chillzone.
+function ChatPane.Whisper(name)
+	if type(name) ~= "string" or name == "" then return end
+	local send = not ChatPane.Gamepad() and NativeTell()
+	if send then
+		if box then box:ClearFocus() end
+		send(Codec.Plain(U.TellName(name) or name))
+		return
+	end
+	ns.UI.Toggle("chat")
 	ChatLinks.Whisper(box, name)
 end
 
@@ -478,7 +505,7 @@ function ChatPane.PersonMenu()
 	return m
 end
 
--- owner — строка списка, whisper — чем открыть шёпот (карточка переписи сначала открывает чат).
+-- owner — строка списка, whisper — чем открыть шёпот (по умолчанию — поле чата игры).
 function ChatPane.OpenPersonMenu(owner, person, whisper)
 	local m = ChatPane.PersonMenu()
 	if m:IsShown() and m.owner == owner then
@@ -486,7 +513,7 @@ function ChatPane.OpenPersonMenu(owner, person, whisper)
 		return
 	end
 	GameTooltip:Hide()
-	m.owner, m.person, m.onWhisper = owner, person, whisper or ChatPane.WhisperTo
+	m.owner, m.person, m.onWhisper = owner, person, whisper or ChatPane.Whisper
 	m.title:SetText(Views.Name(person.name, person.class))
 	local can = Views.CanInvite(person)
 	m.invite:SetEnabled(can)

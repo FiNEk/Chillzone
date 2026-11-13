@@ -128,9 +128,9 @@ local function Input(parent, width, maxBytes)
 	return box
 end
 
+-- Шёпот в поле чата игры (в режиме геймпада — в окне Chillzone), см. ChatPane.Whisper.
 local function Whisper(name)
-	ns.UI.Toggle("chat")
-	ns.ChatPane.WhisperTo(name)
+	ns.ChatPane.Whisper(name)
 end
 
 ---------------------------------------------------------------------------

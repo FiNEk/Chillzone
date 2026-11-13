@@ -1038,12 +1038,13 @@ T.test("crafters pane: каталог, поиск по рецептам и ка�
 	T.ok(f.empty:IsShown())
 	T.eq(f.empty:GetText(), L.CRAFT_EMPTY_FILTER:format(1))
 	c.V.ns.CraftersPane.Search("")
-	-- «Назад» — своё ремесло, «Шепнуть» — вкладка чата.
+	-- «Назад» — своё ремесло, «Шепнуть» — поле чата игры.
 	f.card.back:Click()
 	T.ok(f.mine:IsShown())
 	T.no(f.card:IsShown())
 	PaneRow(c.V, c.A).button:Click()
-	T.eq(c.V.ns.UI.Current(), "chat")
+	T.same(c.V.tells, { "Арагорн Светлый" }, "шёпот мастеру в чате игры")
+	T.eq(c.V.ns.UI.Current(), "crafters", "окно остаётся на вкладке")
 	NoErrors(c.V, "Вера")
 	T.eq(#c.V:Leaks(), 0)
 end)
@@ -1070,8 +1071,8 @@ T.test("crafters pane: правый щелчок по мастеру — мен�
 	T.eq(menu.invite.enabled, true, "в игре — приглашение доступно")
 	menu.whisper:GetScript("OnClick")(menu.whisper)
 	T.no(menu:IsShown(), "меню закрылось")
-	T.eq(c.A.ns.UI.Current(), "chat", "шёпот — вкладка чата")
-	T.eq(c.A.ns.ChatPane.frames.box:GetText(), "/w Карл Великий ", "шёпот мастеру в поле окна")
+	T.same(c.A.tells, { "Карл Великий" }, "шёпот мастеру в поле чата игры")
+	T.eq(c.A.ns.UI.Current(), "crafters", "окно остаётся на вкладке")
 	-- Своя строка меню не открывает, в её подсказке нет правого щелчка.
 	c.A:Slash("/chillzone", "crafters")
 	local own = PaneRow(c.A, c.A)

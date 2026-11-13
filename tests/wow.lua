@@ -613,7 +613,12 @@ local function Env(c)
 		c.filters[event] = c.filters[event] or {}
 		table.insert(c.filters[event], fn)
 	end
-	env.ChatFrameUtil = { InsertLink = function() return false end }
+	-- SendTell: шёпот в штатном поле чата игры; c.tells — кому открыт.
+	c.tells = {}
+	env.ChatFrameUtil = {
+		InsertLink = function() return false end,
+		SendTell = function(name) c.tells[#c.tells + 1] = name end,
+	}
 	if c.chatFilterAPI == "modern" then
 		env.ChatFrameUtil.AddMessageEventFilter = AddChatFilter
 	else

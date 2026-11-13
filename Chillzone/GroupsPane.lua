@@ -185,9 +185,9 @@ local function MarkRoles(chips)
 	for _, chip in ipairs(chips) do Mark(chip, mine[chip.role] > 0) end
 end
 
+-- Шёпот в поле чата игры (в режиме геймпада — в окне Chillzone), см. ChatPane.Whisper.
 local function Whisper(name)
-	ns.UI.Toggle("chat")
-	ns.ChatPane.WhisperTo(name)
+	ns.ChatPane.Whisper(name)
 end
 
 local function Say(why, arg)
