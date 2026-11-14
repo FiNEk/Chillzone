@@ -33,8 +33,9 @@ local JOIN_BY = 15 -- не позже стольких секунд после �
 -- Канал не пускает (пароль, бан, отказ сервера): следующий вход через столько секунд, дальше
 -- раз в 10 минут. Как в Olympus: другого названия нет, стучимся в ту же дверь.
 Channel.LOCKED_RETRY = { 60, 120, 300, 600 }
--- Канал под паролем — реже: каждая попытка показывает окно пароля игры (его не трогаем, taint).
-Channel.PASSWORD_RETRY = { 600, 1800, 3600 }
+-- Канал под паролем сам не пробуем вовсе, только при следующем входе персонажа в игру
+-- (ns.char.channelLocked переживает /reload): каждая попытка показывает окно пароля игры,
+-- а его мы не трогаем (taint). Игрок может войти и сам — снова включив настройку канала.
 local LOCKED_TELL = 3600 -- подсказка о закрытом канале не чаще (переживает /reload)
 Channel.ECHO_WAIT = 5 -- своя строка без эха дольше этого — канал под сомнением
 local BROKEN_AFTER = 2 -- столько строк подряд без эха (или THROTTLED при свободном бюджете) — сломан
@@ -82,11 +83,12 @@ end
 
 -- ok — исправен; doubt — под сомнением (последняя строка без эха или THROTTLED при свободном
 -- бюджете); broken — сломан до перезахода персонажа; blocked — игра заблокировала отправку,
--- до перезагрузки интерфейса; locked — канал не пускает, вход повторяется сам.
+-- до перезагрузки интерфейса; locked — канал не пускает: вход повторяется сам, а под паролем —
+-- при следующем входе персонажа.
 function Channel.State()
 	if actionBlocked then return "blocked" end
 	if ns.char and ns.char.channelBroken then return "broken" end
-	if lock and Channel.Index() <= 0 then return "locked" end
+	if (lock or ns.char and ns.char.channelLocked) and Channel.Index() <= 0 then return "locked" end
 	if misses > 0 or throttles > 0 then return "doubt" end
 	return "ok"
 end
@@ -238,7 +240,8 @@ end
 -- - пароль снимаем только после увиденной чужой смены (Olympus снимал его и «на всякий случай»
 --   после /reload, а это уведомление о смене пароля всем в канале, в том числе без аддона);
 -- - за проход не больше HEAL_BURST вызовов, «нет такого игрока» откладывает снятие всё дольше;
--- - закрытый паролем канал пробуем реже (PASSWORD_RETRY): каждая попытка — окно пароля игры;
+-- - закрытый паролем канал сам не пробуем до следующего входа персонажа: каждая попытка — окно
+--   пароля игры (Olympus стучался и сюда по LOCKED_RETRY);
 -- - если игра не пускает вызовы стража из таймера, страж переходит на нажатие клавиши (строка
 --   /cz, Channel.Pressed) и выключается до новой версии аддона, только если и оттуда нельзя.
 --   Так окно ошибки игры игрок видит не больше двух раз, а не теряет стража после первого.
@@ -539,7 +542,8 @@ local function LoseSeat(why)
 	ns.Log("канал %s: места у меня нет (%s)", joined or "?", why)
 end
 
--- Канал не пускает: подсказка не чаще LOCKED_TELL, вход — снова через LOCKED_RETRY.
+-- Канал не пускает: подсказка не чаще LOCKED_TELL, вход — снова через LOCKED_RETRY, а под
+-- паролем — только при следующем входе персонажа (ns.char.channelLocked).
 local function Locked(why)
 	local now = ns.Now()
 	if not lock then
@@ -554,16 +558,28 @@ local function Locked(why)
 	if lock.try == joinTries then return end
 	lock.try = joinTries
 	lock.tries = lock.tries + 1
-	local retry = why == "WRONG_PASSWORD" and Channel.PASSWORD_RETRY or Channel.LOCKED_RETRY
+	if why == "WRONG_PASSWORD" then
+		lock.nextAt = nil
+		if ns.char then ns.char.channelLocked = why end
+		ns.Log("канал %s не пускает (%s, попытка %d), следующая — при входе в игру", Channel.Name() or "?", why, lock.tries)
+		return
+	end
+	local retry = Channel.LOCKED_RETRY
 	lock.nextAt = now + retry[math.min(lock.tries, #retry)]
 	ns.Log("канал %s не пускает (%s, попытка %d), следующая через %d с", Channel.Name() or "?", why, lock.tries,
 		math.floor(lock.nextAt - now + 0.5))
 end
 
 local function Unlocked()
+	if ns.char then ns.char.channelLocked = nil end
 	if not lock then return end
 	ns.Log("канал %s снова пускает, попыток было %d", joined or Channel.Name() or "?", lock.tries)
 	lock = nil
+end
+
+-- Канал под паролем: сам не пробуем до следующего входа персонажа (после /reload — тоже).
+local function WaitLogin()
+	return (lock ~= nil and lock.why == "WRONG_PASSWORD") or (ns.char ~= nil and ns.char.channelLocked ~= nil)
 end
 
 ---------------------------------------------------------------------------
@@ -584,20 +600,21 @@ Channel.Ours = Ours
 
 -- force — повторить вход, даже если канал недавно отказал (игрок сам включил настройку).
 -- Сломанный канал не лечится повторным входом: только перезаходом персонажа. Канал, который
--- не пускает, пробуем снова по расписанию LOCKED_RETRY.
+-- не пускает, пробуем снова по расписанию LOCKED_RETRY, а под паролем — при входе персонажа.
 function Channel.Join(force)
 	if not Channel.Enabled() or not ns.IsMember() or not JoinChannelByName then return end
 	if Channel.State() == "broken" then return end
-	if not force and lock and ns.Now() < (lock.nextAt or 0) then return end
 	local name = Channel.Name()
-	joined = name
 	local id = tonumber((GetChannelName(name))) or 0
 	if id > 0 then
-		index = id
+		joined, index = name, id
 		Unlocked()
 		if Seated() then HealSoon() end -- после /reload: место прежнее, список банов мог пополниться
 		return
 	end
+	if not force and WaitLogin() then return end
+	if not force and lock and ns.Now() < (lock.nextAt or 0) then return end
+	joined = name
 	joinTries = joinTries + 1
 	ns.Log("вход в канал %s", name)
 	JoinChannelByName(name)
@@ -828,7 +845,7 @@ ns.RegisterEvent("PLAYER_ENTERING_WORLD", function(isInitialLogin)
 		passwordSet = ns.char.channelPassword == true
 		return
 	end
-	ns.char.channelSeat, ns.char.channelPassword = nil, nil
+	ns.char.channelSeat, ns.char.channelPassword, ns.char.channelLocked = nil, nil, nil
 	if not ns.char.channelBroken then return end
 	ns.char.channelBroken = nil
 	ns.Log("вход персонажа: канал игры снова считается исправным")
@@ -846,6 +863,9 @@ local STATE_TEXT = { ok = "CHANNEL_STATE_OK", doubt = "CHANNEL_STATE_DOUBT", bro
 local function StateText()
 	local state = Channel.State()
 	if state == "locked" then
+		if WaitLogin() then
+			return L.CHANNEL_STATE_LOCKED_LOGIN:format(lock and lock.why or ns.char.channelLocked)
+		end
 		return L.CHANNEL_STATE_LOCKED:format(lock.why, math.max(0, math.ceil((lock.nextAt or 0) - ns.Now())))
 	end
 	return L[STATE_TEXT[state]]
