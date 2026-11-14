@@ -71,7 +71,7 @@ T.test("общие заявки: рядовой не видит вкладку, 
 	T.eq(#c.O.ns.Recruit.Requests(), 1)
 	c.M.ns.UI.Toggle("census")
 	T.no(c.M.ns.UI.tabs.requests:IsShown())
-	T.ok(c.M.ns.UI.tabs.kingdom:IsShown())
+	T.ok(c.M.ns.UI.tabs.census:IsShown())
 	c.M:Slash("/chillzone", "requests")
 	T.eq(c.M.ns.UI.Current(), "census", "команда не открывает скрытую вкладку")
 	T.eq(c.M:Saw("вкладка «Заявки» только для глав и офицеров"), 1)

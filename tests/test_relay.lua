@@ -289,8 +289,6 @@ T.test("relay: перепись сходится у всех", function()
 	T.eq(row.r.leader, "Карл Великий", "глава главной")
 	T.eq(row.r.total, 4, "численность главной")
 	T.eq(row.r.online, 3, "онлайн главной")
-	local tree = c.G.ns.Data.Kingdom()
-	T.ok(tree.king and tree.king.leader == "Карл Великий", "король")
 	T.eq(Wow.CertRank(c.B.ns, "Чиллзон", "Арагорн Светлый"), 1, "ранг офицера главной")
 	T.eq(Wow.CertRank(c.B.ns, "Орден Чиллзона", "Глеб Гордый-CAMWOWUS2Realm7PvE"), 0, "ранг главы")
 end)
@@ -2117,7 +2115,7 @@ end)
 
 T.test("relay: команды, окно и вкладки без ошибок", function()
 	local w, c = Build()
-	for _, cmd in ipairs({ "", "help", "status", "relay", "relay ping", "zones", "chat", "chat off", "chat on", "history 1", "history 3", "map off", "map on", "minimap", "minimap", "kingdom", "census", "ignore", "log 5", "debug", "debug", "нетакой" }) do
+	for _, cmd in ipairs({ "", "help", "status", "relay", "relay ping", "zones", "chat", "chat off", "chat on", "history 1", "history 3", "map off", "map on", "minimap", "minimap", "census", "ignore", "log 5", "debug", "debug", "нетакой" }) do
 		c.B:Slash("/chillzone", cmd)
 		c.A:Slash("/chillzone", cmd)
 	end
@@ -2128,16 +2126,24 @@ T.test("relay: команды, окно и вкладки без ошибок", 
 	T.eq(c.A:Saw("меня не видно"), 1, "у других видно")
 	c.B.ns.Map.RefreshNow()
 	local census = c.B.ns.Views.CensusRows()
-	local kingdom = c.B.ns.Views.Kingdom()
-	local function has(lines, text)
+	local function has(lines, text, field)
 		for _, l in ipairs(lines) do
-			if (l.text or ""):find(text, 1, true) then return true end
+			if (l[field or "text"] or ""):find(text, 1, true) then return true end
 		end
 		return false
 	end
 	T.ok(has(census, "Орден Чиллзона") and has(census, "Чиллзон Север"), "перепись")
-	T.ok(has(kingdom, "Карл Великий") and has(kingdom, "Глеб Гордый") and has(kingdom, "Вера Верная"), "королевство")
-	T.ok(has(kingdom, "Арагорн Светлый"), "капитан короля")
+	T.ok(has(census, "Карл Великий", "sub") and has(census, "Глеб Гордый", "sub") and has(census, "Вера Верная", "sub"), "главы гильдий")
+	local king
+	c.B.ns.Views.MinimapTip(setmetatable({}, { __index = function(_, k)
+		if k == "AddLine" then
+			return function(_, text)
+				if text:find("Король: ", 1, true) then king = text end
+			end
+		end
+		return function() end
+	end }))
+	T.ok(king and king:find("Карл Великий", 1, true), "король в подсказке миникарты: " .. tostring(king))
 	for _, l in ipairs(census) do
 		if l.tip then l.tip(setmetatable({}, { __index = function() return function() end end })) end
 	end
