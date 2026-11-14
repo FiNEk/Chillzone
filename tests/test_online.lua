@@ -596,6 +596,7 @@ T.test("online: без отметки значок остаётся у тех, �
 	for _, p in ipairs(K.ns.Views.AllOnline().people) do people[p.name] = p end
 	local origin = Reporter(K, "Чиллзон Север")
 	T.eq(people[origin].addon, true, "прислал отчёт переписи")
+	T.eq(people[origin].version, K.ns.VERSION, "версия — из его отчёта")
 	T.eq(people[Other(c, "Чиллзон Север", origin):Name()].addon, nil, "про остальных отвечающий промолчал")
 end)
 

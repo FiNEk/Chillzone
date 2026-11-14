@@ -912,8 +912,25 @@ T.test("окно: отметка аддона в списке людей", funct
 	T.eq(find(all, "Мира Тихая").addon, true, "писала в общий канал")
 	local origin = c.G.ns.Data.Row("Чиллзон").origin
 	T.eq(find(all, origin).addon, true, "прислал отчёт переписи")
+	T.eq(find(all, origin).version, c.K.ns.VERSION, "версия — из его отчёта переписи")
+	if origin ~= "Мира Тихая" then
+		T.eq(find(all, "Мира Тихая").version, nil, "строка чата версии не несёт")
+	end
 	local other = origin == "Карл Великий" and "Арагорн Светлый" or "Карл Великий"
 	T.eq(find(all, other).addon, nil, "чужой без следов аддона — неизвестно")
+	-- «Руководство» в карточке «Переписи» — так же, как список людей в чате.
+	local function leader(client, guildName, name)
+		for _, s in ipairs(client.ns.Data.Summary()) do
+			if s.guild == guildName then return find(client.ns.Views.GuildCard(s).people, name) end
+		end
+	end
+	local cardVera = leader(c.B, "Чиллзон Север", "Вера Верная")
+	T.eq(cardVera.addon, true, "карточка своей гильдии: по приветам")
+	T.eq(cardVera.version, c.V.ns.VERSION, "карточка своей гильдии: версия из привета")
+	local cardOrigin = leader(c.G, "Чиллзон", origin)
+	T.eq(cardOrigin.addon, true, "карточка чужой гильдии: автор отчёта")
+	T.eq(cardOrigin.version, c.K.ns.VERSION, "карточка чужой гильдии: версия из отчёта")
+	T.eq(leader(c.G, "Чиллзон", other).addon, nil, "карточка: без следов аддона — неизвестно")
 	-- Подсказка.
 	local lines = {}
 	local tt = setmetatable({ AddLine = function(_, t) lines[#lines + 1] = t end }, { __index = function() return function() end end })
@@ -925,6 +942,7 @@ T.test("окно: отметка аддона в списке людей", funct
 	T.ok(tip(vera):find("Аддон Chillzone: есть, версия " .. c.V.ns.VERSION, 1, true), "есть, с версией")
 	T.ok(tip(find(guild, "Без Аддона")):find("Аддон Chillzone: нет", 1, true), "нет")
 	T.ok(tip(find(all, other)):find("Аддон Chillzone: неизвестно", 1, true), "неизвестно")
+	T.ok(tip(cardOrigin):find("Аддон Chillzone: есть, версия " .. c.K.ns.VERSION, 1, true), "карточка: есть, с версией")
 	T.eq(c.B.ns.Views.AddonText({ addon = true, version = "|cffff0000x|r" }), "Аддон Chillzone: есть, версия cffff0000xr", "версия — простой текст")
 	-- Значок в строке окна только у тех, у кого аддон есть.
 	c.B.ns.UI.OpenChat("G")
