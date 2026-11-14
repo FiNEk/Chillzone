@@ -613,7 +613,7 @@ T.test("окно: копии строк — во вкладке чата игр�
 	T.no(p.items[1].check:IsShown(), "резервный вывод не меняет выбор")
 	T.ok(p.items[2].check:IsShown(), "закрытую выбранную вкладку можно снять")
 	T.eq(p.items[2].text:GetText(), "|cffff6060«Чиллзон» закрыта|r")
-	B.ns.UI.Toggle("kingdom")
+	B.ns.UI.Toggle("census")
 	T.no(p.list:IsShown(), "список закрыт вместе с настройками")
 
 	-- Команда: регистр не важен, опечатка перечисляет открытые вкладки, пусто — основное окно.
@@ -987,7 +987,7 @@ T.test("окно: вкладки, каналы, ссылки и шёпот бе�
 	local A = c.A
 	c.G:Slash("/cz1", "ссылка " .. LINK)
 	w:Run(30)
-	for _, tab in ipairs({ "census", "kingdom", "settings", "chat" }) do A.ns.UI.Toggle(tab) end
+	for _, tab in ipairs({ "census", "settings", "chat" }) do A.ns.UI.Toggle(tab) end
 	for _, ch in ipairs({ "G", "O", "A", "C", "L" }) do A.ns.ChatPane.Select(ch) end
 	local box = A.ns.ChatPane.frames.box
 	box.scripts.OnTabPressed(box)
@@ -1128,10 +1128,11 @@ T.test("окно: служебные значки под повседневны�
 	local L = K.ns.L
 	for _, cl in ipairs({ K, A, M }) do cl.ns.UI.Toggle("chat") end
 	local column, bottom = TabColumn(K)
-	T.same(column, { "chat", "groups", "crafters", "census", "requests", "kingdom", "|", "settings", "manage" }, "глава: 6 и 2")
+	T.same(column, { "chat", "groups", "crafters", "census", "requests", "|", "settings", "manage" }, "глава: 5 и 2")
 	T.ok(bottom <= 426, "столбец главы не ниже окна высотой 426: " .. bottom)
-	T.same(TabColumn(A), { "chat", "groups", "crafters", "census", "requests", "kingdom", "|", "settings", "manage" }, "офицер: 6 и 2")
-	T.same(TabColumn(M), { "chat", "groups", "crafters", "census", "kingdom", "|", "settings" }, "рядовой: без «Заявок» и «Управления»")
+	T.same(TabColumn(A), { "chat", "groups", "crafters", "census", "requests", "|", "settings", "manage" }, "офицер: 5 и 2")
+	T.same(TabColumn(M), { "chat", "groups", "crafters", "census", "|", "settings" }, "рядовой: без «Заявок» и «Управления»")
+	T.no(rawget(UI.tabs, "kingdom"), "«Королевства» нет")
 	for _, key in ipairs({ "union", "roster", "transfer", "debug", "journal" }) do T.no(rawget(UI.tabs, key), "нет отдельного значка " .. key) end
 
 	-- Главе объединения доступны все пять разделов; значок открывает первый, потом — последний открытый.

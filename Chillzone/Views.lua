@@ -1,5 +1,4 @@
--- Chillzone: содержимое вкладок окна — список гильдий и карточка гильдии «Переписи», дерево
--- «Королевства» (строки { text, right, indent, tip(tooltip) }, их рисует UI.lua), шапка окна,
+-- Chillzone: содержимое вкладок окна — список гильдий и карточка гильдии «Переписи», шапка окна,
 -- строки и люди чата, подсказки.
 local ADDON, ns = ...
 
@@ -278,64 +277,6 @@ function Views.CensusRows(now)
 		}
 	end
 	return out
-end
-
----------------------------------------------------------------------------
--- Вкладка «Королевство»
----------------------------------------------------------------------------
-local function PersonTip(p, role, guild)
-	return function(tt)
-		tt:AddLine(Views.Name(p.name, p.class))
-		tt:AddLine(role .. ", " .. Codec.Plain(guild), 0.8, 0.8, 0.8)
-		if p.level and p.level > 0 then tt:AddLine(L.TIP_LEVEL:format(p.level), 0.8, 0.8, 0.8) end
-		tt:AddLine(Views.State(p.online, p.days), 0.6, 0.6, 0.6)
-	end
-end
-
-local function Captains(lines, node, indent)
-	for _, c in ipairs(node.captains) do
-		lines[#lines + 1] = {
-			text = ICON_OFFICER .. " " .. Dot(c.online) .. Views.Name(c.name, c.class),
-			right = GREY .. L.ROLE_CAPTAIN .. "|r", indent = indent,
-			tip = PersonTip(c, L.ROLE_CAPTAIN, node.guild),
-		}
-	end
-end
-
-function Views.Kingdom()
-	local lines = {}
-	local tree = ns.Data.Kingdom()
-	lines[#lines + 1] = { text = GOLD .. L.KINGDOM_KING .. "|r", header = true }
-	local king = tree.king
-	if king then
-		lines[#lines + 1] = {
-			text = ICON_KING .. " " .. Dot(king.leaderOnline) .. Views.Name(king.leader, king.leaderClass) .. "  " .. GREY .. "<" .. Codec.Plain(king.guild) .. ">|r" .. (king.conflict and (" " .. RED .. "!|r") or ""),
-			right = GOLD .. L.ROLE_KING .. "|r",
-			tip = PersonTip({ name = king.leader, class = king.leaderClass, level = king.leaderLevel, online = king.leaderOnline, days = king.leaderDays }, L.ROLE_KING, king.guild),
-		}
-		Captains(lines, king, 1)
-	else
-		lines[#lines + 1] = { text = GREY .. L.KINGDOM_NO_KING:format(C.MAIN_GUILD) .. "|r", wrap = true }
-	end
-	local lords = 0
-	for _, node in ipairs(tree.guilds) do
-		if not node.main then
-			if lords == 0 then lines[#lines + 1] = { text = GOLD .. L.KINGDOM_LORDS .. "|r", header = true, gap = true } end
-			lords = lords + 1
-			local lord = node.leader and (Dot(node.leaderOnline) .. Views.Name(node.leader, node.leaderClass)) or (GREY .. "—|r")
-			lines[#lines + 1] = {
-				text = lord .. "  " .. GREY .. "<" .. Codec.Plain(node.guild) .. ">|r" .. (node.conflict and (" " .. RED .. "!|r") or ""),
-				right = GREY .. L.ROLE_LORD .. "|r",
-				tip = node.leader and PersonTip({ name = node.leader, class = node.leaderClass, level = node.leaderLevel, online = node.leaderOnline, days = node.leaderDays }, L.ROLE_LORD, node.guild) or nil,
-			}
-			Captains(lines, node, 1)
-		end
-	end
-	if lords == 0 then
-		lines[#lines + 1] = { text = GOLD .. L.KINGDOM_LORDS .. "|r", header = true, gap = true }
-		lines[#lines + 1] = { text = GREY .. L.KINGDOM_NO_LORDS .. "|r", wrap = true }
-	end
-	return lines
 end
 
 ---------------------------------------------------------------------------
@@ -661,8 +602,13 @@ function Views.MinimapTip(tt)
 	tt:AddLine("Chillzone", 0.5, 0.83, 0.76)
 	tt:AddLine(status.big, 1, 0.82, 0)
 	tt:AddLine(status.small, 0.7, 0.7, 0.7)
-	local tree = ns.Data.Kingdom()
-	if tree.king then tt:AddLine(L.ROLE_KING .. ": " .. Views.Name(tree.king.leader, tree.king.leaderClass), 1, 0.82, 0) end
+	-- Король — глава главной гильдии по её отчёту.
+	for _, s in ipairs(ns.Data.Summary()) do
+		if s.main and s.recent and s.r.leader then
+			tt:AddLine(L.ROLE_KING .. ": " .. Views.Name(s.r.leader, s.r.leaderClass), 1, 0.82, 0)
+			break
+		end
+	end
 	tt:AddLine(" ")
 	tt:AddLine(L.MINIMAP_LEFT, 0.6, 0.6, 0.6)
 	tt:AddLine(L.MINIMAP_RIGHT, 0.6, 0.6, 0.6)
