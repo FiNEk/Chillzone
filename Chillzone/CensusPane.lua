@@ -1,7 +1,8 @@
 -- Chillzone: вкладка «Перепись» — слева список гильдий, справа карточка выбранной, как вкладка
 -- «Сведения» окна гильдии: крупные числа, руководство, полоса классов, гистограмма уровней,
 -- зоны полосками. Данные — Views.CensusRows и Views.GuildCard; здесь только рисование.
--- Живёт во вставке окна (UI.lua body, 804×340), ширины заданы числами: окно не меняет размер.
+-- Живёт во вставке окна (UI.lua body, у исходного окна 804×340). Ширины заданы под исходное окно;
+-- растянутое окно отдаёт лишнюю ширину карточке (Layout), список гильдий остаётся прежним.
 local ADDON, ns = ...
 
 local L = ns.L
@@ -19,35 +20,46 @@ local LIST_W, ROW_H = 236, 38
 local CARD_X, CARD_W = 288, 486
 local TILE_GAP = 8
 local COL_L_W, COL_R_X = 200, 220
-local COL_R_W = CARD_W - COL_R_X
+local COL_GAP = COL_R_X - COL_L_W
 local LEVEL_BAR_H, PERSON_H, ZONE_H = 40, 16, 16
+-- Вставка исходного окна; карточка — от CARD_X до полосы прокрутки у правого края.
+local BASE_H, CARD_RIGHT = 340, 30 -- CARD_X + CARD_W + CARD_RIGHT = 804, ширина исходной вставки
+-- Карточка и её колонки под ширину вставки (Layout): руководству — треть прибавки, остальное — классам.
+local cardW, colLW, colRX = CARD_W, COL_L_W, COL_R_X
+local colRW = cardW - colRX
 local ZONE_NAME_W = 170
 -- Строка «Все гильдии» над списком.
 local ALL_KEY, ALL_H, ALL_TOP = "*", 26, 28
 local ONLINE_TICK = 15 -- как часто открытая вкладка проверяет, не устарел ли список
 
--- Таблица людей в игре. Область прокрутки 322 в высоту: 22 строки закрывают её с запасом на
--- строку, обрезанную сверху, и больше их не создаётся при любой длине списка.
-local TABLE_HEAD_H, TABLE_ROWS, TABLE_COLS = 18, 22, 6
+-- Таблица людей в игре. Строк столько, сколько закрывает область прокрутки, с запасом на строку,
+-- обрезанную сверху: у исходного окна она 322 в высоту и строк 22. Больше их не создаётся при
+-- любой длине списка — только когда окно вытянули выше (Layout).
+local TABLE_HEAD_H, TABLE_COLS = 18, 6
+local CARD_V = 18 -- карточка короче вставки: отступ сверху и снизу
+local function TableRows(h) return math.floor((h - CARD_V) / PERSON_H) + 2 end
+local tableRows = TableRows(BASE_H)
 local CLASS_ICONS = "Interface\\Glues\\CharacterCreate\\UI-CharacterCreate-Classes"
 local ADDON_ICON = "Interface\\AddOns\\" .. ADDON .. "\\media\\icon"
--- icon — поле строки со значком: такая колонка рисует его вместо текста.
+-- icon — поле строки со значком: такая колонка рисует его вместо текста. w — ширина в исходном окне,
+-- grow — доля колонки в прибавке ширины растянутого окна.
 local COL_LEVEL = { key = "level", title = L.ONLINE_COL_LEVEL, w = 38, justify = "CENTER" }
 local COL_CLASS = { key = "class", title = L.ONLINE_COL_CLASS, w = 50, justify = "CENTER", icon = "classIcon" }
-local COL_NAME = { key = "name", title = L.ONLINE_COL_NAME, w = 150 }
+local COL_NAME = { key = "name", title = L.ONLINE_COL_NAME, w = 150, grow = 2 }
 local COL_ADDON = { key = "addon", title = L.ONLINE_COL_ADDON, w = 30, justify = "CENTER", icon = "addonIcon" }
-local COL_RANK = { key = "rank", title = L.ONLINE_COL_RANK, w = 100 }
-local TABLE_ALL = { COL_LEVEL, COL_CLASS, COL_NAME, COL_ADDON, { key = "guild", title = L.ONLINE_COL_GUILD, w = 118 }, COL_RANK }
-local TABLE_MINE = { COL_LEVEL, COL_CLASS, COL_NAME, COL_ADDON, { key = "zone", title = L.ONLINE_COL_ZONE, w = 118 }, COL_RANK }
+local COL_RANK = { key = "rank", title = L.ONLINE_COL_RANK, w = 100, grow = 1 }
+local TABLE_ALL = { COL_LEVEL, COL_CLASS, COL_NAME, COL_ADDON, { key = "guild", title = L.ONLINE_COL_GUILD, w = 118, grow = 1 }, COL_RANK }
+local TABLE_MINE = { COL_LEVEL, COL_CLASS, COL_NAME, COL_ADDON, { key = "zone", title = L.ONLINE_COL_ZONE, w = 118, grow = 1 }, COL_RANK }
 local TABLE_OTHER = {
 	COL_LEVEL, COL_CLASS,
-	{ key = "name", title = L.ONLINE_COL_NAME, w = 210 },
+	{ key = "name", title = L.ONLINE_COL_NAME, w = 210, grow = 1 },
 	COL_ADDON,
-	{ key = "rank", title = L.ONLINE_COL_RANK, w = 158 },
+	{ key = "rank", title = L.ONLINE_COL_RANK, w = 158, grow = 1 },
 }
 
 local pane, list, listChild, empty, card, cardChild
 local allRow, all, allChild, cardTable, allTable
+local shownCard, shownAll -- данные на экране: растянутое окно перерисовывает их без нового сбора
 local rows, people, segments, levels, zones, legend = {}, {}, {}, {}, {}, {}
 local LEGEND_COLS, LEGEND_H = 2, 14
 local w = {} -- надписи карточки
@@ -182,7 +194,7 @@ local function NewPerson(parent, width)
 end
 
 local function Person(i)
-	people[i] = people[i] or NewPerson(cardChild, COL_L_W)
+	people[i] = people[i] or NewPerson(cardChild, colLW)
 	return people[i]
 end
 
@@ -268,19 +280,19 @@ local function RenderMix(c, y)
 	end
 	w.stale:SetShown(not shown)
 	if not shown then
-		Place(w.stale, COL_R_X, y)
+		Place(w.stale, colRX, y)
 		w.stale:SetText(c.staleNote or "")
 		for _, t in ipairs(segments) do t:Hide() end
 		return Height(w.stale, 28)
 	end
-	Place(w.classes, COL_R_X, y)
-	Place(w.classBar, COL_R_X, y + 20)
+	Place(w.classes, colRX, y)
+	Place(w.classBar, colRX, y + 20)
 	-- Полоса: отрезки цветом класса, длина — доля в игре.
 	local x = 0
 	for i, e in ipairs(c.classes) do
 		local t = Segment(i)
-		local width = c.classTotal > 0 and math.floor(COL_R_W * e.count / c.classTotal + 0.5) or 0
-		if i == #c.classes then width = COL_R_W - x end
+		local width = c.classTotal > 0 and math.floor(colRW * e.count / c.classTotal + 0.5) or 0
+		if i == #c.classes then width = colRW - x end
 		t:ClearAllPoints()
 		t:SetPoint("LEFT", w.classBar, "LEFT", x, 0)
 		t:SetWidth(math.max(width, 1))
@@ -292,11 +304,11 @@ local function RenderMix(c, y)
 	-- Подпись — таблицей в две колонки, по убыванию сверху вниз: сначала левая, потом правая.
 	local n = #c.classes
 	local perCol = math.ceil(n / LEGEND_COLS)
-	local colW = math.floor(COL_R_W / LEGEND_COLS)
+	local colW = math.floor(colRW / LEGEND_COLS)
 	for i, e in ipairs(c.classes) do
 		local item = LegendItem(i)
 		local col, line = math.floor((i - 1) / perCol), (i - 1) % perCol
-		local lx, ly = COL_R_X + col * colW, y + 36 + line * LEGEND_H
+		local lx, ly = colRX + col * colW, y + 36 + line * LEGEND_H
 		Place(item.swatch, lx, ly + 3)
 		item.swatch:SetVertexColor(ClassRGB(e.class))
 		item.name:SetText(Views.Name(e.name, e.class))
@@ -315,19 +327,19 @@ local function RenderMix(c, y)
 	local legendH
 	if n == 0 then
 		w.classLegend:SetText(L.CARD_NOBODY)
-		Place(w.classLegend, COL_R_X, y + 36)
+		Place(w.classLegend, colRX, y + 36)
 		legendH = Height(w.classLegend, 12)
 	else
 		legendH = perCol * LEGEND_H
 	end
 	local h = 36 + legendH + 12
 	-- Уровни: семь столбиков, высота — доля от самого большого.
-	Place(w.levels, COL_R_X, y + h)
+	Place(w.levels, colRX, y + h)
 	h = h + 20
-	local levelW = COL_R_W / #levels
+	local levelW = colRW / #levels
 	for i, col in ipairs(levels) do
 		local e = c.levels[i]
-		local cx = COL_R_X + (i - 1) * levelW
+		local cx = colRX + (i - 1) * levelW
 		local barH = c.levelMax > 0 and math.floor(LEVEL_BAR_H * e.count / c.levelMax + 0.5) or 0
 		col.count:SetText(e.count > 0 and tostring(e.count) or "")
 		col.count:ClearAllPoints()
@@ -357,7 +369,7 @@ local function RenderZones(c, y)
 	if not shown then return 0 end
 	Place(w.zones, 0, y)
 	local h = 20
-	local barMax = CARD_W - ZONE_NAME_W - 10 - 40
+	local barMax = cardW - ZONE_NAME_W - 10 - 40
 	for i, e in ipairs(c.zones) do
 		local z = Zone(i)
 		z.name:SetText(e.name)
@@ -430,7 +442,7 @@ local function SortBy(t, key)
 end
 
 local function NewTableRow(parent)
-	local r = PersonButton(parent, CARD_W)
+	local r = PersonButton(parent, cardW)
 	r.classIcon = r:CreateTexture(nil, "ARTWORK")
 	r.classIcon:SetSize(14, 14)
 	r.classIcon:SetTexture(CLASS_ICONS)
@@ -450,7 +462,7 @@ end
 local function NewTable(scroll, parent)
 	local t = { scroll = scroll, parent = parent, heads = {}, rows = {}, people = {}, sort = DefaultSort(), y = 0 }
 	t.head = CreateFrame("Frame", nil, parent)
-	t.head:SetSize(CARD_W, TABLE_HEAD_H)
+	t.head:SetSize(cardW, TABLE_HEAD_H)
 	t.head:SetFrameLevel(parent:GetFrameLevel() + 5) -- прилипший заголовок лежит поверх строк
 	local bg = t.head:CreateTexture(nil, "BACKGROUND")
 	bg:SetAllPoints()
@@ -467,22 +479,38 @@ local function NewTable(scroll, parent)
 		h:SetScript("OnClick", function(self) ns.SafeCall("census sort", SortBy, t, self.key) end)
 		t.heads[c] = h
 	end
-	for i = 1, TABLE_ROWS do t.rows[i] = NewTableRow(parent) end
+	for i = 1, tableRows do t.rows[i] = NewTableRow(parent) end
 	scroll:HookScript("OnVerticalScroll", function() ns.SafeCall("census table", PlaceRows, t) end)
 	return t
 end
 
+-- Ширины колонок на ширину total: прибавка к исходной ширине делится по долям grow, остаток
+-- от округления — последней растущей колонке.
+local function Widths(columns, total)
+	local base, weight = 0, 0
+	for _, col in ipairs(columns) do base, weight = base + col.w, weight + (col.grow or 0) end
+	local extra, out, given, last = math.max(0, total - base), {}, 0, nil
+	for i, col in ipairs(columns) do
+		local add = weight > 0 and math.floor(extra * (col.grow or 0) / weight) or 0
+		out[i], given = col.w + add, given + add
+		if (col.grow or 0) > 0 then last = i end
+	end
+	if last then out[last] = out[last] + extra - given end
+	return out
+end
+CensusPane.Widths = Widths
+
 -- Разложить колонки вида: карточка своей гильдии и чужой показывают разные.
 local function ApplyColumns(t, columns)
-	if t.columns == columns then return end
-	t.columns = columns
-	local x = 0
+	if t.columns == columns and t.width == cardW then return end
+	t.columns, t.width = columns, cardW
+	local widths, x = Widths(columns, cardW), 0
 	for c = 1, TABLE_COLS do
-		local col, h = columns[c], t.heads[c]
+		local col, h, cw = columns[c], t.heads[c], widths[c]
 		h:SetShown(col ~= nil)
 		if col then
 			h.key = col.key
-			h:SetWidth(col.w)
+			h:SetWidth(cw)
 			h:ClearAllPoints()
 			h:SetPoint("LEFT", t.head, "LEFT", x, 0)
 			h.label:SetJustifyH(col.justify or "LEFT")
@@ -492,20 +520,29 @@ local function ApplyColumns(t, columns)
 			fs:SetShown(col ~= nil and not col.icon)
 			if col and col.icon then
 				r[col.icon]:ClearAllPoints()
-				r[col.icon]:SetPoint("CENTER", r, "LEFT", x + col.w / 2, 0)
+				r[col.icon]:SetPoint("CENTER", r, "LEFT", x + cw / 2, 0)
 			elseif col then
 				fs:ClearAllPoints()
 				fs:SetPoint("LEFT", r, "LEFT", x + 3, 0)
-				fs:SetWidth(col.w - 6)
+				fs:SetWidth(cw - 6)
 				fs:SetJustifyH(col.justify or "LEFT")
 			end
 		end
-		x = x + (col and col.w or 0)
+		x = x + (cw or 0)
 	end
 end
 
--- Заполнить таблицу с отметки y; возвращает её высоту (пустая не занимает места).
-local function RenderTable(t, columns, persons, y)
+-- Заполнить таблицу с отметки y; возвращает её высоту (пустая не занимает места). light — окно
+-- тянут: без сортировки и раскладки колонок, строки только переезжают, если текст выше переносится
+-- иначе. Это самая дорогая часть вкладки, её полная раскладка — по отпусканию.
+local function RenderTable(t, columns, persons, y, light)
+	if light then
+		if t.y ~= y then
+			t.y = y
+			PlaceRows(t)
+		end
+		return #t.people > 0 and TABLE_HEAD_H + #t.people * PERSON_H or 0
+	end
 	ApplyColumns(t, columns)
 	local known = false
 	for _, col in ipairs(columns) do known = known or col.key == t.sort.key end
@@ -521,7 +558,7 @@ local function RenderTable(t, columns, persons, y)
 	return #persons > 0 and TABLE_HEAD_H + #persons * PERSON_H or 0
 end
 
-local function RenderAll(c)
+local function RenderAll(c, light)
 	all:SetShown(c ~= nil)
 	if not c then return end
 	w.allCount:SetText(L.ONLINE_ALL_COUNT:format(ns.Util.Num(c.known), ns.Util.Num(c.online)))
@@ -531,10 +568,10 @@ local function RenderAll(c)
 		w.allStatus:SetText(c.status)
 		y = y + 14
 	end
-	allChild:SetHeight(y + RenderTable(allTable, TABLE_ALL, c.people, y) + 8)
+	allChild:SetHeight(y + RenderTable(allTable, TABLE_ALL, c.people, y, light) + 8)
 end
 
-local function RenderCard(c)
+local function RenderCard(c, light)
 	card:SetShown(c ~= nil)
 	if not c then return end
 	w.title:SetText(c.guild)
@@ -565,7 +602,7 @@ local function RenderCard(c)
 	w.onlineTitle:SetText(c.onlineGroup.title)
 	Place(w.onlineTitle, 0, y)
 	y = y + 18
-	y = y + RenderTable(cardTable, c.onlineGroup.mine and TABLE_MINE or TABLE_OTHER, c.onlineGroup.people, y)
+	y = y + RenderTable(cardTable, c.onlineGroup.mine and TABLE_MINE or TABLE_OTHER, c.onlineGroup.people, y, light)
 	cardChild:SetHeight(y + 8)
 end
 
@@ -685,12 +722,12 @@ function CensusPane.Build(parent)
 	w.classes = FS(cardChild, "GameFontNormal")
 	w.classes:SetText(L.CARD_CLASSES)
 	w.classBar = CreateFrame("Frame", nil, cardChild)
-	w.classBar:SetSize(COL_R_W, 10)
+	w.classBar:SetSize(colRW, 10)
 	local barBg = w.classBar:CreateTexture(nil, "BACKGROUND")
 	barBg:SetAllPoints()
 	barBg:SetColorTexture(0, 0, 0, 0.45)
 	w.classLegend = FS(cardChild, "GameFontDisableSmall") -- «Сейчас никого нет в игре.»
-	w.classLegend:SetWidth(COL_R_W)
+	w.classLegend:SetWidth(colRW)
 	w.levels = FS(cardChild, "GameFontNormal")
 	w.levels:SetText(L.CARD_LEVELS)
 	for i = 1, 7 do
@@ -704,7 +741,7 @@ function CensusPane.Build(parent)
 		levels[i] = col
 	end
 	w.stale = FS(cardChild, "GameFontDisableSmall")
-	w.stale:SetWidth(COL_R_W)
+	w.stale:SetWidth(colRW)
 
 	w.zones = FS(cardChild, "GameFontNormal")
 	w.zones:SetText(L.CARD_ZONES)
@@ -745,8 +782,48 @@ function CensusPane.Render()
 	allRow.right:SetText(row.right)
 	allRow.sel:SetShown(showAll)
 	allRow:SetShown(#items > 0)
-	RenderAll(showAll and Views.AllOnline() or nil)
-	RenderCard(pick and Views.GuildCard(pick.s) or nil)
+	shownAll = showAll and Views.AllOnline() or nil
+	shownCard = pick and Views.GuildCard(pick.s) or nil
+	RenderAll(shownAll)
+	RenderCard(shownCard)
+end
+
+-- Раскладка под вставку w×h (UI.lua). Лишняя ширина уходит карточке: плиткам, полосе классов,
+-- зонам и колонкам таблицы; лишняя высота — строкам таблицы. live — окно ещё тянут: открытая
+-- вкладка перекладывает карточку из того, что уже на экране, а таблицу людей не трогает. Без
+-- live строки и колонки готовятся к полной отрисовке, её делает UI.Render после раскладки.
+function CensusPane.Layout(width, height, live)
+	if not pane then return end
+	cardW = math.max(CARD_W, math.floor(width - CARD_X - CARD_RIGHT))
+	colLW = COL_L_W + math.floor((cardW - CARD_W) / 3)
+	colRX = colLW + COL_GAP
+	colRW = cardW - colRX
+	cardChild:SetWidth(cardW)
+	allChild:SetWidth(cardW)
+	for _, fs in ipairs({ w.onlineTitle, w.allStatus, w.conflict, w.extra, w.zonesNote }) do fs:SetWidth(cardW) end
+	local tileW = math.floor((cardW - 3 * TILE_GAP) / 4)
+	for _, tile in ipairs(w.tiles) do
+		tile:SetWidth(tileW)
+		tile.width = tileW
+	end
+	w.classBar:SetWidth(colRW)
+	w.classLegend:SetWidth(colRW)
+	w.stale:SetWidth(colRW)
+	for _, p in ipairs(people) do p:SetWidth(colLW) end
+	for _, t in ipairs({ cardTable, allTable }) do t.head:SetWidth(cardW) end
+	if live then
+		if pane:IsShown() then
+			RenderAll(shownAll, true)
+			RenderCard(shownCard, true)
+		end
+		return
+	end
+	tableRows = math.max(tableRows, TableRows(height))
+	for _, t in ipairs({ cardTable, allTable }) do
+		for _, r in ipairs(t.rows) do r:SetWidth(cardW) end
+		for i = #t.rows + 1, tableRows do t.rows[i] = NewTableRow(t.parent) end
+		t.width = nil -- колонки разложатся заново, в том числе у новых строк
+	end
 end
 
 function CensusPane.Select(key)

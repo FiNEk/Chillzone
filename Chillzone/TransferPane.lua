@@ -15,7 +15,8 @@ local from, to -- выбранные гильдии
 local picking -- "from" или "to": для какой кнопки открыт список гильдий
 local confirming -- ключ кнопки формы, которой нужен второй щелчок: она отправит просьбу офицерам
 local note -- итог последнего действия вместо строки о правах
-local ROW_HEIGHT, HEADER_HEIGHT, HEADER_GAP, SECTION_GAP, ITEM_H, WIDTH = 36, 24, 4, 14, 20, 760
+local ROW_HEIGHT, HEADER_HEIGHT, HEADER_GAP, SECTION_GAP, ITEM_H = 36, 24, 4, 14, 20
+local WIDTH = 760 -- ширина строк в исходном окне; шире окно — шире строки (P.Layout)
 
 local function Button(parent, text, width, fn)
 	local b = CreateFrame("Button", nil, parent, "UIPanelButtonTemplate")
@@ -386,6 +387,17 @@ function P.Build(parent)
 		message = message, list = list, items = items, rows = rows, headers = headers, empty = empty, box = box,
 		scroll = scroll }
 	pane:Hide()
+end
+
+-- Раскладка под вставку width×height (UI.lua): строки просьб и строка команды тянутся по ширине,
+-- кнопки строк остаются у правого края. Высота достаётся прокрутке сама.
+function P.Layout(width)
+	if not pane then return end
+	WIDTH = math.max(760, math.floor(width) - 44)
+	box:SetWidth(WIDTH + 10)
+	child:SetWidth(WIDTH)
+	for _, row in ipairs(rows) do row:SetWidth(WIDTH) end
+	for _, header in ipairs(headers) do header:SetWidth(WIDTH) end
 end
 
 function P.Render()

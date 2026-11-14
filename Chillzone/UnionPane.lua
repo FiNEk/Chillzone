@@ -8,6 +8,7 @@ local pane, child, scroll, caption, input, connect, message
 -- confirming: "add:Гильдия" или "remove:Гильдия" — какой кнопке нужен второй щелчок.
 local rows, headers, confirming = {}, {}, nil
 local ROW_HEIGHT, HEADER_HEIGHT, HEADER_GAP, SECTION_GAP = 32, 24, 6, 18
+local WIDTH = 730 -- ширина строк в исходном окне; шире окно — шире строки (P.Layout)
 
 local function Button(parent, text, width, fn)
     local b = CreateFrame("Button", nil, parent, "UIPanelButtonTemplate")
@@ -50,7 +51,7 @@ function P.Build(parent)
     message:SetJustifyH("LEFT")
     scroll = CreateFrame("ScrollFrame", nil, pane, "UIPanelScrollFrameTemplate")
     child = CreateFrame("Frame", nil, scroll)
-    child:SetSize(730, 10)
+    child:SetSize(WIDTH, 10)
     scroll:SetScrollChild(child)
     P.frames = { pane = pane, caption = caption, input = input, connect = connect, message = message,
         rows = rows, headers = headers }
@@ -59,7 +60,7 @@ end
 local function RowAt(i)
     if rows[i] then return rows[i] end
     local row = CreateFrame("Frame", nil, child)
-    row:SetSize(730, 30)
+    row:SetSize(WIDTH, 30)
     row.label = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
     row.label:SetPoint("LEFT", 4, 0)
     row.label:SetPoint("RIGHT", -200, 0)
@@ -104,7 +105,7 @@ end
 local function HeaderAt(i)
     if headers[i] then return headers[i] end
     local header = CreateFrame("Frame", nil, child)
-    header:SetSize(730, HEADER_HEIGHT)
+    header:SetSize(WIDTH, HEADER_HEIGHT)
     header.label = header:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     header.label:SetPoint("LEFT", 4, 0)
     local line = header:CreateTexture(nil, "ARTWORK")
@@ -172,7 +173,7 @@ local function RequestSections()
     return { { title = L.UNION_SECTION_CONNECT:format((ns.MyGuild())), tip = L.UNION_CONNECT_TIP, items = items } }
 end
 -- Глава вводит имя представителя над списком. Офицеру поле не нужно: итог запроса виден под строками.
-local function Layout(mode)
+local function Arrange(mode)
     local manage = mode == "manage"
     caption:SetShown(manage)
     input:SetShown(manage)
@@ -195,7 +196,7 @@ end
 function P.Render()
     local mode = pane and Mode()
     if not mode then P.Hide(); return end
-    Layout(mode)
+    Arrange(mode)
     if mode == "manage" and not S.CanSignUnion() then message:SetText(L.UNION_KEY_REQUIRED)
     elseif message:GetText() == L.UNION_KEY_REQUIRED then message:SetText("") end
     local y, rowCount, headerCount = 0, 0, 0
@@ -231,6 +232,14 @@ end
 function P.Hide()
     if pane then pane:Hide(); input:ClearFocus() end
     confirming = nil
+end
+-- Раскладка под вставку width×height (UI.lua): строки тянутся по ширине, кнопки остаются у правого края.
+function P.Layout(width)
+    if not pane then return end
+    WIDTH = math.max(730, math.floor(width) - 74)
+    child:SetWidth(WIDTH)
+    for _, row in ipairs(rows) do row:SetWidth(WIDTH) end
+    for _, header in ipairs(headers) do header:SetWidth(WIDTH) end
 end
 local function RenderIfShown()
     if pane and pane:IsShown() then P.Render() end

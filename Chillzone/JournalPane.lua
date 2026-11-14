@@ -38,6 +38,14 @@ function Pane.SetLimit(n)
 	Render(true)
 end
 
+-- Высота поля копирования под весь отчёт при текущей ширине поля: окно могли растянуть
+-- или сузить, и без этого низ отчёта не прокрутить.
+local function FitBox(f, text)
+	f.measure:SetWidth(math.max(92, (f.box:GetWidth() or 740) - 8))
+	f.measure:SetText(text)
+	f.box:SetHeight(math.max(300, (f.measure:GetStringHeight() or 0) + 16))
+end
+
 function Pane.Build(parent)
 	local f = Pane.frames
 	local pane = CreateFrame("Frame", nil, parent)
@@ -54,8 +62,7 @@ function Pane.Build(parent)
 		f.messages:Hide()
 		f.export:Show()
 		local report = ns.Diagnostics.Report()
-		f.measure:SetText(report)
-		f.box:SetHeight(math.max(300, f.measure:GetStringHeight() + 16))
+		FitBox(f, report)
 		f.box:SetText(report)
 		f.export:SetVerticalScroll(0)
 		f.box:SetFocus()
@@ -105,7 +112,10 @@ function Pane.Build(parent)
 	box:SetMaxLetters(0)
 	export:SetScrollChild(box)
 	box:SetScript("OnTextChanged", function() export:UpdateScrollChildRect() end)
-	export:SetScript("OnSizeChanged", function(self, width) box:SetWidth(math.max(100, width)) end)
+	export:SetScript("OnSizeChanged", function(self, width)
+		box:SetWidth(math.max(100, width))
+		if copying then ns.SafeCall("journal size", FitBox, f, box:GetText() or "") end
+	end)
 	f.export, f.box = export, box
 	f.measure = pane:CreateFontString(nil, "OVERLAY", "ChatFontNormal")
 	f.measure:SetWidth(732)
