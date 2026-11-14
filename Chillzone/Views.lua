@@ -766,12 +766,16 @@ local function GroupRow(e, own)
 		row.action, row.actionText = "withdraw", L.GROUPS_WITHDRAW
 		-- Пока заявка ждёт в очереди отправки, «отправлена» было бы неправдой.
 		row.status = e.sending and (GREY .. L.GROUPS_APPLYING .. "|r") or (GREEN .. L.GROUPS_APPLIED .. "|r")
-	elseif e.applied == "invited" then
-		row.status = GREEN .. L.GROUPS_YOU_INVITED .. "|r"
+	elseif e.applied == "signed" or e.applied == "invited" then
+		-- Записанный ждёт сбора где угодно; передумал — выписывается, и место освобождается.
+		row.action, row.actionText = "withdraw", L.GROUPS_LEAVE
+		row.status = GREEN .. (e.applied == "invited" and L.GROUPS_YOU_INVITED or L.GROUPS_YOU_SIGNED) .. "|r"
 	elseif e.applied == "declined" then
 		row.status = GREY .. L.GROUPS_YOU_DECLINED .. "|r"
 	elseif e.short then
 		row.status = ORANGE .. L.GROUPS_NEED_LEVEL:format(e.min) .. "|r"
+	elseif e.size >= e.cap then
+		row.status = GREY .. L.GROUPS_NO_ROOM_ROW .. "|r"
 	else
 		row.action, row.actionText = "apply", L.GROUPS_APPLY
 	end
@@ -783,7 +787,7 @@ local function OwnEntry()
 	local mine = ns.Groups.Mine()
 	if not mine then return nil end
 	local _, class = UnitClass("player")
-	local size = mine.mode == "G" and math.max(1, GetNumGroupMembers and GetNumGroupMembers() or 0) or 1
+	local size = mine.mode == "G" and ns.Groups.Size() or 1
 	return {
 		key = ns.myKey, name = U.Display(ns.me), guild = ns.MyGuild() or "", class = class, level = UnitLevel("player") or 0,
 		mode = mine.mode, id = mine.id, raised = mine.id, kind = mine.kind, title = mine.title, note = mine.note,
@@ -810,15 +814,20 @@ function Views.GroupRows(kind)
 	return rows, ns.Groups.Count()
 end
 
--- Заявки ко мне: { key, who, name, sub, tip, invited }; who — имя для шёпота, name — с цветом класса.
+-- Заявки ко мне: сначала записанные, потом новые заявки, каждые — как пришли. Запись:
+-- { key, who, name, sub, tip, state }; who — имя для шёпота, name — с цветом класса, state —
+-- "new" (заявка), "signed" (записан, можно звать), "invited" (позван) или "party" (уже в группе).
+-- Второе значение — сколько записано.
 function Views.GroupApplicants()
-	local out = {}
-	for _, a in ipairs(ns.Groups.Applicants()) do
+	local out, list, signed = {}, ns.Groups.Applicants(), 0
+	local function Add(a)
 		local who = Codec.Plain(a.guild or "")
 		if a.level and a.level > 0 then who = who .. ", " .. a.level end
 		local roles = Views.GroupRoles(a.roles)
+		local state = a.state
+		if state ~= "new" and a.party then state = "party" end
 		out[#out + 1] = {
-			key = a.key, who = a.name, name = Views.Name(a.name, a.class), invited = a.state == "invited",
+			key = a.key, who = a.name, name = Views.Name(a.name, a.class), state = state,
 			sub = (roles ~= "" and (roles .. " ") or "") .. GREY .. who .. "|r",
 			tip = function(tt)
 				tt:AddLine(Views.Name(a.name, a.class))
@@ -833,7 +842,16 @@ function Views.GroupApplicants()
 			end,
 		}
 	end
-	return out
+	for _, a in ipairs(list) do
+		if a.state ~= "new" then
+			Add(a)
+			signed = signed + 1
+		end
+	end
+	for _, a in ipairs(list) do
+		if a.state == "new" then Add(a) end
+	end
+	return out, signed
 end
 
 -- Ключ для поиска по названию: нижний регистр с кириллицей, «ё» как «е» (в названиях игры

@@ -8,6 +8,9 @@
 --
 -- Штатные выпадающие списки и popup игры не используются (taint): подсказка названий — свой
 -- список, поля ввода — свои EditBox. Приглашение в группу вызывается только из щелчка.
+--
+-- Заявки к своей группе: «Записать» занимает место без приглашения, записанные стоят первыми
+-- и подсвечены; «Позвать» и «Позвать всех» приглашают записанных в группу игры.
 local ADDON, ns = ...
 
 local L = ns.L
@@ -60,11 +63,15 @@ local function Tip(owner, fn)
 	owner:SetScript("OnLeave", function() GameTooltip:Hide() end)
 end
 
-local function TextTip(owner, title, text)
-	Tip(owner, function(tt)
+local function TipText(title, text)
+	return function(tt)
 		tt:AddLine(title, 1, 0.82, 0)
 		if text then tt:AddLine(text, 1, 1, 1, true) end
-	end)
+	end
+end
+
+local function TextTip(owner, title, text)
+	Tip(owner, TipText(title, text))
 end
 
 local function Button(parent, text, width, where, fn)
@@ -629,6 +636,10 @@ local function ApplicantRow(i)
 	local bg = r:CreateTexture(nil, "BACKGROUND")
 	bg:SetAllPoints()
 	bg:SetColorTexture(1, 1, 1, 0.03)
+	-- Записанный подсвечен: место за ним.
+	r.roster = r:CreateTexture(nil, "BORDER")
+	r.roster:SetAllPoints()
+	r.roster:SetColorTexture(0.25, 1, 0.25, 0.08)
 	local hl = r:CreateTexture(nil, "HIGHLIGHT")
 	hl:SetAllPoints()
 	hl:SetColorTexture(1, 1, 1, 0.07)
@@ -636,19 +647,22 @@ local function ApplicantRow(i)
 	r.refuse:SetHeight(20)
 	r.refuse:SetPoint("RIGHT", -3, 0)
 	TextTip(r.refuse, L.GROUPS_REFUSE, L.GROUPS_REFUSE_TIP)
-	r.take = Button(r, L.GROUPS_TAKE, 58, "invite", function() Groups.Invite(r.key) end)
+	-- Заявку записывает, записанного зовёт в группу игры.
+	r.take = Button(r, L.GROUPS_SIGN, 68, "sign", function()
+		if r.state == "new" then Groups.Sign(r.key) else Groups.Invite(r.key) end
+	end)
 	r.take:SetHeight(20)
 	r.take:SetPoint("RIGHT", r.refuse, "LEFT", -2, 0)
-	TextTip(r.take, L.GROUPS_TAKE, L.GROUPS_TAKE_TIP)
+	TextTip(r.take, L.GROUPS_SIGN, L.GROUPS_SIGN_TIP)
 	r.mark = FS(r, "GameFontDisableSmall", "RIGHT")
 	r.mark:SetPoint("RIGHT", -6, 0)
 	r.mark:SetText(L.GROUPS_INVITED_MARK)
 	r.name = FS(r, "GameFontHighlight")
 	r.name:SetPoint("TOPLEFT", 5, -4)
-	r.name:SetWidth(SIDE_W - 26 - 110)
+	r.name:SetWidth(SIDE_W - 26 - 120)
 	r.sub = FS(r, "GameFontHighlightSmall")
 	r.sub:SetPoint("BOTTOMLEFT", 5, 5)
-	r.sub:SetWidth(SIDE_W - 26 - 110)
+	r.sub:SetWidth(SIDE_W - 26 - 120)
 	for _, fs in ipairs({ r.name, r.sub }) do
 		if fs.SetWordWrap then fs:SetWordWrap(false) end
 	end
@@ -685,6 +699,10 @@ local function BuildOwn()
 	end
 	PlaceRow(own, own.steppers, 0, 106, 9)
 	own.applicantsLabel = Label(own, 0, 138, nil, "GameFontNormalSmall")
+	own.applicantsLabel:SetWidth(SIDE_W - 110)
+	own.callAll = Button(own, L.GROUPS_CALL_ALL, 104, "invite all", function() Groups.InviteAll() end)
+	own.callAll:SetPoint("TOPRIGHT", own, "TOPRIGHT", 0, -132)
+	TextTip(own.callAll, L.GROUPS_CALL_ALL, L.GROUPS_CALL_ALL_TIP)
 	own.scroll = CreateFrame("ScrollFrame", nil, own, "UIPanelScrollFrameTemplate")
 	own.scroll:SetPoint("TOPLEFT", 0, -154)
 	own.scroll:SetPoint("BOTTOMRIGHT", -24, 30)
@@ -714,8 +732,7 @@ local function RenderOwn(mine)
 	own.note:SetText(mine.note)
 	local left = Views.GroupLeft(mine)
 	if group then
-		local size = math.max(1, GetNumGroupMembers and GetNumGroupMembers() or 0)
-		own.info:SetText(L.GROUPS_MINE_SIZE:format(size, mine.cap, left))
+		own.info:SetText(L.GROUPS_MINE_SIZE:format(Groups.Size(), mine.cap, left))
 	else
 		own.info:SetText(L.GROUPS_TIP_ROLES:format(Groups.RoleText(mine.roles)) .. ". " .. L.GROUPS_MINE_LEFT:format(left))
 	end
@@ -727,19 +744,37 @@ local function RenderOwn(mine)
 	own.applicantsLabel:SetShown(group)
 	own.scroll:SetShown(group)
 	own.hint:SetShown(not group)
+	own.callAll:Hide()
 	if not group then return end
-	local items = Views.GroupApplicants()
-	own.applicantsLabel:SetText(L.GROUPS_APPLICANTS:format(#items))
+	local items, signed = Views.GroupApplicants()
+	own.applicantsLabel:SetText(L.GROUPS_ROSTER:format(signed, #items - signed))
+	local callable = false
 	for i, it in ipairs(items) do
 		local r = ApplicantRow(i)
-		r.key, r.who, r.tip = it.key, it.who, it.tip
+		r.key, r.who, r.tip, r.state = it.key, it.who, it.tip, it.state
 		r.name:SetText(it.name)
 		r.sub:SetText(it.sub)
-		r.take:SetShown(not it.invited)
-		r.refuse:SetShown(not it.invited)
-		r.mark:SetShown(it.invited)
+		r.roster:SetShown(it.state ~= "new")
+		-- Кнопки — у заявки и у записанного, которого ещё не звали; позванный и вошедший — отметка.
+		local buttons = it.state == "new" or it.state == "signed"
+		r.take:SetShown(buttons)
+		r.refuse:SetShown(buttons)
+		r.mark:SetShown(not buttons)
+		if it.state == "new" then
+			r.take:SetText(L.GROUPS_SIGN)
+			r.take.tip = TipText(L.GROUPS_SIGN, L.GROUPS_SIGN_TIP)
+			r.refuse.tip = TipText(L.GROUPS_REFUSE, L.GROUPS_REFUSE_TIP)
+		elseif it.state == "signed" then
+			callable = true
+			r.take:SetText(L.GROUPS_CALL)
+			r.take.tip = TipText(L.GROUPS_CALL, L.GROUPS_CALL_TIP)
+			r.refuse.tip = TipText(L.GROUPS_REFUSE, L.GROUPS_DROP_TIP)
+		else
+			r.mark:SetText(it.state == "party" and L.GROUPS_PARTY_MARK or L.GROUPS_INVITED_MARK)
+		end
 		r:Show()
 	end
+	own.callAll:SetShown(callable)
 	for i = #items + 1, #applicantRows do applicantRows[i]:Hide() end
 	own.child:SetHeight(math.max(#items * (APPLICANT_H + 2), 10))
 	own.none:SetShown(#items == 0)

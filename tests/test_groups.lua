@@ -92,6 +92,9 @@ T.test("groups codec: заявка, отзыв и ответ", function()
 	local id, answer = Codec.DecodeGroupReply(Codec.EncodeGroupReply(1794412800, "I"))
 	T.eq(id, 1794412800)
 	T.eq(answer, "I")
+	id, answer = Codec.DecodeGroupReply(Codec.EncodeGroupReply(1794412800, "A"))
+	T.eq(id, 1794412800)
+	T.eq(answer, "A", "записан")
 	T.no(Codec.DecodeGroupReply("GR~1794412800~Z"), "незнакомый ответ")
 	T.no(Codec.DecodeGroupApply("GA~1794412800~abc"), "обрывок заявки")
 end)
@@ -142,6 +145,13 @@ local function Capture(c)
 		return send(dist, payload, opts)
 	end
 	return wires
+end
+
+-- Строка объявления author на вкладке viewer (данные Views).
+local function RowOf(viewer, author)
+	for _, row in ipairs(viewer.ns.Views.GroupRows()) do
+		if row.key == Key(author) then return row end
+	end
 end
 
 T.test("groups: объявление видят своя гильдия и чужая через реле", function()
@@ -212,8 +222,9 @@ T.test("groups: неподписанное объявление не прини�
 	T.no(Seen(c.K, c.A))
 end)
 
-T.test("groups: заявка, приглашение и вход в группу", function()
+T.test("groups: запись без группы игры, приглашение потом и вход в группу", function()
 	local w, c = Build()
+	local L = c.V.ns.L
 	T.ok(c.A.ns.Groups.Raise(Spec({ roles = { t = 0, h = 1, d = 3 } })))
 	w:Run(30)
 	local ok, why = c.V.ns.Groups.Apply(Key(c.A), { t = 0, h = 1, d = 0 }, "лечу деревом")
@@ -233,20 +244,229 @@ T.test("groups: заявка, приглашение и вход в группу
 	local again, reason = c.V.ns.Groups.Apply(Key(c.A), { t = 0, h = 1, d = 0 })
 	T.no(again)
 	T.eq(reason, "already")
+	-- Записать: место и роль за Верой, а группы игры нет.
+	T.ok(c.A.ns.Groups.Sign(Key(c.V)), "записана")
+	T.eq(#c.A.partyInvites, 0, "приглашения нет")
+	T.eq(list[1].state, "signed")
+	T.same(c.A.ns.Groups.Mine().roles, { t = 0, h = 0, d = 3 }, "её роль больше не нужна")
+	T.eq(c.A.ns.Groups.Size(), 2, "место за ней")
+	w:Run(40)
+	T.eq(c.V.ns.Groups.List()[1].applied, "signed")
+	T.eq(c.V:Saw(L.GROUPS_SIGNED:format("Арагорн Светлый")), 1, "просящей сказано, что она записана")
+	local e = Seen(c.B, c.A)
+	T.eq(e.size, 2, "у всех на доске — двое")
+	T.same(e.roles, { t = 0, h = 0, d = 3 })
+	-- Пока ждёт, Вера ходит с Борисом: запись от этого не страдает.
+	c.V.party, c.V.partyLeader = { c.B }, false
+	c.V:Fire("GROUP_ROSTER_UPDATE")
+	w:Run(30)
+	T.eq(c.V.ns.Groups.List()[1].applied, "signed", "запись на месте")
+	c.V.party, c.V.partyLeader = nil, nil
+	c.V:Fire("GROUP_ROSTER_UPDATE")
+	-- Позвать: приглашение игры и ответ «приглашён».
 	T.ok(c.A:Hardware(c.A.ns.Groups.Invite, Key(c.V)), "приглашение")
 	T.eq(c.A.partyInvites[1], "Вера Верная")
 	w:Run(10)
 	T.eq(c.V.ns.Groups.List()[1].applied, "invited")
-	T.ok(c.V:Saw("Арагорн Светлый") > 0, "просящему сказано о приглашении")
-	-- Вера вошла: её роль больше не нужна, размер группы обновляется у всех.
+	T.eq(c.V:Saw(L.GROUPS_INVITED:format("Арагорн Светлый")), 1, "просящей сказано о приглашении")
+	-- Вера вошла: она по-прежнему записана, роль убавлена один раз.
 	c.A.party = { c.V }
 	c.A:Fire("GROUP_ROSTER_UPDATE")
 	w:Run(40)
-	T.eq(#c.A.ns.Groups.Applicants(), 0, "вошедший убран из заявок")
+	list = c.A.ns.Groups.Applicants()
+	T.eq(#list, 1, "вошедшая остаётся в списке")
+	T.eq(list[1].state, "signed")
+	T.ok(list[1].party, "и отмечена в группе")
 	T.same(c.A.ns.Groups.Mine().roles, { t = 0, h = 0, d = 3 })
-	local e = Seen(c.B, c.A)
+	e = Seen(c.B, c.A)
 	T.eq(e.size, 2)
 	T.same(e.roles, { t = 0, h = 0, d = 3 })
+end)
+
+T.test("groups: просящий, позванный мимо записи, записывается, когда вошёл", function()
+	local w, c = Build()
+	T.ok(c.A.ns.Groups.Raise(Spec({ roles = { t = 0, h = 1, d = 3 } })))
+	w:Run(30)
+	T.ok(c.V.ns.Groups.Apply(Key(c.A), { t = 0, h = 1, d = 0 }))
+	w:Run(15)
+	-- Арагорн позвал Веру командой игры, а не кнопкой.
+	c.A.party = { c.V }
+	c.V.party, c.V.partyLeader = { c.A }, false
+	c.A:Fire("GROUP_ROSTER_UPDATE")
+	w:Run(40)
+	T.eq(c.A.ns.Groups.Applicants()[1].state, "signed")
+	T.same(c.A.ns.Groups.Mine().roles, { t = 0, h = 0, d = 3 })
+	T.eq(c.V.ns.Groups.List()[1].applied, "signed")
+	T.eq(c.V:Saw(c.V.ns.L.GROUPS_SIGNED:format("Арагорн Светлый")), 0, "она уже в группе: «позовёт потом» не пишется")
+	T.eq(Seen(c.B, c.A).size, 2)
+end)
+
+T.test("groups: все места записаны — объявление держится, «Позвать всех» собирает группу", function()
+	local w, c = Build()
+	local L = c.A.ns.L
+	T.ok(c.A.ns.Groups.Raise(Spec({ cap = 3, roles = { t = 0, h = 1, d = 1 }, min = 0 })))
+	w:Run(30)
+	T.ok(c.V.ns.Groups.Apply(Key(c.A), { t = 0, h = 1, d = 0 }))
+	T.ok(c.B.ns.Groups.Apply(Key(c.A), { t = 0, h = 0, d = 1 }))
+	w:Run(15)
+	T.ok(c.A.ns.Groups.Sign(Key(c.V)))
+	T.ok(c.A.ns.Groups.Sign(Key(c.B)))
+	T.same(c.A.ns.Groups.Mine().roles, { t = 0, h = 0, d = 0 })
+	w:Run(40)
+	T.ok(c.A.ns.Groups.Mine(), "записанные — ещё не группа: объявление держится")
+	T.eq(Seen(c.K, c.A).size, 3)
+	-- Мест нет: Карл не просится.
+	local ok, why = c.K.ns.Groups.Apply(Key(c.A), { t = 1, h = 0, d = 0 })
+	T.no(ok)
+	T.eq(why, "noroom")
+	local row = RowOf(c.K, c.A)
+	T.ok(row.status:find(L.GROUPS_NO_ROOM_ROW, 1, true), "строка: «мест нет»")
+	T.no(row.action)
+	T.eq(c.A:Hardware(c.A.ns.Groups.InviteAll), 2, "позваны оба")
+	table.sort(c.A.partyInvites)
+	T.same(c.A.partyInvites, { "Борис Быстрый", "Вера Верная" })
+	T.eq(c.A:Hardware(c.A.ns.Groups.InviteAll), 0, "позванных второй раз не зовут")
+	w:Run(10)
+	T.eq(c.V.ns.Groups.List()[1].applied, "invited")
+	T.eq(c.B.ns.Groups.List()[1].applied, "invited")
+	-- Вошли: группа полна, объявление снимается; записанным не сказано, что запись отменена.
+	c.A.party = { c.V, c.B }
+	c.V.party, c.V.partyLeader = { c.A, c.B }, false
+	c.B.party, c.B.partyLeader = { c.A, c.V }, false
+	c.A:Fire("GROUP_ROSTER_UPDATE")
+	w:Run(30)
+	T.no(c.A.ns.Groups.Mine())
+	T.ok(c.A:Saw(L.GROUPS_LOWERED_FULL) > 0)
+	T.no(Seen(c.V, c.A))
+	T.eq(c.V:Saw(L.GROUPS_CANCELLED:format("Арагорн Светлый")), 0, "Вера в группе: запись не «отменена»")
+	T.eq(c.B:Saw(L.GROUPS_CANCELLED:format("Арагорн Светлый")), 0)
+end)
+
+T.test("groups: без рейда «Позвать всех» зовёт, сколько поместится", function()
+	local w, c = Build()
+	local L = c.A.ns.L
+	T.ok(c.A.ns.Groups.Raise(Spec({ kind = "R", cap = 10, roles = { t = 1, h = 2, d = 6 }, min = 0 })))
+	w:Run(30)
+	T.ok(c.V.ns.Groups.Apply(Key(c.A), { t = 0, h = 1, d = 0 }))
+	T.ok(c.B.ns.Groups.Apply(Key(c.A), { t = 0, h = 1, d = 0 }))
+	w:Run(15)
+	T.ok(c.A.ns.Groups.Sign(Key(c.V)))
+	T.ok(c.A.ns.Groups.Sign(Key(c.B)))
+	-- В группе Арагорна уже четверо: свободно одно место из пяти.
+	c.A.party = { c.K, { first = "Гость", surname = "Первый" }, { first = "Гость", surname = "Второй" } }
+	c.A:Fire("GROUP_ROSTER_UPDATE")
+	w:Run(5)
+	T.eq(c.A:Hardware(c.A.ns.Groups.InviteAll), 1)
+	T.eq(#c.A.partyInvites, 1, "позван один")
+	T.eq(c.A:Saw(L.GROUPS_CALL_RAID:format(1)), 1, "сказано, что нужен рейд")
+	c.A.raid = true
+	T.eq(c.A:Hardware(c.A.ns.Groups.InviteAll), 1, "в рейде — остальные")
+	table.sort(c.A.partyInvites)
+	T.same(c.A.partyInvites, { "Борис Быстрый", "Вера Верная" })
+end)
+
+T.test("groups: автор в чужой группе — объявление и запись держатся, звать он не может", function()
+	local w, c = Build()
+	local L = c.A.ns.L
+	T.ok(c.A.ns.Groups.Raise(Spec()))
+	w:Run(30)
+	T.ok(c.V.ns.Groups.Apply(Key(c.A), { t = 0, h = 1, d = 0 }))
+	w:Run(15)
+	T.ok(c.A.ns.Groups.Sign(Key(c.V)))
+	-- Арагорн пошёл с Карлом за заданием, лидер — Карл.
+	c.A.party, c.A.partyLeader = { c.K }, false
+	c.A:Fire("GROUP_ROSTER_UPDATE")
+	w:Run(40)
+	T.ok(c.A.ns.Groups.Mine(), "объявление не снято")
+	T.eq(#c.A.ns.Groups.Applicants(), 1, "запись на месте")
+	T.eq(Seen(c.B, c.A).size, 2, "Карл в размер не идёт: Арагорн и Вера")
+	T.no(c.A:Hardware(c.A.ns.Groups.Invite, Key(c.V)), "позвать нельзя")
+	T.eq(c.A:Hardware(c.A.ns.Groups.InviteAll), 0)
+	T.eq(#c.A.partyInvites, 0)
+	T.eq(c.A:Saw(L.GROUPS_CALL_NOT_LEADER), 2, "сказано почему")
+	T.eq(c.A.ns.Groups.Applicants()[1].state, "signed", "Вера по-прежнему записана")
+	-- Вышел из группы Карла — зовёт.
+	c.A.party, c.A.partyLeader = nil, nil
+	c.A:Fire("GROUP_ROSTER_UPDATE")
+	w:Run(5)
+	T.ok(c.A:Hardware(c.A.ns.Groups.Invite, Key(c.V)))
+	T.eq(c.A.partyInvites[1], "Вера Верная")
+end)
+
+T.test("groups: выписка и вычёркивание освобождают место и роль", function()
+	local w, c = Build()
+	local L = c.A.ns.L
+	T.ok(c.A.ns.Groups.Raise(Spec({ roles = { t = 0, h = 1, d = 2 } })))
+	w:Run(30)
+	T.ok(c.V.ns.Groups.Apply(Key(c.A), { t = 0, h = 1, d = 0 }))
+	T.ok(c.B.ns.Groups.Apply(Key(c.A), { t = 0, h = 1, d = 1 }))
+	w:Run(15)
+	T.ok(c.A.ns.Groups.Sign(Key(c.V)))
+	T.ok(c.A.ns.Groups.Sign(Key(c.B)))
+	T.same(c.A.ns.Groups.Mine().roles, { t = 0, h = 0, d = 1 }, "Вера заняла лекаря, Борис — бойца")
+	w:Run(10)
+	-- Вера передумала.
+	local row = RowOf(c.V, c.A)
+	T.eq(row.action, "withdraw")
+	T.eq(row.actionText, L.GROUPS_LEAVE)
+	T.ok(row.status:find(L.GROUPS_YOU_SIGNED, 1, true), "строка: «вы записаны»")
+	T.ok(c.V.ns.Groups.Withdraw(Key(c.A)))
+	w:Run(10)
+	T.eq(#c.A.ns.Groups.Applicants(), 1)
+	T.eq(c.A:Saw(L.GROUPS_LEFT:format("Вера Верная")), 1, "автору сказано")
+	T.same(c.A.ns.Groups.Mine().roles, { t = 0, h = 1, d = 1 }, "лекарь снова нужен")
+	-- Бориса автор вычёркивает сам.
+	T.ok(c.A.ns.Groups.Decline(Key(c.B)))
+	w:Run(10)
+	T.same(c.A.ns.Groups.Mine().roles, { t = 0, h = 1, d = 2 })
+	T.eq(c.A.ns.Groups.Size(), 1)
+	T.eq(c.B.ns.Groups.List()[1].applied, "declined")
+	w:Run(30)
+	T.eq(Seen(c.K, c.A).size, 1, "у всех на доске снова один")
+end)
+
+T.test("groups: снятое объявление — записанному строка в чат", function()
+	local w, c = Build()
+	local L = c.V.ns.L
+	T.ok(c.A.ns.Groups.Raise(Spec()))
+	w:Run(30)
+	T.ok(c.V.ns.Groups.Apply(Key(c.A), { t = 0, h = 1, d = 0 }))
+	T.ok(c.B.ns.Groups.Apply(Key(c.A), { t = 0, h = 1, d = 0 }))
+	w:Run(15)
+	T.ok(c.A.ns.Groups.Sign(Key(c.V)))
+	w:Run(10)
+	T.ok(c.A.ns.Groups.Lower())
+	w:Run(30)
+	T.eq(c.V:Saw(L.GROUPS_CANCELLED:format("Арагорн Светлый")), 1, "записанной сказано один раз")
+	T.eq(c.B:Saw(L.GROUPS_CANCELLED:format("Арагорн Светлый")), 0, "заявке без ответа — нет")
+	T.no(Seen(c.V, c.A))
+end)
+
+T.test("groups: запись переживает перезагрузку у автора и у записанного", function()
+	local w, c = Build()
+	T.ok(c.A.ns.Groups.Raise(Spec({ roles = { t = 0, h = 1, d = 2 } })))
+	w:Run(30)
+	T.ok(c.B.ns.Groups.Apply(Key(c.A), { t = 0, h = 1, d = 0 }))
+	w:Run(15)
+	T.ok(c.A.ns.Groups.Sign(Key(c.B)))
+	w:Run(15)
+	T.eq(c.B.ns.Groups.List()[1].applied, "signed")
+	-- Автор перезагрузился: Борис всё ещё записан, роль за ним.
+	local A = w:Reload(c.A)
+	local list = A.ns.Groups.Applicants()
+	T.eq(#list, 1)
+	T.eq(list[1].state, "signed")
+	T.same(A.ns.Groups.Mine().roles, { t = 0, h = 0, d = 2 })
+	T.eq(A.ns.Groups.Size(), 2)
+	-- Записанный перезагрузился: доска наполнится к следующему повтору автора, а отметка
+	-- «вы записаны» ждёт объявления и после этого на месте.
+	local B = w:Reload(c.B)
+	w:Run(6 * 60)
+	T.ok(Seen(B, A), "объявление снова на доске")
+	T.eq(B.ns.Groups.List()[1].applied, "signed", "запись на месте")
+	T.ok(A:Hardware(A.ns.Groups.Invite, Key(B)), "позвать после двух перезагрузок")
+	w:Run(10)
+	T.eq(B.ns.Groups.List()[1].applied, "invited")
 end)
 
 T.test("groups: отказ и отзыв заявки", function()
@@ -295,13 +515,6 @@ T.test("groups: заявку принимают только на текущее
 	w:Run(15)
 	T.eq(#c.A.ns.Groups.Applicants(), 0)
 end)
-
--- Строка объявления author на вкладке viewer (данные Views).
-local function RowOf(viewer, author)
-	for _, row in ipairs(viewer.ns.Views.GroupRows()) do
-		if row.key == Key(author) then return row end
-	end
-end
 
 -- Ответ игры на шёпот клиента: code(msg, target) — код или nil (как обычно).
 local function WhisperCode(cl, code)
@@ -427,7 +640,7 @@ T.test("groups: игрок ищет группу, его приглашают щ
 	T.no(Seen(c.V, c.B), "и в своей гильдии")
 end)
 
-T.test("groups: без ролей «ищу группу» не размещается, участник чужой группы не собирает свою", function()
+T.test("groups: без ролей «ищу группу» не размещается, из чужой группы — только сбор", function()
 	local _, c = Build()
 	local ok, why = c.B.ns.Groups.Raise({ mode = "P", title = "что угодно", roles = { t = 0, h = 0, d = 0 } })
 	T.no(ok)
@@ -436,12 +649,12 @@ T.test("groups: без ролей «ищу группу» не размещае�
 	T.no(ok)
 	T.eq(why, "title")
 	c.B.party, c.B.partyLeader = { c.V }, false
-	ok, why = c.B.ns.Groups.Raise(Spec())
-	T.no(ok)
-	T.eq(why, "notleader")
 	ok, why = c.B.ns.Groups.Raise({ mode = "P", roles = { t = 0, h = 1, d = 0 } })
 	T.no(ok)
 	T.eq(why, "ingroup")
+	ok, why = c.B.ns.Groups.Raise(Spec())
+	T.ok(ok, "собирать можно и из чужой группы: " .. tostring(why))
+	T.eq(c.B.ns.Groups.Size(), 1, "чужая группа в размер не идёт")
 end)
 
 T.test("groups: полная группа снимает объявление", function()
@@ -503,11 +716,11 @@ T.test("groups: объявление повторяется, а после вы�
 	T.no(Seen(c.K, c.A))
 end)
 
-T.test("groups: объявление снимается через час", function()
+T.test("groups: объявление снимается через два часа", function()
 	local w, c = Build()
 	T.ok(c.A.ns.Groups.Raise(Spec()))
-	w:Run(59 * 60)
-	T.ok(c.A.ns.Groups.Mine(), "час ещё не прошёл")
+	w:Run(119 * 60)
+	T.ok(c.A.ns.Groups.Mine(), "два часа ещё не прошли")
 	T.ok(Seen(c.V, c.A))
 	w:Run(2 * 60)
 	T.no(c.A.ns.Groups.Mine())
@@ -1117,13 +1330,36 @@ T.test("groups pane: доска, заявка щелчком и приглаше
 	T.ok(who:find("Чиллзон Север", 1, true), "подсказка заявки: гильдия")
 	T.ok(who:find(c.A.ns.L.GROUPS_TIP_CLAIM, 1, true), "подсказка заявки: сведения со слов игрока")
 	T.ok(Tip(c.A, fa.rows[2]):find("Мёртвые копи", 1, true), "подсказка своей строки")
-	T.ok(Tip(c.A, applicant.take) ~= "", "подсказка кнопки")
+	T.ok(Tip(c.A, applicant.take):find(c.A.ns.L.GROUPS_SIGN_TIP, 1, true), "подсказка кнопки")
+	T.eq(applicant.take:GetText(), c.A.ns.L.GROUPS_SIGN, "у заявки — «Записать»")
+	T.no(applicant.roster:IsShown())
+	T.no(fa.own.callAll:IsShown(), "звать пока некого")
+	T.eq(fa.own.applicantsLabel:GetText(), c.A.ns.L.GROUPS_ROSTER:format(0, 1))
 	c.A:Hardware(function() applicant.take:Click() end)
+	T.eq(#c.A.partyInvites, 0, "записать — не приглашать")
+	T.eq(fa.applicants[1].take:GetText(), c.A.ns.L.GROUPS_CALL, "у записанной — «Позвать»")
+	T.ok(Tip(c.A, fa.applicants[1].take):find(c.A.ns.L.GROUPS_CALL_TIP, 1, true), "подсказка сменилась")
+	T.ok(Tip(c.A, fa.applicants[1].refuse):find(c.A.ns.L.GROUPS_DROP_TIP, 1, true), "«Нет» — вычеркнуть")
+	T.ok(fa.applicants[1].roster:IsShown(), "записанная подсвечена")
+	T.ok(fa.own.callAll:IsShown(), "«Позвать всех» видна")
+	T.eq(fa.own.applicantsLabel:GetText(), c.A.ns.L.GROUPS_ROSTER:format(1, 0))
+	w:Run(15)
+	local vrow = BoardRow(c.V, c.A)
+	T.ok(vrow.detail:GetText():find(L.GROUPS_YOU_SIGNED, 1, true), "заявитель видит запись")
+	T.eq(vrow.button:GetText(), L.GROUPS_LEAVE, "и может выписаться")
+	c.A:Hardware(function() fa.own.callAll:Click() end)
 	T.eq(c.A.partyInvites[1], "Вера Верная", "приглашение ушло из щелчка")
 	T.no(fa.applicants[1].take:IsShown(), "кнопки сменились отметкой «приглашён»")
 	T.ok(fa.applicants[1].mark:IsShown())
+	T.eq(fa.applicants[1].mark:GetText(), c.A.ns.L.GROUPS_INVITED_MARK)
+	T.no(fa.own.callAll:IsShown(), "звать больше некого")
 	w:Run(15)
-	T.ok(BoardRow(c.V, c.A).status:GetText():find(L.GROUPS_YOU_INVITED, 1, true), "заявитель видит приглашение")
+	T.ok(BoardRow(c.V, c.A).detail:GetText():find(L.GROUPS_YOU_INVITED, 1, true), "заявитель видит приглашение")
+	-- Вошла в группу: отметка «в группе».
+	c.A.party = { c.V }
+	c.A:Fire("GROUP_ROSTER_UPDATE")
+	w:Run(5)
+	T.eq(fa.applicants[1].mark:GetText(), c.A.ns.L.GROUPS_PARTY_MARK)
 
 	-- Нужные роли правятся на месте.
 	fa.own.steppers[3].plus:Click()

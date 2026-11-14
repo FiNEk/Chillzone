@@ -16,6 +16,11 @@
 -- подтверждает сервер, принадлежность к объединению — сертификат по отпечатку (как OQ в
 -- Online.lua). Класс и уровень в заявке — слова просящего.
 --
+-- Запись не собирает группу игры: автор записывает просящего (ответ GR A), место и роль за
+-- ним, а позвать в группу можно потом, когда наберутся (ответ GR I и приглашение игры). Пока
+-- ждут, записанный и сам автор вольны быть в любой группе. Клиенты 0.15.1 и старше ответ A
+-- молча пропускают: у них заявка остаётся «отправленной» до приглашения.
+--
 -- Вошедший позже просит объявления запросом GQ по GUILD: авторы из его гильдии повторяют
 -- свой последний пакет, репортёр отдаёт чужие (RG) из своей памяти.
 --
@@ -40,15 +45,19 @@ Groups.CAPS = { 5, 10, 20, 25, 40 }
 
 local board = {} -- [ключ автора] = объявление с доски
 local closed = {} -- [ключ автора] = { at, seq } снятого объявления: старый пакет его не вернёт
--- [ключ автора] = моя заявка: { id, at, state = "sent" | "invited" | "declined", sending }; sending —
--- GA ещё в очереди отправки, сервер её пока не принял.
+-- [ключ автора] = моя заявка: { id, at, state = "sent" | "signed" | "invited" | "declined", sending,
+-- restored }; sending — GA ещё в очереди отправки, сервер её пока не принял; restored — запись
+-- пережила /reload, а объявления на доске ещё нет.
 local applied = {}
 local lastApply = {} -- [ключ автора] = когда я просился к нему
 local lastHeard = {} -- [ключ просящего] = когда он просился ко мне
 
-local saved -- ns.char.groups: моё объявление, заявки ко мне и мои роли переживают /reload
+local saved -- ns.char.groups: моё объявление, заявки ко мне, мои записи и роли переживают /reload
 local mine -- моё объявление: { mode, id, kind, title, note, roles = { t, h, d }, cap, min }
-local applicants = {} -- заявки ко мне по порядку: { key, name, guild, class, level, roles, note, at, state }
+-- Заявки ко мне по порядку: { key, name, guild, class, level, roles, note, at, state, took }.
+-- state: "new" — ждёт ответа, "signed" — записан, "invited" — записан и позван; took — роль,
+-- которую он занял в «Кого ещё ищем».
+local applicants = {}
 local declined = {} -- [ключ] = true: кому я отказал по этому объявлению
 local myWire -- последний подписанный пакет моего объявления: им же отвечаю на GQ
 local sealing, dirty = false, false
@@ -74,7 +83,7 @@ local function InGroup()
 	return (IsInGroup and IsInGroup()) and true or false
 end
 
--- Собирать может одиночка или лидер: только он приглашает наверняка.
+-- Звать в группу может одиночка или лидер: только он приглашает наверняка.
 local function Leading()
 	return not InGroup() or ((UnitIsGroupLeader and UnitIsGroupLeader("player")) and true or false)
 end
@@ -98,6 +107,29 @@ local function MemberKeys()
 		end
 	end
 	return out
+end
+
+-- Сколько записано ко мне, считая позванных.
+local function Signed()
+	local n = 0
+	for _, a in ipairs(applicants) do
+		if a.state ~= "new" then n = n + 1 end
+	end
+	return n
+end
+
+-- Размер собираемой группы: я и записанные. Группа игры, где я лидер, — не меньше её состава:
+-- в ней бывают и позванные мимо записи. Чужая группа, где я не лидер, не в счёт.
+local function Size()
+	local n = 1 + Signed()
+	if Leading() then n = math.max(n, GroupSize()) end
+	return math.min(n, Codec.GROUP_CAP)
+end
+Groups.Size = Size
+
+-- Группа игры, где я лидер, заполнена: собирать больше некого.
+local function PartyFull(cap)
+	return InGroup() and Leading() and GroupSize() >= cap
 end
 
 local function AnyRole(r)
@@ -228,6 +260,14 @@ function Groups.Receive(msg, _, dist, ctx)
 	local via = (dist == "GUILD" and "своя гильдия" or "реле") .. (wrapped and ", в конверте чата" or "")
 	if l.mode == "X" then
 		closed[key] = { at = at, seq = seq }
+		-- Записанному — строка в чат: места больше нет. Кто уже в группе автора, тот дождался.
+		local a = applied[key]
+		if a and a.id == l.id then
+			applied[key] = nil
+			if (a.state == "signed" or a.state == "invited") and not MemberKeys()[key] then
+				ns.Print(L.GROUPS_CANCELLED, U.Display(c.name))
+			end
+		end
 		if Drop(key) then
 			ns.Log("группы: %s <%s> снял объявление (%s)", U.Display(c.name), l.guild, via)
 			ns.Fire("GROUPS")
@@ -250,7 +290,9 @@ function Groups.Receive(msg, _, dist, ctx)
 		return
 	end
 	-- Новое объявление того же автора: прежняя заявка к нему уже не относится.
-	if old and old.id ~= l.id then applied[key] = nil end
+	local a = applied[key]
+	if a and a.id ~= l.id then applied[key] = nil end
+	if a and a.id == l.id then a.restored = nil end
 	if not old or old.id ~= l.id then
 		ns.Log("группы: объявление %s <%s> принято (%s)", l.name, l.guild, via)
 	end
@@ -296,13 +338,8 @@ end
 ---------------------------------------------------------------------------
 -- Моё объявление
 ---------------------------------------------------------------------------
-local LOWERED = {
-	expired = "GROUPS_LOWERED_EXPIRED", full = "GROUPS_LOWERED_FULL",
-	notleader = "GROUPS_LOWERED_NOT_LEADER", joined = "GROUPS_LOWERED_JOINED",
-}
-local LOWERED_LOG = {
-	expired = "вышел срок", full = "группа полна", notleader = "я больше не лидер", joined = "я вошёл в группу",
-}
+local LOWERED = { expired = "GROUPS_LOWERED_EXPIRED", full = "GROUPS_LOWERED_FULL", joined = "GROUPS_LOWERED_JOINED" }
+local LOWERED_LOG = { expired = "вышел срок", full = "группа полна", joined = "я вошёл в группу" }
 
 local function Forget()
 	mine, myWire, dirty, sentSize = nil, nil, false, nil
@@ -357,7 +394,7 @@ local function Broadcast(prio)
 	local guild = ns.MyGuild()
 	if not mine or not guild then return false, "failed" end
 	local class, level = Me()
-	local size, every = GroupSize(), Every()
+	local size, every = Size(), Every()
 	local msg = Codec.EncodeGroup({
 		mode = mine.mode, id = mine.id, guild = guild, class = class, level = level, kind = mine.kind,
 		roles = mine.roles, size = mine.mode == "G" and size or 1, cap = mine.cap, min = mine.min,
@@ -396,8 +433,10 @@ function Groups.Mine()
 	return mine
 end
 
--- Заявки ко мне, как пришли.
+-- Заявки ко мне, как пришли. У записи party — игрок сейчас в моей группе игры.
 function Groups.Applicants()
+	local members = #applicants > 0 and MemberKeys() or nil
+	for _, a in ipairs(applicants) do a.party = members and members[a.key] or nil end
 	return applicants
 end
 
@@ -469,16 +508,17 @@ end
 
 -- Разместить объявление или поправить своё. spec: { mode = "G" | "P", kind, title, note,
 -- roles = { t, h, d }, cap, min, announce }. Возвращает true или false и причину:
--- "member", "nocert", "notleader", "ingroup", "title", "roles", "full", "wait" (и секунды),
--- причины Security.Seal. Правка того же вида объявления лимит размещений не тратит.
+-- "member", "nocert", "ingroup", "title", "roles", "full", "wait" (и секунды), причины
+-- Security.Seal. Правка того же вида объявления лимит размещений не тратит. Собирать можно и из
+-- чужой группы: звать записанных автор будет, когда выйдет из неё или станет лидером.
 function Groups.Raise(spec)
 	if not ns.IsMember() or not ns.MyGuild() then return false, "member" end
 	if not ns.Security.MyCertificate() then return false, "nocert" end
 	local l = Normalize(spec or {})
 	if l.mode == "G" then
-		if not Leading() then return false, "notleader" end
 		if l.title == "" then return false, "title" end
-		if GroupSize() >= l.cap then return false, "full" end
+		-- Записанные остаются при правке: мест должно хватить им всем.
+		if PartyFull(l.cap) or 1 + Signed() > l.cap then return false, "full" end
 	else
 		if InGroup() then return false, "ingroup" end
 		if not AnyRole(l.roles) then return false, "roles" end
@@ -535,7 +575,7 @@ local function OpenApplies()
 end
 
 -- Попроситься в группу автора key. Причины отказа: "gone", "nocert", "lockdown", "already",
--- "wait", "many", "roles", "level", "failed".
+-- "noroom", "wait", "many", "roles", "level", "failed".
 function Groups.Apply(key, roles, note)
 	local e = board[key]
 	if not e or e.mode ~= "G" then return false, "gone" end
@@ -544,6 +584,7 @@ function Groups.Apply(key, roles, note)
 	if ns.Comm.InLockdown() then return false, "lockdown" end
 	local a, now = applied[key], ns.Now()
 	if a and a.id == e.id then return false, "already" end
+	if e.size >= e.cap then return false, "noroom" end
 	if lastApply[key] and now - lastApply[key] < C.GROUPS_APPLY_GAP then return false, "wait" end
 	if OpenApplies() >= C.GROUPS_APPLY_OPEN then return false, "many" end
 	roles = CopyRoles(roles, true)
@@ -582,12 +623,13 @@ function Groups.Apply(key, roles, note)
 	return true
 end
 
+-- Отозвать заявку или выписаться: автор освободит место.
 function Groups.Withdraw(key)
 	local a = applied[key]
 	if not a then return false end
 	applied[key] = nil
 	local e = board[key]
-	if e and e.id == a.id and a.state == "sent" then
+	if e and e.id == a.id and a.state ~= "declined" then
 		ns.Comm.Send("WHISPER", Codec.EncodeGroupWithdraw(a.id), { target = e.name, key = "gw:" .. key })
 	end
 	ns.Fire("GROUPS")
@@ -601,7 +643,13 @@ ns.Comm.On("GR", function(msg, sender, dist)
 	local key = U.Key(sender)
 	local a = key and applied[key]
 	if not id or not a or a.id ~= id or a.state == "declined" then return end
-	if answer == "I" then
+	if answer == "A" then
+		-- Повтор записи и запоздавшая запись после приглашения ничего не меняют. Кого автор уже
+		-- позвал в группу сам, тому «позовёт потом» не пишется.
+		if a.state ~= "sent" then return end
+		a.state = "signed"
+		if not MemberKeys()[key] then ns.Print(L.GROUPS_SIGNED, U.Display(sender)) end
+	elseif answer == "I" then
 		a.state = "invited"
 		ns.Print(L.GROUPS_INVITED, U.Display(sender))
 	else
@@ -623,6 +671,31 @@ end
 local function Reply(a, answer)
 	if not mine then return end
 	ns.Comm.Send("WHISPER", Codec.EncodeGroupReply(mine.id, answer), { target = a.name, key = "gr:" .. a.key })
+end
+
+-- Записанный занимает роль: из его ролей берётся первая ещё нужная, начиная с самых редких;
+-- иначе автор поправит числа сам.
+local function Take(a)
+	for _, k in ipairs(Groups.ROLES) do
+		if (a.roles[k] or 0) > 0 and (mine.roles[k] or 0) > 0 then
+			mine.roles[k] = mine.roles[k] - 1
+			return k
+		end
+	end
+end
+
+-- Выбывший записанный освобождает занятую роль.
+local function Give(a)
+	if a.state == "new" then return end
+	if a.took and mine and (mine.roles[a.took] or 0) < Codec.GROUP_CAP then
+		mine.roles[a.took] = mine.roles[a.took] + 1
+	end
+	a.took, dirty = nil, true
+end
+
+local function Sign(a)
+	a.state, a.took, dirty = "signed", Take(a), true
+	Reply(a, "A")
 end
 
 ns.Comm.On("GA", function(msg, sender, dist)
@@ -647,6 +720,8 @@ ns.Comm.On("GA", function(msg, sender, dist)
 		-- Гильдия — из сертификата, остальное — слова просящего.
 		known.name, known.guild = U.Display(certificate.name), certificate.guild
 		known.class, known.level, known.roles, known.note = a.class, a.level, a.roles, a.note
+		-- Записанный просится снова, например после /reload: напомнить ему, что он записан.
+		if known.state ~= "new" then Reply(known, "A") end
 		ns.Fire("GROUPS")
 	end)
 end)
@@ -655,9 +730,11 @@ ns.Comm.On("GW", function(msg, sender, dist)
 	if dist ~= "WHISPER" or not mine then return end
 	local id, key = Codec.DecodeGroupWithdraw(msg), U.Key(sender)
 	if id ~= mine.id or not key then return end
-	local _, i = Applicant(key)
+	local a, i = Applicant(key)
 	if not i then return end
 	table.remove(applicants, i)
+	if a.state ~= "new" then ns.Print(L.GROUPS_LEFT, a.name) end
+	Give(a)
 	ns.Fire("GROUPS")
 end)
 
@@ -670,21 +747,79 @@ local function GameInvite(name)
 	return true
 end
 
--- Пригласить просящего. Только из щелчка игрока: приглашение — действие от его имени.
-function Groups.Invite(key)
-	local a = Applicant(key)
-	if not a or not mine then return false end
+-- Звать можно одиночке или лидеру: приглашение из чужой группы игра не пропустит.
+local function CanCall()
+	if Leading() then return true end
+	ns.Print(L.GROUPS_CALL_NOT_LEADER)
+	return false
+end
+
+local function Call(a)
 	if not GameInvite(a.name) then return false end
 	a.state, a.invitedAt = "invited", ns.Now()
 	Reply(a, "I")
+	return true
+end
+
+-- Записать просящего: место и роль за ним, а в группу игры он пока не попадает. Причины
+-- отказа: "gone", "full".
+function Groups.Sign(key)
+	local a = Applicant(key)
+	if not a or not mine or mine.mode ~= "G" then return false, "gone" end
+	if a.state ~= "new" then return true end
+	if 1 + Signed() >= mine.cap then
+		ns.Print(L.GROUPS_NO_ROOM)
+		return false, "full"
+	end
+	Sign(a)
 	ns.Fire("GROUPS")
 	return true
 end
 
+-- Позвать в группу игры записанного, а просящего — сразу записав. Только из щелчка игрока:
+-- приглашение — действие от его имени.
+function Groups.Invite(key)
+	local a = Applicant(key)
+	if not a or not mine or not CanCall() then return false end
+	if a.state == "new" and not Groups.Sign(key) then return false end
+	if not Call(a) then return false end
+	ns.Fire("GROUPS")
+	return true
+end
+
+-- Позвать всех записанных, кого нет в группе и кого ещё не звали. Без рейда — сколько
+-- поместится в группу из пяти: остальных игра всё равно не впустила бы. Возвращает число
+-- приглашённых. Только из щелчка игрока.
+function Groups.InviteAll()
+	if not mine or mine.mode ~= "G" or not CanCall() then return 0 end
+	local members = MemberKeys()
+	local room = ((IsInRaid and IsInRaid()) and 40 or 5) - GroupSize()
+	for _, a in ipairs(applicants) do
+		if a.state == "invited" and not members[a.key] then room = room - 1 end
+	end
+	local n, left = 0, 0
+	for _, a in ipairs(applicants) do
+		if a.state == "signed" and not members[a.key] then
+			if n >= room then
+				left = left + 1
+			elseif Call(a) then
+				n = n + 1
+			else
+				break -- приглашать нечем, игрок уже знает почему
+			end
+		end
+	end
+	if left > 0 then ns.Print(L.GROUPS_CALL_RAID, left) end
+	if n > 0 then ns.Fire("GROUPS") end
+	return n
+end
+
+-- Отказать просящему или вычеркнуть записанного: повторно проситься он не сможет.
 function Groups.Decline(key)
 	local a, i = Applicant(key)
 	if not a then return false end
 	table.remove(applicants, i)
+	Give(a)
 	declined[key] = true
 	Reply(a, "D")
 	ns.Fire("GROUPS")
@@ -702,7 +837,8 @@ end
 -- Состав группы
 ---------------------------------------------------------------------------
 
--- Что стало с моим объявлением после изменений в группе. true — объявление снято.
+-- Что стало с моим объявлением после изменений в группе. true — объявление снято. Чужая
+-- группа объявлению «собираю группу» не мешает: записанные ждут, пока автор её не покинет.
 local function CheckMine()
 	if not mine then return true end
 	if ns.ServerTime() >= mine.id + C.GROUPS_LIFE then return Groups.Lower("expired") end
@@ -710,29 +846,23 @@ local function CheckMine()
 		if InGroup() then return Groups.Lower("joined") end
 		return false
 	end
-	if not Leading() then return Groups.Lower("notleader") end
-	local size = GroupSize()
-	if size >= mine.cap then return Groups.Lower("full") end
-	if size ~= sentSize then dirty = true end
+	if PartyFull(mine.cap) then return Groups.Lower("full") end
+	if Size() ~= sentSize then dirty = true end
 	return false
 end
 
--- Просящий вошёл в группу: его роль больше не нужна. Из его ролей берётся первая ещё
--- нужная, начиная с самых редких; иначе автор поправит числа сам.
+-- Кто из заявок уже в моей группе игры. Позванный вошёл — звать его больше не нужно; просящего
+-- автор позвал сам, мимо записи, — он записан.
 local function Joined()
 	if not mine or mine.mode ~= "G" or #applicants == 0 then return end
 	local members = MemberKeys()
-	for i = #applicants, 1, -1 do
-		local a = applicants[i]
+	for _, a in ipairs(applicants) do
 		if members[a.key] then
-			for _, k in ipairs(Groups.ROLES) do
-				if (a.roles[k] or 0) > 0 and (mine.roles[k] or 0) > 0 then
-					mine.roles[k] = mine.roles[k] - 1
-					break
-				end
+			if a.state == "invited" then
+				a.state, a.invitedAt = "signed", nil
+			elseif a.state == "new" and 1 + Signed() < mine.cap then
+				Sign(a)
 			end
-			table.remove(applicants, i)
-			dirty = true
 		end
 	end
 end
@@ -876,7 +1006,10 @@ local function Tick()
 	end
 	for key, a in pairs(applied) do
 		local e = board[key]
-		if not e or e.id ~= a.id then
+		-- Запись, пережившая /reload, ждёт объявления до конца его срока: доска после входа
+		-- наполняется не сразу.
+		local waiting = not e and a.restored and time < a.id + C.GROUPS_LIFE + 60
+		if (not e or e.id ~= a.id) and not waiting then
 			applied[key] = nil
 			changed = true
 		end
@@ -890,7 +1023,7 @@ local function Tick()
 	if mine and not CheckMine() then
 		for _, a in ipairs(applicants) do
 			if a.state == "invited" and now - (a.invitedAt or 0) > C.GROUPS_INVITE_WAIT then
-				a.state, a.invitedAt = "new", nil
+				a.state, a.invitedAt = "signed", nil -- позвать снова
 				changed = true
 			end
 		end
@@ -925,7 +1058,22 @@ local function Restore()
 		if type(a) ~= "table" or type(a.key) ~= "string" or type(a.name) ~= "string" or type(a.roles) ~= "table" then
 			table.remove(applicants, i)
 		else
-			a.state, a.invitedAt = "new", nil
+			-- Записанные остаются записанными, а приглашения игры /reload не переживают.
+			a.state = (a.state == "signed" or a.state == "invited") and "signed" or "new"
+			a.invitedAt, a.party = nil, nil
+			if a.state == "new" or (a.took ~= "t" and a.took ~= "h" and a.took ~= "d") then a.took = nil end
+		end
+	end
+	-- Мои записи в чужие группы. Заявку без ответа после /reload можно подать заново, а записанному
+	-- автор и так напишет, когда позовёт.
+	saved.applied = type(saved.applied) == "table" and saved.applied or {}
+	applied = saved.applied
+	for key, a in pairs(applied) do
+		if type(key) ~= "string" or type(a) ~= "table" or type(a.id) ~= "number"
+			or (a.state ~= "signed" and a.state ~= "invited") then
+			applied[key] = nil
+		else
+			a.state, a.sending, a.restored, a.at = "signed", nil, true, ns.Now()
 		end
 	end
 	if m then
@@ -967,5 +1115,6 @@ end)
 
 ns.Status(function()
 	local own = mine and (mine.mode == "G" and L.GROUPS_STATUS_GROUP or L.GROUPS_STATUS_PLAYER) or L.GROUPS_STATUS_NONE
-	return L.GROUPS_STATUS:format(Count(), own, #applicants)
+	local signed = Signed()
+	return L.GROUPS_STATUS:format(Count(), own, #applicants - signed, signed)
 end)
