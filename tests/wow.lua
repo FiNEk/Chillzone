@@ -257,7 +257,7 @@ function World:ChannelDeliver(stamp, guid, chan, msg)
 	self.lineId = self.lineId + 1
 	local line = self.lineId
 	for _, c in ipairs(self.clients) do
-		if c.online and c.joined and c.joined[chan] and not c.channelDeaf then
+		if c.online and c.joined and c.joined[chan] and not c.channelDeaf and c.channelDisabled ~= chan then
 			local cid, text = c.joined[chan], Profane(c, msg)
 			self:Schedule(self.now + 0.05, function() c:Fire("CHAT_MSG_CHANNEL", text, stamp, "", cid .. ". " .. chan, "", "", 0, cid, chan, 0, line, guid) end, c)
 		end
@@ -317,10 +317,12 @@ end
 -- и то без фамилии. Бан выкидывает игрока, но его клиенту ничего не
 -- приходит: клиент считает себя в канале, строк не получает, на свои — THROTTLED. Вход
 -- забаненного — NOT_ALLOWED_IN_CHANNEL (так, по-видимому, отвечает Forever), вход без пароля —
--- CHANNEL_PASSWORD_REQUEST и WRONG_PASSWORD. Посторонние без аддона — World:ChanStranger.
+-- CHANNEL_PASSWORD_REQUEST и WRONG_PASSWORD. После отказа во входе клиент держит канал в списке
+-- с номером и пометкой «выключен» (c.channelDisabled), а вход и выход до перезахода ничего не
+-- отправляют (Forever 2026-11-14). Посторонние без аддона — World:ChanStranger.
 -- channelOpsBlocked — игра запрещает аддону ChannelUnban и SetChannelPassword
 -- (ADDON_ACTION_BLOCKED с UNKNOWN(), как отправка из таймера): true — всегда, "timer" — кроме
--- нажатия клавиши.
+-- нажатия клавиши. invalidName[op] — сервер отвечает на команду INVALID_NAME (World:InvalidName).
 ---------------------------------------------------------------------------
 local function Short(full)
 	return (full:gsub("%-.*$", ""))
@@ -439,6 +441,18 @@ function World:ChanPassword(name, by, password)
 	self:ChanNotify(name, "PASSWORD_CHANGED", by)
 end
 
+-- INVALID_NAME клиенту c: так Forever ответил на /owner с «Имя Фамилия» (2026-11-14). Игра
+-- понимает его как «неверное название канала» и теряет канал, а сервер держит игрока в нём:
+-- повторный вход — NOT_ALLOWED_IN_CHANNEL до перезахода.
+function World:InvalidName(c, name)
+	self:Schedule(self.now + 0.05, function()
+		local cid = c.joined[name] or 0
+		if c.joined[name] then c.joinedById[c.joined[name]] = nil end
+		c.joined[name], c.channelNotAllowed = nil, true
+		c:Fire("CHAT_MSG_CHANNEL_NOTICE", "INVALID_NAME", "", "", cid .. ". " .. name, "", "", 0, cid, name)
+	end, c)
+end
+
 -- Команда канала от клиента c: unban — снять бан, password — пароль, owner — кто владелец.
 function World:ChanOp(c, op, name, arg)
 	c.chanOps = c.chanOps or {}
@@ -448,6 +462,7 @@ function World:ChanOp(c, op, name, arg)
 		c:Fire("ADDON_ACTION_BLOCKED", "Chillzone", "UNKNOWN()")
 		return
 	end
+	if self.invalidName and self.invalidName[op] then return self:InvalidName(c, name) end
 	local ch, me = self.channels[name], c:Name()
 	if not ch or not MemberIndex(ch, me) then return self:ChanReply(c, name, "NOT_MEMBER") end
 	if op == "owner" then
@@ -785,16 +800,27 @@ local function Env(c)
 		end
 		return c.joined[id] or 0, id
 	end
+	-- Отказ во входе: канал остаётся в списке клиента с номером, выключенным (Forever 2026-11-14).
+	local function Off(name)
+		c.refusedJoins = (c.refusedJoins or 0) + 1
+		if not c.joined[name] then
+			c.nextChan = (c.nextChan or 4) + 1
+			c.joined[name], c.joinedById[c.nextChan] = c.nextChan, name
+		end
+		c.channelDisabled = name
+	end
 	env.JoinChannelByName = function(name, password)
+		-- Выключенный канал: до перезахода вход ничего не отправляет.
+		if c.channelDisabled == name and c.joined[name] then return end
 		local ch = w.channels[name]
 		-- Сервер держит игрока в канале, а клиент его потерял, или игрок забанен: вход отклоняется.
 		if c.channelNotAllowed or (ch and ch.banned[c:Name()]) then
-			c.refusedJoins = (c.refusedJoins or 0) + 1
+			Off(name)
 			w:Schedule(w.now + 0.1, function() c:Fire("CHAT_MSG_CHANNEL_NOTICE", "NOT_ALLOWED_IN_CHANNEL", "", "", "0. " .. name, "", "", 0, 0, name) end, c)
 			return
 		end
 		if ch and ch.password and password ~= ch.password then
-			c.refusedJoins = (c.refusedJoins or 0) + 1
+			Off(name)
 			w:Schedule(w.now + 0.1, function()
 				c:Fire("CHANNEL_PASSWORD_REQUEST", name)
 				c:Fire("CHAT_MSG_CHANNEL_NOTICE", "WRONG_PASSWORD", "", "", "0. " .. name, "", "", 0, 0, name)
@@ -822,6 +848,7 @@ local function Env(c)
 		return unpack(flat)
 	end
 	env.LeaveChannelByName = function(name)
+		if c.channelDisabled == name then return end -- выключенный канал: до перезахода выход ничего не делает
 		local id = c.joined[name]
 		if id then c.joinedById[id] = nil end
 		c.joined[name] = nil
@@ -1154,6 +1181,7 @@ function World:Reload(old)
 		guild = old.guild, rank = old.rank, class = old.class, level = old.level, db = old.ns.db, reload = true })
 	c.joined, c.joinedById, c.nextChan = old.joined, old.joinedById, old.nextChan
 	c.channelDeaf, c.channelRefused = old.channelDeaf, old.channelRefused
+	c.channelDisabled, c.channelNotAllowed = old.channelDisabled, old.channelNotAllowed -- /reload не помогает
 	for _, ch in pairs(self.channels) do
 		local i = MemberIndex(ch, c:Name())
 		if i and ch.members[i].client == old then ch.members[i].client = c end

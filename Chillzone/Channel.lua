@@ -13,7 +13,13 @@
 --   лечит только перезаход персонажа. Надёжный признак — нет эха своей строки. Такой канал
 --   считается сломанным до перезахода (ns.char.channelBroken);
 -- - отказ при входе (пароль, BANNED, NOT_ALLOWED_IN_CHANNEL) перезаход не лечит, если это бан:
---   список банов живёт, пока канал не пуст. Вход повторяется сам (LOCKED_RETRY), см. «Страж»;
+--   список банов живёт, пока канал не пуст. Но и раньше перезахода войти нельзя: после отказа
+--   игра держит канал в своём списке с номером и пометкой «выключен», и до перезахода персонажа
+--   ни вход, ни выход ничего не отправляют (2026-11-14). Снова пробуем при следующем входе
+--   персонажа в игру, см. «Страж»;
+-- - INVALID_NAME (так Forever отвечает на команду канала с именем, которого не принял: /owner с
+--   «Имя Фамилия», 2026-11-14) игра понимает как «неверное название канала» и теряет канал, а
+--   сервер держит игрока в нём (повторный вход — NOT_ALLOWED_IN_CHANNEL): сломан до перезахода;
 -- - отправка из таймера даёт окно ошибки игры и ADDON_ACTION_BLOCKED: тогда отправка в канал
 --   выключается до перезагрузки интерфейса;
 -- - вход из аддона номера каналов игры не сдвигает, перестановка каналов не нужна.
@@ -30,18 +36,16 @@ local Channel = {}
 ns.Channel = Channel
 
 local JOIN_BY = 15 -- не позже стольких секунд после входа
--- Канал не пускает (пароль, бан, отказ сервера): следующий вход через столько секунд, дальше
--- раз в 10 минут. Как в Olympus: другого названия нет, стучимся в ту же дверь.
-Channel.LOCKED_RETRY = { 60, 120, 300, 600 }
--- Канал под паролем сам не пробуем вовсе, только при следующем входе персонажа в игру
--- (ns.char.channelLocked переживает /reload): каждая попытка показывает окно пароля игры,
--- а его мы не трогаем (taint). Игрок может войти и сам — снова включив настройку канала.
+-- Канал не пускает (пароль, бан, отказ сервера): сам не пробуем до следующего входа персонажа
+-- в игру (ns.char.channelLocked переживает /reload). Раньше нельзя: после отказа игра держит
+-- канал выключенным и вход до перезахода не отправляет (2026-11-14), а под паролем каждая
+-- попытка — ещё и окно пароля игры, которое мы не трогаем (taint).
 local LOCKED_TELL = 3600 -- подсказка о закрытом канале не чаще (переживает /reload)
 Channel.ECHO_WAIT = 5 -- своя строка без эха дольше этого — канал под сомнением
 local BROKEN_AFTER = 2 -- столько строк подряд без эха (или THROTTLED при свободном бюджете) — сломан
 local joined -- имя канала, в который вошли
 local index = 0
-local lock -- канал не пускает: { why, tries, try, nextAt }
+local lock -- канал не пускает: { why, tries, try }
 local joinTries = 0 -- вызовов JoinChannelByName: один отказ считается один раз, сколько бы уведомлений ни пришло
 -- Свои строки в окне бюджета, старые первыми: { t, text, state, only }. state: wait — ждёт эха,
 -- echo — вернулась, lost — эха не было, hand — эхо строки, набранной в канал вручную.
@@ -64,6 +68,22 @@ local function Secret(value)
 	return type(issecretvalue) == "function" and issecretvalue(value)
 end
 
+-- Пометка «выключен» у нашего канала в списке каналов игры: так игра держит канал после отказа
+-- во входе (с номером, 2026-11-14). Писать в такой канал нельзя, вход и выход до перезахода
+-- персонажа ничего не отправляют.
+local function Disabled(name)
+	if not name or not GetChannelList then return false end
+	local list = { GetChannelList() }
+	if type(list[3]) ~= "boolean" then return false end
+	for i = 1, #list, 3 do
+		local id, chan, off = list[i], list[i + 1], list[i + 2]
+		if not Secret(chan) and type(chan) == "string" and U.Fold(chan) == U.Fold(name) then
+			return not Secret(off) and off == true and (tonumber(id) or 0) > 0
+		end
+	end
+	return false
+end
+
 -- Канал включён автором аддона (Config) и игроком (настройки персонажа).
 function Channel.Enabled()
 	if C.CHANNEL_CHAT ~= true or type(C.CHANNEL) ~= "table" then return false end
@@ -75,9 +95,11 @@ function Channel.Name()
 	return C.CHANNEL[ns.faction or "Alliance"] or C.CHANNEL.Alliance
 end
 
+-- Номер канала, в который можно писать: 0 — его нет или игра держит его выключенным.
 function Channel.Index()
 	if not joined or not GetChannelName then return 0 end
 	index = tonumber((GetChannelName(joined))) or 0
+	if index > 0 and Disabled(joined) then index = 0 end
 	return index
 end
 
@@ -205,20 +227,6 @@ local function Throttled()
 	end
 end
 
--- Пометка «выключен» у нашего канала в списке каналов игры.
-local function Disabled(name)
-	if not name or not GetChannelList then return false end
-	local list = { GetChannelList() }
-	if type(list[3]) ~= "boolean" then return false end
-	for i = 1, #list, 3 do
-		local id, chan, off = list[i], list[i + 1], list[i + 2]
-		if not Secret(chan) and type(chan) == "string" and U.Fold(chan) == U.Fold(name) then
-			return not Secret(off) and off == true and (tonumber(id) or 0) > 0
-		end
-	end
-	return false
-end
-
 ---------------------------------------------------------------------------
 -- Страж канала (по образцу Olympus 1.5.0 Comm.lua). Наш канал — обычный канал игры: владелец —
 -- кто дольше всех в нём, при его выходе игра сама отдаёт канал (и место модератора) другому
@@ -240,8 +248,12 @@ end
 -- - пароль снимаем только после увиденной чужой смены (Olympus снимал его и «на всякий случай»
 --   после /reload, а это уведомление о смене пароля всем в канале, в том числе без аддона);
 -- - за проход не больше HEAL_BURST вызовов, «нет такого игрока» откладывает снятие всё дольше;
--- - закрытый паролем канал сам не пробуем до следующего входа персонажа: каждая попытка — окно
---   пароля игры (Olympus стучался и сюда по LOCKED_RETRY);
+-- - закрытый канал сам не пробуем до следующего входа персонажа: после отказа игра держит канал
+--   выключенным и вход до перезахода не отправляет, а под паролем каждая попытка — ещё и окно
+--   пароля игры. Olympus стучался по таймеру, но принимал выключенный канал за вход: в игре его
+--   повтор не срабатывал, а клиент считал себя в канале;
+-- - INVALID_NAME в ответ на вызов стража выключает стража до новой версии аддона: такой ответ
+--   выбрасывает из канала самого стража;
 -- - если игра не пускает вызовы стража из таймера, страж переходит на нажатие клавиши (строка
 --   /cz, Channel.Pressed) и выключается до новой версии аддона, только если и оттуда нельзя.
 --   Так окно ошибки игры игрок видит не больше двух раз, а не теряет стража после первого;
@@ -593,10 +605,9 @@ local function LoseSeat(why)
 	ns.Log("канал %s: места у меня нет (%s)", joined or "?", why)
 end
 
--- Канал не пускает: подсказка не чаще LOCKED_TELL, вход — снова через LOCKED_RETRY, а под
--- паролем — только при следующем входе персонажа (ns.char.channelLocked).
+-- Канал не пускает: подсказка не чаще LOCKED_TELL, вход — снова только при следующем входе
+-- персонажа (ns.char.channelLocked).
 local function Locked(why)
-	local now = ns.Now()
 	if not lock then
 		lock = { why = why, tries = 0 }
 		local server = ns.ServerTime()
@@ -606,19 +617,11 @@ local function Locked(why)
 		end
 	end
 	lock.why = why
+	if ns.char then ns.char.channelLocked = why end
 	if lock.try == joinTries then return end
 	lock.try = joinTries
 	lock.tries = lock.tries + 1
-	if why == "WRONG_PASSWORD" then
-		lock.nextAt = nil
-		if ns.char then ns.char.channelLocked = why end
-		ns.Log("канал %s не пускает (%s, попытка %d), следующая — при входе в игру", Channel.Name() or "?", why, lock.tries)
-		return
-	end
-	local retry = Channel.LOCKED_RETRY
-	lock.nextAt = now + retry[math.min(lock.tries, #retry)]
-	ns.Log("канал %s не пускает (%s, попытка %d), следующая через %d с", Channel.Name() or "?", why, lock.tries,
-		math.floor(lock.nextAt - now + 0.5))
+	ns.Log("канал %s не пускает (%s, попытка %d), следующая — при входе в игру", Channel.Name() or "?", why, lock.tries)
 end
 
 local function Unlocked()
@@ -628,9 +631,9 @@ local function Unlocked()
 	lock = nil
 end
 
--- Канал под паролем: сам не пробуем до следующего входа персонажа (после /reload — тоже).
+-- Канал не пускал: сам не пробуем до следующего входа персонажа (после /reload — тоже).
 local function WaitLogin()
-	return (lock ~= nil and lock.why == "WRONG_PASSWORD") or (ns.char ~= nil and ns.char.channelLocked ~= nil)
+	return lock ~= nil or (ns.char ~= nil and ns.char.channelLocked ~= nil)
 end
 
 ---------------------------------------------------------------------------
@@ -649,23 +652,29 @@ local function Ours(baseName, channelName)
 end
 Channel.Ours = Ours
 
--- force — повторить вход, даже если канал недавно отказал (игрок сам включил настройку).
--- Сломанный канал не лечится повторным входом: только перезаходом персонажа. Канал, который
--- не пускает, пробуем снова по расписанию LOCKED_RETRY, а под паролем — при входе персонажа.
+-- force — войти, даже если канал не пускал (игрок сам включил настройку). Сломанный канал и
+-- канал, который игра держит выключенным, повторный вход не лечит: только перезаход персонажа.
+-- Канал, который не пускал, сам пробуем снова при следующем входе персонажа в игру.
 function Channel.Join(force)
 	if not Channel.Enabled() or not ns.IsMember() or not JoinChannelByName then return end
 	if Channel.State() == "broken" then return end
 	local name = Channel.Name()
 	local id = tonumber((GetChannelName(name))) or 0
-	if id > 0 then
+	if id > 0 and not Disabled(name) then
 		joined, index = name, id
 		Unlocked()
 		if Seated() then HealSoon() end -- после /reload: место прежнее, список банов мог пополниться
 		AskOwnerSoon() -- после /reload: уведомление о смене владельца могло прийти без нас
 		return
 	end
+	if id > 0 then
+		-- Выключен игрой: после отказа во входе ждём входа в игру, а без отказа канал потерян
+		-- (сервер держит нас в нём) — сломан. Вход тут ничего не отправит.
+		joined = name
+		if not WaitLogin() then Break(L.CHANNEL_WHY_DISABLED) end
+		return
+	end
 	if not force and WaitLogin() then return end
-	if not force and lock and ns.Now() < (lock.nextAt or 0) then return end
 	joined = name
 	joinTries = joinTries + 1
 	ns.Log("вход в канал %s", name)
@@ -675,7 +684,9 @@ function Channel.Join(force)
 		if index <= 0 then
 			ns.Log("канал %s: войти не удалось", name)
 		elseif Disabled(name) then
-			Break(L.CHANNEL_WHY_DISABLED)
+			-- После отказа во входе так и должно быть: канал не пускает до входа в игру.
+			index = 0
+			if not lock then Break(L.CHANNEL_WHY_DISABLED) end
 		else
 			Unlocked()
 		end
@@ -713,11 +724,8 @@ end
 local function Keep()
 	if Channel.Enabled() and ns.IsMember() then
 		if Channel.State() == "broken" then return end
-		if Channel.Index() <= 0 then
-			Channel.Join()
-		elseif Disabled(joined) then
-			Break(L.CHANNEL_WHY_DISABLED)
-		end
+		-- Выключенный игрой канал Index не считает: Join разберётся, сломан он или не пускает.
+		if Channel.Index() <= 0 then Channel.Join() end
 	elseif joined then
 		Channel.Leave()
 	end
@@ -760,6 +768,23 @@ ns.RegisterEvent("CHAT_MSG_CHANNEL", function(text, sender, _, channelName, _, _
 	ns.Chat.ReceivePlain(text, sender, guid)
 end)
 
+-- INVALID_NAME: так Forever отвечает на команду канала с именем, которого не принял (2026-11-14:
+-- /owner с «Имя Фамилия» и «Имя-Фамилия»), а игра понимает его как «неверное название канала»
+-- и теряет канал. Сервер держит игрока в канале: повторный вход — NOT_ALLOWED_IN_CHANNEL, и до
+-- перезахода персонажа ничего не поможет. Если так ответили на вызов стража, страж выключается
+-- до новой версии аддона, иначе он выбрасывал бы из канала своего же владельца снова и снова.
+local function InvalidName()
+	if ns.Now() - healCallAt <= ASK_WAIT and not Refused() then
+		healRefused = true
+		local g = Store()
+		if g then g.refused = ns.VERSION end
+		ns.Log("канал %s: сервер ответил INVALID_NAME на вызов стража — страж выключен до новой версии аддона", joined or "?")
+	end
+	ns.After(1, "channel invalid name", function()
+		if joined and Channel.Index() <= 0 then Break(L.CHANNEL_WHY_INVALID_NAME) end
+	end)
+end
+
 -- Уведомления канала: (вид, игрок, язык, «5. Название», второй игрок, флаги, зона, номер,
 -- базовое название). Всё — в журнал; владелец, объявления, отказы — в состояние.
 local function Notice(notice, player, _, channelName, player2, _, _, number, baseName)
@@ -787,6 +812,8 @@ local function Notice(notice, player, _, channelName, player2, _, _, number, bas
 		Locked(notice)
 	elseif notice == "THROTTLED" then
 		Throttled()
+	elseif notice == "INVALID_NAME" then
+		InvalidName()
 	elseif notice == "CHANNEL_OWNER" or notice == "OWNER_CHANGED" then
 		if notice == "CHANNEL_OWNER" and not me then me = MyFirstName(player) end
 		Channel.owner, ownerAsked = me and U.Display(ns.me) or player, true
@@ -918,10 +945,7 @@ local STATE_TEXT = { ok = "CHANNEL_STATE_OK", doubt = "CHANNEL_STATE_DOUBT", bro
 local function StateText()
 	local state = Channel.State()
 	if state == "locked" then
-		if WaitLogin() then
-			return L.CHANNEL_STATE_LOCKED_LOGIN:format(lock and lock.why or ns.char.channelLocked)
-		end
-		return L.CHANNEL_STATE_LOCKED:format(lock.why, math.max(0, math.ceil((lock.nextAt or 0) - ns.Now())))
+		return L.CHANNEL_STATE_LOCKED_LOGIN:format(lock and lock.why or ns.char and ns.char.channelLocked or "?")
 	end
 	return L[STATE_TEXT[state]]
 end

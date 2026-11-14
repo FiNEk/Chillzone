@@ -1,6 +1,7 @@
 -- Страж канала игры (Channel.lua, по образцу Olympus): пока канал у клиента объединения
 -- (владелец или модератор), он снимает пароль и баны, увиденные в канале; «стук» снимает бан,
--- которого никто не видел; закрытый канал клиент пробует снова сам. Симулятор держит канал
+-- которого никто не видел; закрытый канал клиент пробует снова при следующем входе в игру
+-- (раньше игра вход не отправит). Симулятор держит канал
 -- на сервере: владелец, модераторы, баны, пароль (tests/wow.lua).
 local T = ...
 local Wow = assert(loadfile(T.ROOT .. "/tests/wow.lua"))(T)
@@ -54,6 +55,11 @@ local function Logged(cl, text)
 		if line:find(text, 1, true) then n = n + 1 end
 	end
 	return n
+end
+
+-- В канале: клиент знает канал, и игра не держит его выключенным (так бывает после отказа).
+local function InChan(cl)
+	return cl.joined[CHAN] ~= nil and cl.channelDisabled ~= CHAN
 end
 
 -- Вызовы команд канала; без op — вызовы стража (снятия), без запроса владельца.
@@ -137,7 +143,10 @@ T.test("channel guard: бан постороннего снимает участ
 		if cl ~= owner then T.eq(Ops(cl), 0, name .. ": без места не вызывает") end
 	end
 	w:Run(700)
-	T.ok(B.joined[CHAN], "Борис вошёл сам, без перезахода")
+	T.eq(B.refusedJoins, 1, "до перезахода сам не пробует: игра держит канал выключенным")
+	T.no(InChan(B))
+	B = Relog(w, c, "B")
+	T.ok(InChan(B), "после перезахода Борис в канале")
 	T.eq(B.ns.Channel.State(), "ok")
 	Clean(c)
 end)
@@ -162,8 +171,8 @@ T.test("channel guard: стук — бан, которого никто не в�
 	for name, cl in pairs(c) do
 		if cl ~= owner then T.eq(Ops(cl), 0, name .. ": без места не стучит") end
 	end
-	w:Run(700)
-	T.ok(B.joined[CHAN], "Борис снова в канале")
+	B = Relog(w, c, "B")
+	T.ok(InChan(B), "после перезахода Борис снова в канале")
 	B:Slash("/cz1", "я вернулся")
 	w:Run(200)
 	T.eq(Logged(owner, "пришла подписью без копии из канала"), 1, "строка с копией из канала — без стука")
@@ -228,7 +237,7 @@ T.test("channel guard: пароль постороннего снимает ст
 	T.eq(w.channels[CHAN].password, nil)
 	w:Run(3600)
 	T.eq(B.refusedJoins, 1, "сам больше не пробует: окна пароля нет")
-	T.no(B.joined[CHAN])
+	T.no(InChan(B))
 	local R = w:Reload(B)
 	c.B = R
 	w:Run(120)
@@ -237,25 +246,60 @@ T.test("channel guard: пароль постороннего снимает ст
 	R:Slash("/chillzone", "status")
 	T.eq(R:Saw("снова при следующем входе в игру"), 1)
 	B = Relog(w, c, "B")
-	T.ok(B.joined[CHAN], "при входе в игру вошёл")
+	T.ok(InChan(B), "при входе в игру вошёл")
 	T.eq(B.ns.Channel.State(), "ok")
 	Clean(c)
 end)
 
-T.test("channel guard: под паролем игрок входит сам, снова включив канал", function()
+-- Forever 2026-11-14: после отказа во входе канал в списке игры выключен, а вход и выход до
+-- перезахода ничего не отправляют — снять и снова поставить галочку канала не поможет.
+T.test("channel guard: снова включить канал до перезахода не помогает — игра держит его выключенным", function()
 	local w, c = Build({ stranger = true })
 	w:ChanPassword(CHAN, STRANGER, "secret")
 	w:Run(5)
 	local B = Relog(w, c, "B")
 	T.eq(B.ns.Channel.State(), "locked")
+	T.eq(B.channelDisabled, CHAN, "игра держит канал выключенным")
 	w:ChanPassword(CHAN, STRANGER, "")
-	w:Run(700)
-	T.no(B.joined[CHAN], "сам не пробует")
-	B.ns.Channel.SetEnabled(true)
+	B.ns.Channel.SetEnabled(false)
 	w:Run(5)
-	T.ok(B.joined[CHAN], "включил настройку — вошёл")
+	B.ns.Channel.SetEnabled(true)
+	w:Run(700)
+	T.eq(B.refusedJoins, 1, "вход не ушёл")
+	T.no(InChan(B))
+	T.eq(B.ns.Channel.State(), "locked")
+	B:Slash("/cz1", "из выключенного")
+	w:Run(30)
+	T.eq(c.G:Saw("из выключенного"), 1, "строка дошла через реле")
+	B = Relog(w, c, "B")
+	T.ok(InChan(B), "после перезахода вошёл")
 	T.eq(B.ns.Channel.State(), "ok")
 	T.eq(B.ns.char.channelLocked, nil, "отметка снята")
+	Clean(c)
+end)
+
+T.test("channel guard: INVALID_NAME на вызов стража — страж выключен до новой версии, канал сломан до перезахода", function()
+	local w, c = Build()
+	local owner, key = Owner(w, c)
+	local B = c.B
+	T.ok(owner and owner ~= B, "канал не у Бориса")
+	w.invalidName = { unban = true }
+	B.ns.Channel.SetEnabled(false) -- Борис пишет только подписью: у владельца будет стук
+	w:Run(5)
+	B:Slash("/cz1", "без канала")
+	w:Run(200)
+	T.eq(Ops(owner, "unban"), 1, "стук")
+	T.eq(Logged(owner, ": INVALID_NAME"), 1)
+	T.eq(Logged(owner, "сервер ответил INVALID_NAME на вызов стража — страж выключен до новой версии аддона"), 1)
+	T.eq(owner.ns.Channel.State(), "broken", "игра потеряла канал")
+	T.eq(Logged(owner, "игра потеряла канал"), 1)
+	T.eq(owner:Saw("перезайдите персонажем"), 1)
+	T.eq(owner.refusedJoins, nil, "в канал заново не входил")
+	w.invalidName = nil
+	local R = Relog(w, c, key)
+	T.ok(InChan(R), "после перезахода в канале")
+	T.eq(R.ns.Channel.State(), "ok")
+	T.eq(Ops(R, "owner"), 0, "страж выключен: и владельца не спрашивает")
 	Clean(c)
 end)
 
@@ -317,8 +361,8 @@ T.test("channel guard: бан участника вне игры снимает�
 	T.eq(Ops(owner, "unban"), 3)
 	T.eq(w.channels[CHAN].banned["Борис Быстрый"], nil, "бан снят, когда игрок вернулся")
 	T.eq(owner.ns.Channel.Pending(), 0)
-	w:Run(700)
-	T.ok(B.joined[CHAN], "Борис вошёл сам")
+	B = Relog(w, c, "B")
+	T.ok(InChan(B), "после перезахода Борис в канале")
 	Clean(c)
 end)
 
