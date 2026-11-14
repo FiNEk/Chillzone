@@ -14,6 +14,7 @@ local SUITES = {
 	"test_codec",
 	"test_comm",
 	"test_diagnostics",
+	"test_net",
 	"test_perf",
 	"test_data",
 	"test_relay",
