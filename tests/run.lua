@@ -22,6 +22,7 @@ local SUITES = {
 	"test_transfer",
 	"test_chat",
 	"test_channel",
+	"test_channel_guard",
 	"test_chat_config",
 	"test_chat_tab",
 	"test_guildmirror",

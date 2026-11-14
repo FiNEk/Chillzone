@@ -524,16 +524,30 @@ T.test("channel: канал-призрак — без эха подсказка 
 	Clean(c)
 end)
 
-T.test("channel: NOT_ALLOWED_IN_CHANNEL и пометка выключен — сломан, повторов нет", function()
+T.test("channel: NOT_ALLOWED_IN_CHANNEL — вход повторяется всё реже; пометка выключен — сломан", function()
 	local w, c = Build()
 	local B = c.B
 	B.channelNotAllowed = true
 	B.joinedById[B.joined[CHAN]], B.joined[CHAN] = nil, nil
 	w:Run(65)
-	T.eq(B.ns.Channel.State(), "broken", "вход отклонён — сломан")
-	T.eq(B:Saw("перезайдите персонажем"), 1)
-	w:Run(180)
-	T.eq(Logged(B, CHAN .. ": NOT_ALLOWED_IN_CHANNEL"), 1, "вход пробовали один раз")
+	T.eq(B.ns.Channel.State(), "locked", "вход отклонён — канал не пускает")
+	T.eq(B:Saw("не пускает вас"), 1, "подсказка")
+	T.eq(B:Saw("перезайдите персонажем"), 0, "перезаход тут не поможет")
+	B:Slash("/chillzone", "status")
+	T.eq(B:Saw("не пускает (NOT_ALLOWED_IN_CHANNEL), снова через"), 1, "status показывает повтор")
+	w:Run(780)
+	local tries = Logged(B, CHAN .. ": NOT_ALLOWED_IN_CHANNEL")
+	T.ok(tries >= 4 and tries <= 5, "через 1, 2, 5 минут и дальше реже: " .. tries)
+	w:Run(1320)
+	T.ok(Logged(B, CHAN .. ": NOT_ALLOWED_IN_CHANNEL") - tries <= 2, "дальше не чаще раза в 10 минут")
+	T.eq(B:Saw("не пускает вас"), 1, "подсказка не чаще раза в час")
+	B.channelNotAllowed = nil
+	w:Run(700)
+	T.ok(B.joined[CHAN], "снова в канале без перезахода")
+	T.eq(B.ns.Channel.State(), "ok")
+	T.eq(Logged(B, "снова пускает"), 1)
+	B:Slash("/cz1", "вернулся")
+	T.eq(ChannelSent(w, "Борис Быстрый", "вернулся"), 1)
 	local V = c.V
 	V.channelDisabled = CHAN
 	w:Run(65)

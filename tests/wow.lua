@@ -309,6 +309,165 @@ function World:ChannelSay(full, chan, msg, class)
 	self:ChannelDeliver(full, guid, chan, msg)
 end
 
+---------------------------------------------------------------------------
+-- Канал на сервере, как в игре 2026-11-11: участники по порядку входа, владелец — кто дольше
+-- всех; при его выходе канал переходит следующему (OWNER_CHANGED и SET_MODERATOR), пустой
+-- канал исчезает вместе с банами и паролем. Бан выкидывает игрока, но его клиенту ничего не
+-- приходит: клиент считает себя в канале, строк не получает, на свои — THROTTLED. Вход
+-- забаненного — NOT_ALLOWED_IN_CHANNEL (так, по-видимому, отвечает Forever), вход без пароля —
+-- CHANNEL_PASSWORD_REQUEST и WRONG_PASSWORD. Посторонние без аддона — World:ChanStranger.
+-- channelOpsBlocked — игра запрещает аддону ChannelUnban и SetChannelPassword
+-- (ADDON_ACTION_BLOCKED с UNKNOWN(), как отправка из таймера): true — всегда, "timer" — кроме
+-- нажатия клавиши.
+---------------------------------------------------------------------------
+local function Short(full)
+	return (full:gsub("%-.*$", ""))
+end
+
+function World:Chan(name)
+	local ch = self.channels[name]
+	if not ch then
+		ch = { members = {}, banned = {}, mods = {} }
+		self.channels[name] = ch
+	end
+	return ch
+end
+
+local function MemberIndex(ch, short)
+	for i, m in ipairs(ch.members) do
+		if m.short == short then return i end
+	end
+end
+
+-- Уведомление всем участникам канала с клиентом — по членству на сервере.
+function World:ChanNotify(name, notice, player, player2)
+	local ch = self.channels[name]
+	if not ch then return end
+	for _, m in ipairs(ch.members) do
+		local c = m.client
+		if c and c.online then
+			self:Schedule(self.now + 0.05, function()
+				local cid = c.joined[name] or 0
+				c:Fire("CHAT_MSG_CHANNEL_NOTICE_USER", notice, player or "", "", cid .. ". " .. name, player2 or "", "", 0, cid, name)
+			end, c)
+		end
+	end
+end
+
+-- Ответ сервера одному клиенту на его команду.
+function World:ChanReply(c, name, notice, player)
+	self:Schedule(self.now + 0.05, function()
+		local cid = c.joined[name] or 0
+		c:Fire("CHAT_MSG_CHANNEL_NOTICE_USER", notice, player or "", "", cid .. ". " .. name, "", "", 0, cid, name)
+	end, c)
+end
+
+function World:ChanAdd(name, full, client)
+	local ch = self:Chan(name)
+	local short = Short(full)
+	local i = MemberIndex(ch, short)
+	if i then
+		ch.members[i].client = client
+		return
+	end
+	ch.members[#ch.members + 1] = { full = full, short = short, client = client }
+	if not ch.owner then
+		ch.owner = short
+		self:ChanNotify(name, "OWNER_CHANGED", full)
+	end
+end
+
+function World:ChanRemove(name, short)
+	local ch = self.channels[name]
+	local i = ch and MemberIndex(ch, short)
+	if not i then return end
+	table.remove(ch.members, i)
+	ch.mods[short] = nil
+	if #ch.members == 0 then
+		self.channels[name] = nil
+		return
+	end
+	if ch.owner == short then
+		local heir = ch.members[1]
+		ch.owner, ch.mods[heir.short] = heir.short, true
+		self:ChanNotify(name, "OWNER_CHANGED", heir.full)
+		self:ChanNotify(name, "SET_MODERATOR", heir.full)
+	end
+end
+
+function World:ChanOwner(name)
+	local ch = self.channels[name]
+	return ch and ch.owner
+end
+
+local function CanModerate(ch, short)
+	return ch.owner == short or ch.mods[short] == true
+end
+
+-- Посторонний без аддона входит в канал (leave — выходит из него и из игры).
+function World:ChanStranger(name, full, leave)
+	self.strangers = self.strangers or {}
+	local short = Short(full)
+	if leave then
+		self.strangers[short] = nil
+		return self:ChanRemove(name, short)
+	end
+	self.strangers[short] = true
+	local ch = self:Chan(name)
+	if ch.banned[short] or ch.password then return false end
+	self:ChanAdd(name, full, nil)
+	return true
+end
+
+-- Бан от владельца или модератора by («Имя Фамилия-Реалм»): клиент забаненного ничего не узнаёт.
+function World:ChanBan(name, by, target)
+	local ch = assert(self.channels[name], "нет канала " .. name)
+	assert(CanModerate(ch, Short(by)), by .. " не владелец и не модератор")
+	local short = Short(target)
+	ch.banned[short] = true
+	local i = MemberIndex(ch, short)
+	local victim = i and ch.members[i].client
+	if victim then victim.channelDeaf, victim.channelRefused = true, "throttled" end
+	if i then self:ChanRemove(name, short) end
+	self:ChanNotify(name, "PLAYER_BANNED", target, by)
+end
+
+-- Пароль от владельца by; "" — снять.
+function World:ChanPassword(name, by, password)
+	local ch = assert(self.channels[name], "нет канала " .. name)
+	assert(ch.owner == Short(by), by .. " не владелец")
+	ch.password = password ~= "" and password or nil
+	self:ChanNotify(name, "PASSWORD_CHANGED", by)
+end
+
+-- Команда канала от клиента c: unban — снять бан, password — пароль.
+function World:ChanOp(c, op, name, arg)
+	c.chanOps = c.chanOps or {}
+	c.chanOps[#c.chanOps + 1] = { op = op, name = name, arg = arg, t = self.now }
+	if self.channelOpsBlocked == true or (self.channelOpsBlocked == "timer" and not c.hardware) then
+		c.chanOps[#c.chanOps].blocked = true
+		c:Fire("ADDON_ACTION_BLOCKED", "Chillzone", "UNKNOWN()")
+		return
+	end
+	local ch, me = self.channels[name], c:Name()
+	if not ch or not MemberIndex(ch, me) then return self:ChanReply(c, name, "NOT_MEMBER") end
+	if op == "password" then
+		if ch.owner ~= me then return self:ChanReply(c, name, "NOT_OWNER") end
+		ch.password = arg ~= "" and arg or nil
+		return self:ChanNotify(name, "PASSWORD_CHANGED", c.first .. " " .. c.surname .. "-" .. c.realm)
+	end
+	if not CanModerate(ch, me) then return self:ChanReply(c, name, "NOT_MODERATOR") end
+	local short = Short(arg)
+	if not (self:FindByTell(short) or (self.strangers and self.strangers[short])) then
+		local text = c.env.ERR_CHAT_PLAYER_NOT_FOUND_S:format(short)
+		self:Schedule(self.now + 0.05, function() c:Fire("CHAT_MSG_SYSTEM", text) end, c)
+		return
+	end
+	if not ch.banned[short] then return self:ChanReply(c, name, "PLAYER_NOT_BANNED", arg) end
+	ch.banned[short] = nil
+	self:ChanNotify(name, "PLAYER_UNBANNED", arg, c.first .. " " .. c.surname .. "-" .. c.realm)
+end
+
 -- Уведомление канала всем, кто в нём: (вид, игрок, язык, «5. Название», второй игрок, …).
 function World:ChannelNotice(chan, notice, player, player2)
 	for _, c in ipairs(self.clients) do
@@ -619,17 +778,30 @@ local function Env(c)
 		end
 		return c.joined[id] or 0, id
 	end
-	env.JoinChannelByName = function(name)
-		-- Сервер держит игрока в канале, а клиент его потерял: вход отклоняется.
-		if c.channelNotAllowed then
+	env.JoinChannelByName = function(name, password)
+		local ch = w.channels[name]
+		-- Сервер держит игрока в канале, а клиент его потерял, или игрок забанен: вход отклоняется.
+		if c.channelNotAllowed or (ch and ch.banned[c:Name()]) then
+			c.refusedJoins = (c.refusedJoins or 0) + 1
 			w:Schedule(w.now + 0.1, function() c:Fire("CHAT_MSG_CHANNEL_NOTICE", "NOT_ALLOWED_IN_CHANNEL", "", "", "0. " .. name, "", "", 0, 0, name) end, c)
+			return
+		end
+		if ch and ch.password and password ~= ch.password then
+			c.refusedJoins = (c.refusedJoins or 0) + 1
+			w:Schedule(w.now + 0.1, function()
+				c:Fire("CHANNEL_PASSWORD_REQUEST", name)
+				c:Fire("CHAT_MSG_CHANNEL_NOTICE", "WRONG_PASSWORD", "", "", "0. " .. name, "", "", 0, 0, name)
+			end, c)
 			return
 		end
 		c.joins = (c.joins or 0) + 1
 		c.nextChan = (c.nextChan or 4) + 1
 		local id = c.nextChan
 		c.joined[name], c.joinedById[id] = id, name
-		w:Schedule(w.now + 0.1, function() c:Fire("CHAT_MSG_CHANNEL_NOTICE", "YOU_JOINED", "", "", id .. ". " .. name, "", "", 0, id, name) end, c)
+		w:Schedule(w.now + 0.1, function()
+			c:Fire("CHAT_MSG_CHANNEL_NOTICE", "YOU_JOINED", "", "", id .. ". " .. name, "", "", 0, id, name)
+			w:ChanAdd(name, Stamp(c), c)
+		end, c)
 	end
 	env.GetChannelList = function()
 		local out = {}
@@ -645,7 +817,12 @@ local function Env(c)
 		local id = c.joined[name]
 		if id then c.joinedById[id] = nil end
 		c.joined[name] = nil
+		local ch = w.channels[name]
+		local i = ch and MemberIndex(ch, c:Name())
+		if i and ch.members[i].client == c then w:ChanRemove(name, c:Name()) end
 	end
+	env.ChannelUnban = function(name, who) return w:ChanOp(c, "unban", name, who) end
+	env.SetChannelPassword = function(name, password) return w:ChanOp(c, "password", name, password) end
 	env.SendChatMessage = function(msg, kind, _, id)
 		assert(#msg <= 255, "строка чата длиннее 255 байт")
 		if kind == "CHANNEL" then return w:Say(c, msg, id) end
@@ -943,7 +1120,9 @@ function Client:Press(box)
 	return self:Hardware(box.scripts.OnEnterPressed, box)
 end
 
-function Client:Logout()
+-- Выход из игры: сервер выводит персонажа из каналов (keepChannels — перезагрузка интерфейса,
+-- в каналах он остаётся, см. World:Reload).
+function Client:Logout(keepChannels)
 	self.online = false
 	for i, c in ipairs(self.world.clients) do
 		if c == self then
@@ -951,6 +1130,26 @@ function Client:Logout()
 			break
 		end
 	end
+	if keepChannels then return end
+	for name, ch in pairs(self.world.channels) do
+		local i = MemberIndex(ch, self:Name())
+		if i and ch.members[i].client == self then self.world:ChanRemove(name, self:Name()) end
+	end
+end
+
+-- Перезагрузка интерфейса: тот же персонаж с теми же сохранениями; в каналах игры он остаётся,
+-- клиент их помнит (номера те же), уведомлений о входе нет. Флаги отказов сервера — те же.
+function World:Reload(old)
+	old:Logout(true)
+	local c = self:Client({ first = old.first, surname = old.surname, realm = old.realm, faction = old.faction,
+		guild = old.guild, rank = old.rank, class = old.class, level = old.level, db = old.ns.db, reload = true })
+	c.joined, c.joinedById, c.nextChan = old.joined, old.joinedById, old.nextChan
+	c.channelDeaf, c.channelRefused = old.channelDeaf, old.channelRefused
+	for _, ch in pairs(self.channels) do
+		local i = MemberIndex(ch, c:Name())
+		if i and ch.members[i].client == old then ch.members[i].client = c end
+	end
+	return c
 end
 
 -- Вкладка чата игры номер i (3 и дальше) с названием name, пристыкованная к основному окну;

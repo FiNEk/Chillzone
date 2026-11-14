@@ -47,6 +47,7 @@ read_globals = {
 	"Enum",
 
 	-- функции
+	"ChannelUnban",
 	"ChatFrame_AddMessageEventFilter",
 	"ChatFrame_OpenChat",
 	"CreateFrame",
@@ -78,6 +79,7 @@ read_globals = {
 	"CanGuildInvite",
 	"CanGuildRemove",
 	"SetGuildRosterShowOffline",
+	"SetChannelPassword",
 	"InviteUnit",
 	"IsMouseButtonDown",
 	"JoinChannelByName",
