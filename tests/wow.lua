@@ -313,7 +313,8 @@ end
 -- Канал на сервере, как в игре 2026-11-11: участники по порядку входа, владелец — кто дольше
 -- всех; при его выходе канал переходит следующему (OWNER_CHANGED и SET_MODERATOR), пустой
 -- канал исчезает вместе с банами и паролем. Первому вошедшему игра о владельце ничего не
--- сообщает (Forever 2026-11-14), владельца называет ответ на /owner без имени (CHANNEL_OWNER). Бан выкидывает игрока, но его клиенту ничего не
+-- сообщает (Forever 2026-11-14), владельца называет ответ на /owner без имени (CHANNEL_OWNER),
+-- и то без фамилии. Бан выкидывает игрока, но его клиенту ничего не
 -- приходит: клиент считает себя в канале, строк не получает, на свои — THROTTLED. Вход
 -- забаненного — NOT_ALLOWED_IN_CHANNEL (так, по-видимому, отвечает Forever), вход без пароля —
 -- CHANNEL_PASSWORD_REQUEST и WRONG_PASSWORD. Посторонние без аддона — World:ChanStranger.
@@ -450,8 +451,9 @@ function World:ChanOp(c, op, name, arg)
 	local ch, me = self.channels[name], c:Name()
 	if not ch or not MemberIndex(ch, me) then return self:ChanReply(c, name, "NOT_MEMBER") end
 	if op == "owner" then
+		-- Forever называет владельца в ответе без фамилии («Могаю», 2026-11-14).
 		local i = ch.owner and MemberIndex(ch, ch.owner)
-		return self:ChanReply(c, name, "CHANNEL_OWNER", i and ch.members[i].full or "Nobody")
+		return self:ChanReply(c, name, "CHANNEL_OWNER", i and ch.members[i].full:match("^(%S+)") or "Nobody")
 	end
 	if op == "password" then
 		if ch.owner ~= me then return self:ChanReply(c, name, "NOT_OWNER") end

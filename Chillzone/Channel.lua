@@ -401,6 +401,16 @@ local function RecheckSoon()
 	end)
 end
 
+-- Ответ на /owner (CHANNEL_OWNER) Forever даёт без фамилии: «Могаю», а не «Могаю Прохожих»
+-- (журналы 2026-11-11 и 2026-11-14), а OWNER_CHANGED — полностью. Имя без фамилии сверяем с
+-- именем своего персонажа. Тёзку с другой фамилией выдаст отказ сервера на первый же вызов
+-- стража (NOT_MODERATOR или NOT_OWNER), и место снимется.
+local function MyFirstName(name)
+	if type(name) ~= "string" or name == "" or name:find(" ", 1, true) then return false end
+	local first = type(ns.me) == "string" and U.Display(ns.me):match("^(%S+)%s") or nil
+	return first ~= nil and U.Fold(first) == U.Fold(name)
+end
+
 -- Тому, кто входит в пустой канал первым, Forever не сообщает, что он владелец (2026-11-14:
 -- только YOU_CHANGED, без OWNER_CHANGED). Поэтому после входа и после /reload владельца
 -- спрашиваем сами, как /owner без имени: ответ — уведомление CHANNEL_OWNER. Один раз, пока
@@ -762,8 +772,10 @@ local function Notice(notice, player, _, channelName, player2, _, _, number, bas
 	player2 = type(player2) == "string" and player2 ~= "" and U.Display(player2) or nil
 	Channel.stats.notices = Channel.stats.notices + 1
 	Channel.notice = { kind = notice, who = player, at = ns.ServerTime() }
-	ns.Log("канал %s: %s%s%s", BaseName(baseName, channelName) or "?", notice,
-		player and (" " .. player) or "", player2 and (", " .. player2) or "")
+	-- У CHANNEL_OWNER в журнал и имя, как его прислал сервер: в каком виде он даёт имя без фамилии.
+	ns.Log("канал %s: %s%s%s%s", BaseName(baseName, channelName) or "?", notice,
+		player and (" " .. player) or "", player2 and (", " .. player2) or "",
+		notice == "CHANNEL_OWNER" and type(who) == "string" and who ~= player and (" (сервер: «" .. who .. "»)") or "")
 	local me = player ~= nil and ns.IsMe(who)
 	if notice == "YOU_JOINED" or notice == "YOU_CHANGED" then
 		index = tonumber(number) or index
@@ -778,7 +790,8 @@ local function Notice(notice, player, _, channelName, player2, _, _, number, bas
 	elseif notice == "THROTTLED" then
 		Throttled()
 	elseif notice == "CHANNEL_OWNER" or notice == "OWNER_CHANGED" then
-		Channel.owner, ownerAsked = player, true
+		if notice == "CHANNEL_OWNER" and not me then me = MyFirstName(player) end
+		Channel.owner, ownerAsked = me and U.Display(ns.me) or player, true
 		SetSeat("owner", me)
 	elseif notice == "SET_MODERATOR" or notice == "UNSET_MODERATOR" then
 		if me then SetSeat("moderator", notice == "SET_MODERATOR") end

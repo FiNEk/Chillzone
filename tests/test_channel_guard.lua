@@ -9,7 +9,7 @@ local CHAN = "ChillzoneChatA"
 local STRANGER = "Злой Чужак-CAMWOWUS2Realm7PvE" -- вне объединения, без аддона
 local MODER = "Хитрый Модер-CAMWOWUS2Realm7PvE" -- модератор канала без аддона
 
--- stranger — посторонний входит в канал раньше всех и становится владельцем.
+-- stranger — посторонний входит в канал раньше всех и становится владельцем (true или его имя).
 -- blocked — игра не пускает команды канала (w.channelOpsBlocked) с самого входа.
 local function Build(opts)
 	opts = opts or {}
@@ -18,7 +18,7 @@ local function Build(opts)
 	w:Guild("Чиллзон")
 	w:Guild("Чиллзон Север")
 	w:Guild("Орден Чиллзона")
-	if opts.stranger then w:ChanStranger(CHAN, STRANGER) end
+	if opts.stranger then w:ChanStranger(CHAN, opts.stranger == true and STRANGER or opts.stranger) end
 	if opts.blocked then w.channelOpsBlocked = opts.blocked end
 	local c = {}
 	c.A = w:Client({ first = "Арагорн", surname = "Светлый", guild = "Чиллзон", rank = 1 })
@@ -91,6 +91,8 @@ T.test("channel guard: первый вошедший — владелец, по�
 	T.ok(owner, "канал у клиента объединения")
 	T.ok(owner.ns.Channel.Seated(), "клиент знает, что он владелец")
 	T.eq(Ops(owner, "owner"), 1, "создателю игра не сообщает — спросил владельца сам")
+	T.eq(Logged(owner, ": CHANNEL_OWNER " .. owner.first), 1, "ответ без фамилии, а место узнал")
+	T.eq(owner.ns.Channel.owner, owner:Name(), "в статусе — полное имя")
 	T.eq(Logged(owner, "OWNER_CHANGED"), 0)
 	T.eq(owner:Saw("сделала вас владельцем канала " .. CHAN), 1, "подсказка")
 	for name, cl in pairs(c) do
@@ -382,7 +384,7 @@ T.test("channel guard: место, которое ушло во время /relo
 	w:Run(30)
 	T.eq(Ops(R, "owner"), 1, "после /reload спросил владельца")
 	T.no(R.ns.Channel.Seated(), "сервер назвал другого владельца")
-	T.eq(R.ns.Channel.owner, heir:Name())
+	T.eq(R.ns.Channel.owner, heir.first, "сервер называет владельца без фамилии")
 	w:ChanBan(CHAN, Full(heir), Full(c.B))
 	w:Run(10)
 	T.eq(Ops(R), 0, "без места не вызывает")
@@ -484,5 +486,24 @@ T.test("channel guard: из таймера игра не пускает и за�
 	w:Run(5)
 	T.eq(Ops(owner, "owner"), 2, "больше не спрашивает")
 	T.eq(Ops(owner), 0, "снимать нечего")
+	Clean(c)
+end)
+
+T.test("channel guard: тёзка владельца без фамилии считает место своим, пока сервер не откажет", function()
+	local TWIN = "Арагорн Тёмный-CAMWOWUS2Realm7PvE" -- тёзка Арагорна Светлого, без аддона
+	local w, c = Build({ stranger = TWIN })
+	T.eq(w:ChanOwner(CHAN), "Арагорн Тёмный", "канал у тёзки")
+	local A = c.A
+	T.ok(A.ns.Channel.Seated(), "ответ «Арагорн» Арагорн Светлый принял на свой счёт")
+	for name, cl in pairs(c) do
+		if cl ~= A then T.no(cl.ns.Channel.Seated(), name .. " без места") end
+	end
+	w:ChanBan(CHAN, TWIN, Full(c.B))
+	w:Run(10)
+	T.eq(Ops(A, "unban"), 1, "попробовал снять")
+	T.no(A.ns.Channel.Seated(), "NOT_MODERATOR — места нет")
+	T.ok(w.channels[CHAN].banned["Борис Быстрый"], "бан на месте: снять его некому")
+	w:Run(700)
+	T.eq(Ops(A, "unban"), 1, "больше не пробует")
 	Clean(c)
 end)
