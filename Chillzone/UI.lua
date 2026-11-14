@@ -10,6 +10,8 @@
 -- кнопка в Настройках.
 -- Чат рисует ChatPane.lua, Перепись — CensusPane.lua, Отладку — список строк из Debug.lua во вставке
 -- окна. Кнопка у миникарты — LibDBIcon, объект запуска — LibDataBroker.
+-- Размер окна игрок меняет уголком справа внизу. Меньше исходного 814×426 окно не бывает: под него
+-- свёрстаны все вкладки, а лишнее место каждая раздаёт своим спискам и колонкам (Layout вкладок).
 local ADDON, ns = ...
 
 local L = ns.L
@@ -19,7 +21,12 @@ local UI = {}
 ns.UI = UI
 
 local ROW_H = 18
-local WIDTH, HEIGHT = 814, 426
+local MIN_W, MIN_H = 814, 426
+local INSET_W, INSET_H = 10, 86 -- вставка уже и ниже окна: (4,-60) → (-6,26)
+local GRIP = 16 -- уголок растягивания
+local TABS_W = 40 -- столбец значков справа за окном: окно с ним не шире экрана
+-- Вкладки со своей раскладкой под размер вставки: Layout(ширина, высота).
+local LAYOUTS = { "CensusPane", "GroupsPane", "CraftersPane", "RosterPane", "TransferPane", "UnionPane", "RecruitPane" }
 -- Значок аддона: логотип «Chill Zone», обрезанный по золотому кольцу (media/icon.tga, 64×64 TGA
 -- с прозрачностью). Он уже круглый, маска не нужна. Логотип целиком — media/logo.tga, для списка аддонов (toc).
 local ICON = "Interface\\AddOns\\" .. ADDON .. "\\media\\icon"
@@ -62,6 +69,8 @@ local DOTS = {
 	fail = "Interface\\FriendsFrame\\StatusIcon-DnD",
 }
 local frame, body, scroll, child, settings = nil, nil, nil, nil, nil
+local width, height = MIN_W, MIN_H -- размер окна, под который разложены вкладки
+local laidOut, sizing = false, false -- вкладки уже раскладывались; игрок тянет за уголок
 local status, heading -- шапка (крупно и мелко) и название вкладки слева вверху
 local activity, refreshButton -- что идёт сейчас и кнопка обновления
 local titleText -- свой текст заголовка, если у рамки нет SetTitle
@@ -122,7 +131,7 @@ local function Row(i)
 end
 
 local function RenderRows(lines)
-	child:SetWidth(scroll:GetWidth() or (WIDTH - 50))
+	child:SetWidth(scroll:GetWidth() or (UI.InsetSize() - 40))
 	local y = 0
 	for i, line in ipairs(lines) do
 		local r = Row(i)
@@ -827,9 +836,94 @@ local function Portrait(f)
 	if tex then tex:SetTexture(ICON) end
 end
 
+-- Место и размер окна переживают /reload. Размер пишется, только если он не исходный.
 local function SavePosition(f)
+	local old, saved = ns.db.settings.frame or {}, {}
 	local point, _, rel, x, y = f:GetPoint(1)
-	if point then ns.db.settings.frame = { point = point, rel = rel or point, x = x or 0, y = y or 0 } end
+	if point then
+		saved.point, saved.rel, saved.x, saved.y = point, rel or point, x or 0, y or 0
+	else
+		saved.point, saved.rel, saved.x, saved.y = old.point, old.rel, old.x, old.y
+	end
+	if width ~= MIN_W or height ~= MIN_H then saved.w, saved.h = width, height end
+	ns.db.settings.frame = saved
+end
+
+-- Пределы размера окна: не меньше исходного и не больше экрана (справа за окном ещё значки).
+-- Экран меряется при каждом растягивании: игрок мог сменить разрешение или масштаб интерфейса.
+local function Bounds()
+	local sw, sh = UIParent:GetWidth(), UIParent:GetHeight()
+	local maxW = type(sw) == "number" and sw > 0 and math.max(MIN_W, math.floor(sw - TABS_W)) or 2 * MIN_W
+	local maxH = type(sh) == "number" and sh > 0 and math.max(MIN_H, math.floor(sh)) or 2 * MIN_H
+	return maxW, maxH
+end
+
+local function Fit(w, h)
+	local maxW, maxH = Bounds()
+	w = math.floor((tonumber(w) or MIN_W) + 0.5)
+	h = math.floor((tonumber(h) or MIN_H) + 0.5)
+	return math.max(MIN_W, math.min(w, maxW)), math.max(MIN_H, math.min(h, maxH))
+end
+
+-- SetResizeBounds — у новых клиентов, SetMinResize и SetMaxResize — у старых.
+local function ApplyBounds(f)
+	local maxW, maxH = Bounds()
+	if type(f.SetResizeBounds) == "function" then
+		f:SetResizeBounds(MIN_W, MIN_H, maxW, maxH)
+		return
+	end
+	if type(f.SetMinResize) == "function" then f:SetMinResize(MIN_W, MIN_H) end
+	if type(f.SetMaxResize) == "function" then f:SetMaxResize(maxW, maxH) end
+end
+
+-- Размер вставки окна, в которой живут вкладки: у исходного окна 804×340.
+function UI.InsetSize()
+	return math.max(width, MIN_W) - INSET_W, math.max(height, MIN_H) - INSET_H
+end
+
+-- Окно сменило размер: вкладки раскладывают свои списки под новую вставку. Пока игрок тянет за
+-- уголок, это бывает каждый кадр, поэтому раскладка дешёвая: открытая вкладка перерисовывает
+-- уже готовые данные, а заново их не собирает.
+local function Resized(w, h)
+	w, h = math.floor((tonumber(w) or width) + 0.5), math.floor((tonumber(h) or height) + 0.5)
+	if laidOut and w == width and h == height then return end
+	width, height, laidOut = w, h, true
+	local iw, ih = UI.InsetSize()
+	if child then child:SetWidth(iw - 40) end
+	for _, name in ipairs(LAYOUTS) do
+		local pane = ns[name]
+		if pane and pane.Layout then ns.SafeCall("layout " .. name, pane.Layout, iw, ih) end
+	end
+end
+
+local function StopSizing()
+	if not sizing then return end
+	sizing = false
+	frame:StopMovingOrSizing()
+	Resized(frame:GetWidth(), frame:GetHeight())
+	SavePosition(frame)
+	UI.Render()
+end
+
+-- Уголок справа внизу, как у окон чата игры.
+local function BuildGrip(f)
+	local grip = CreateFrame("Button", nil, f)
+	grip:SetSize(GRIP, GRIP)
+	grip:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -4, 4)
+	grip:SetFrameLevel((f:GetFrameLevel() or 1) + 20)
+	grip:SetNormalTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Up")
+	grip:SetPushedTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Down")
+	grip:SetHighlightTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Highlight")
+	local hl = grip.GetHighlightTexture and grip:GetHighlightTexture()
+	if hl and hl.SetBlendMode then hl:SetBlendMode("ADD") end
+	grip:SetScript("OnMouseDown", function(_, button)
+		if button ~= "LeftButton" then return end
+		ApplyBounds(f)
+		sizing = true
+		f:StartSizing("BOTTOMRIGHT")
+	end)
+	grip:SetScript("OnMouseUp", function() ns.SafeCall("window size", StopSizing) end)
+	UI.grip = grip
 end
 
 local function Create()
@@ -837,13 +931,16 @@ local function Create()
 	if not ok or not f then f = CreateFrame("Frame", "ChillzoneFrame", UIParent, "BasicFrameTemplateWithInset") end
 	frame = f
 	UI.frame = f
-	f:SetSize(WIDTH, HEIGHT)
 	local pos = ns.db.settings.frame
+	width, height = Fit(pos and pos.w, pos and pos.h)
+	f:SetSize(width, height)
 	if pos and pos.point then
 		f:SetPoint(pos.point, UIParent, pos.rel or pos.point, pos.x or 0, pos.y or 0)
 	else
 		f:SetPoint("CENTER", 0, 40)
 	end
+	f:SetResizable(true)
+	ApplyBounds(f)
 	f:SetFrameStrata("MEDIUM")
 	f:SetToplevel(true)
 	f:SetClampedToScreen(true)
@@ -889,11 +986,12 @@ local function Create()
 		f:StopMovingOrSizing()
 		SavePosition(f)
 	end)
-	-- Нижняя полоса окна, под вставкой: кнопка в правом углу, строка растёт влево от неё.
-	-- Кнопка текстовая, чтобы не зависеть от наличия значка в разных клиентах.
+	-- Нижняя полоса окна, под вставкой: в правом углу уголок растягивания, левее кнопка, строка растёт
+	-- влево от неё. Кнопка текстовая, чтобы не зависеть от наличия значка в разных клиентах.
+	BuildGrip(f)
 	refreshButton = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
 	refreshButton:SetSize(96, 18)
-	refreshButton:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -8, 6)
+	refreshButton:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -8 - GRIP, 6)
 	refreshButton:SetNormalFontObject("GameFontNormalSmall")
 	refreshButton:SetHighlightFontObject("GameFontHighlightSmall")
 	refreshButton:SetDisabledFontObject("GameFontDisableSmall")
@@ -941,7 +1039,7 @@ local function Create()
 	scroll:SetPoint("TOPLEFT", 8, -8)
 	scroll:SetPoint("BOTTOMRIGHT", -30, 8)
 	child = CreateFrame("Frame", nil, scroll)
-	child:SetSize(WIDTH - 50, 10)
+	child:SetSize(MIN_W - INSET_W - 40, 10)
 	scroll:SetScrollChild(child)
 	BuildSettings(body)
 	ns.RecruitPane.Build(body)
@@ -959,8 +1057,17 @@ local function Create()
 	for _, def in ipairs(TABS) do SideTab(def) end
 	UI.tabs = tabs
 
+	-- Вкладки собраны под исходное окно: сохранённый размер раздаём им сразу.
+	Resized(width, height)
+	-- HookScript: рамка из шаблона игры может сама слушать свой размер.
+	f:HookScript("OnSizeChanged", function(_, w, h) ns.SafeCall("window resize", Resized, w, h) end)
 	f:SetScript("OnShow", function() UI.Render() end)
-	f:SetScript("OnHide", function() ns.ChatPane.Hide(); ns.Recruit.Cancel(); ns.UnionPane.Hide(); ns.TransferPane.Hide(); ns.RosterPane.Hide(); ns.JournalPane.Hide(); ns.GroupsPane.Hide(); ns.CraftersPane.Hide() end)
+	f:SetScript("OnHide", function()
+		-- Окно закрыли, пока игрок тянул уголок (Esc): размер всё равно сохраняется.
+		if sizing then ns.SafeCall("window size", StopSizing) end
+		ns.ChatPane.Hide(); ns.Recruit.Cancel(); ns.UnionPane.Hide(); ns.TransferPane.Hide(); ns.RosterPane.Hide()
+		ns.JournalPane.Hide(); ns.GroupsPane.Hide(); ns.CraftersPane.Hide()
+	end)
 	local elapsed, debugElapsed, activityElapsed, pulse = 0, 0, 0, 0
 	f:SetScript("OnUpdate", ns.Perf.Wrap("window update", function(_, dt)
 		elapsed, debugElapsed = elapsed + (dt or 0), debugElapsed + (dt or 0)
@@ -999,6 +1106,22 @@ function UI.Toggle(tab)
 		frame:Show()
 		UI.Render()
 	end
+end
+
+-- Размер окна из кода (тесты): в тех же пределах, что у уголка, и сохраняется так же.
+function UI.Resize(w, h)
+	if not frame then Create() end
+	w, h = Fit(w, h)
+	frame:SetSize(w, h)
+	Resized(w, h)
+	SavePosition(frame)
+	UI.Render()
+	return w, h
+end
+
+-- Размер окна сейчас: исходный, пока окно не открывали.
+function UI.Size()
+	return width, height
 end
 
 -- Окно на чате, на канале channel; focus — курсор в поле ввода.

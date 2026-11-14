@@ -663,3 +663,39 @@ T.test("online: длинный список рисует только видим
 	T.eq(t.scroll:GetVerticalScroll(), head, "начало таблицы")
 	T.eq(VisibleRows(t)[1].person.name, t.people[1].name, "первая строка на месте")
 end)
+
+T.test("online: в высоком окне строк таблицы больше, в широком колонки шире", function()
+	local w, c = Build()
+	local K = c.K
+	local P = K.ns.CensusPane
+	for i = 1, 60 do
+		w:AddOnline("Чиллзон", ("Боец%03d Длинный-CAMWOWUS2Realm7PvE"):format(i), 3, 60, "ROGUE")
+	end
+	K.ns.Roster.Scan()
+	K.ns.UI.Toggle("census")
+	P.Select(K.ns.Util.GuildKey("Чиллзон"))
+	local t = P.frames.cardTable
+	T.eq(#VisibleRows(t), 22, "исходное окно")
+	local name, widths = Heads(t).name, {}
+	name.SetWidth = function(_, width) widths[#widths + 1] = width end
+	-- Вставка 1104×500: карточка 1104 - 288 - 30 = 786 вместо 486, строк (500 - 18) / 16 + 2.
+	K.ns.UI.Resize(814 + 300, 426 + 160)
+	T.eq(#t.rows, 32, "строк на всю высоту")
+	T.eq(#VisibleRows(t), 32, "и все заняты")
+	local at
+	for i, col in ipairs(t.columns) do
+		if col.key == "name" then at = i end
+	end
+	local wide = P.Widths(t.columns, 786)[at]
+	T.eq(widths[#widths], wide, "имя получило свою долю прибавки")
+	T.ok(wide > P.Widths(t.columns, 486)[at], "и стало шире")
+	-- Прокрутка в высоком окне показывает людей подряд, без пропусков.
+	t.scroll:SetVerticalScroll(t.y + 18 + 10 * 16)
+	local rows = VisibleRows(t)
+	T.eq(rows[1].person.name, t.people[11].name)
+	T.eq(rows[32].person.name, t.people[42].name)
+	-- Обратно к исходному: созданные строки остаются, но таблица в прежних колонках.
+	K.ns.UI.Resize(814, 426)
+	T.eq(widths[#widths], P.Widths(t.columns, 486)[at])
+	T.eq(#(K.ns.db.errors or {}), 0)
+end)
