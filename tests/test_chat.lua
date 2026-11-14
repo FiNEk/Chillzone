@@ -1128,10 +1128,10 @@ T.test("окно: служебные значки под повседневны�
 	local L = K.ns.L
 	for _, cl in ipairs({ K, A, M }) do cl.ns.UI.Toggle("chat") end
 	local column, bottom = TabColumn(K)
-	T.same(column, { "chat", "groups", "crafters", "census", "requests", "kingdom", "|", "settings", "manage" }, "глава: 6 и 2")
+	T.same(column, { "chat", "groups", "crafters", "wishes", "census", "requests", "kingdom", "|", "settings", "manage" }, "глава: 7 и 2")
 	T.ok(bottom <= 426, "столбец главы не ниже окна высотой 426: " .. bottom)
-	T.same(TabColumn(A), { "chat", "groups", "crafters", "census", "requests", "kingdom", "|", "settings", "manage" }, "офицер: 6 и 2")
-	T.same(TabColumn(M), { "chat", "groups", "crafters", "census", "kingdom", "|", "settings" }, "рядовой: без «Заявок» и «Управления»")
+	T.same(TabColumn(A), { "chat", "groups", "crafters", "wishes", "census", "requests", "kingdom", "|", "settings", "manage" }, "офицер: 7 и 2")
+	T.same(TabColumn(M), { "chat", "groups", "crafters", "wishes", "census", "kingdom", "|", "settings" }, "рядовой: без «Заявок» и «Управления»")
 	for _, key in ipairs({ "union", "roster", "transfer", "debug", "journal" }) do T.no(rawget(UI.tabs, key), "нет отдельного значка " .. key) end
 
 	-- Главе объединения доступны все пять разделов; значок открывает первый, потом — последний открытый.

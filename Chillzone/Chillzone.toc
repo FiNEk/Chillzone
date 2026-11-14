@@ -41,6 +41,7 @@ Online.lua
 Pull.lua
 Groups.lua
 Crafters.lua
+Wishes.lua
 Channel.lua
 Chat.lua
 ChatConfig.lua
@@ -60,6 +61,7 @@ RecruitPane.lua
 CensusPane.lua
 GroupsPane.lua
 CraftersPane.lua
+WishesPane.lua
 Debug.lua
 JournalPane.lua
 UnionPane.lua

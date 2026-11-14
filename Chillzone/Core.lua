@@ -157,10 +157,13 @@ local CHAR_DEFAULTS = {
 	chatMirror = true, chatTime = false, chatChannel = false, history = { G = {}, O = {} }, historyGuild = false, drafts = {},
 	-- Мастера (Crafters.lua): прочитанные профессии, отметки, примечание, своя карточка.
 	crafts = {},
+	-- Желания (Wishes.lua): свой список предметов и его карточка.
+	wishes = {},
 }
 local STORE_DEFAULTS = {
 	guilds = {}, relays = {}, manual = {}, ignore = {}, chat = { A = {}, C = {}, L = {} },
 	crafters = { cards = {}, lists = {} }, -- каталог мастеров (Crafters.lua)
+	wishes = { cards = {} }, -- списки желаний объединения (Wishes.lua)
 }
 
 ns.RegisterEvent("ADDON_LOADED", function(name)

@@ -76,6 +76,7 @@ end
 local function OnInsertLink(text)
 	local box = ns.ChatTab and ns.ChatTab.FocusedInput()
 	if not box and ns.ChatPane then box = ns.ChatPane.FocusedInput() end
+	if not box and ns.WishesPane then box = ns.WishesPane.FocusedInput() end
 	Insert(box, text)
 end
 

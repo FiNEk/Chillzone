@@ -41,7 +41,7 @@ local SUITES = {
 	"test_minimap",
 	"test_online",
 	"test_groups",
-	"test_trust_catalog", "test_crafters",
+	"test_trust_catalog", "test_crafters", "test_wishes",
 }
 
 for _, name in ipairs(SUITES) do

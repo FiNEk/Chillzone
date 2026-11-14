@@ -28,6 +28,7 @@ local TABS = {
 	{ key = "chat", text = "TAB_CHAT", icons = { "Interface\\Icons\\UI_Chat", "Interface\\Icons\\INV_Letter_15" } },
 	{ key = "groups", text = "TAB_GROUPS", icons = { "Interface\\Icons\\INV_Misc_GroupNeedMore", "Interface\\Icons\\Ability_Warrior_BattleShout" } },
 	{ key = "crafters", text = "TAB_CRAFTERS", icons = { "Interface\\Icons\\Trade_BlackSmithing", "Interface\\Icons\\INV_Hammer_20" } },
+	{ key = "wishes", text = "TAB_WISHES", icons = { "Interface\\Icons\\INV_Scroll_03", "Interface\\Icons\\INV_Misc_Note_01" } },
 	{ key = "census", text = "TAB_CENSUS", icons = { "Interface\\Icons\\achievement_guildperk_everybodysfriend", "Interface\\Icons\\INV_Misc_Book_09" } },
 	{ key = "requests", text = "TAB_REQUESTS", icons = { "Interface\\Icons\\INV_Letter_15" } },
 	{ key = "kingdom", text = "TAB_KINGDOM", icons = { "Interface\\Icons\\achievement_guildperk_honorablemention", "Interface\\Icons\\INV_Misc_Note_01" } },
@@ -48,9 +49,9 @@ for _, def in ipairs(SECTIONS) do IS_SECTION[def.key], TITLES[def.key] = true, d
 for _, def in ipairs(TABS) do TITLES[def.key] = def.text end
 -- Без членства в объединении открываются только эти страницы, остальные заменяет экран вступления.
 local OPEN_TO_ALL = { settings = true, union = true, journal = true }
--- Между значками и перед служебной группой. Восемь значков у главы и офицера: 36 + 8 * 32 + 6 * 14 + 30 =
--- 406 из 426 по высоте окна; при 20 и 44 столбец уходил на 30 ниже нижнего края.
-local TAB_GAP, SERVICE_GAP = 14, 30
+-- Между значками и перед служебной группой. Девять значков у главы и офицера: 36 + 9 * 32 + 7 * 10 + 30 =
+-- 424 из 426 по высоте окна; при 20 и 44 столбец уходил ниже нижнего края.
+local TAB_GAP, SERVICE_GAP = 10, 30
 local SECTION_H = 26 -- высота кнопки раздела: строка названия вкладки над вставкой
 local DEBUG_EVERY = 5 -- «Отладка» обновляется чаще остальных: там счётчики и состояние реле
 local ACTIVITY_EVERY = 0.25 -- строка «что идёт сейчас» и обратные отсчёты на кнопках
@@ -660,6 +661,7 @@ function UI.Render()
 	if current ~= "requests" then ns.RecruitPane.HideInbox() end
 	if current ~= "groups" then ns.GroupsPane.Hide() end
 	if current ~= "crafters" then ns.CraftersPane.Hide() end
+	if current ~= "wishes" then ns.WishesPane.Hide() end
 	UI.RenderStatus()
 	if current == "join" then
 		heading:SetText(L.RECRUIT_TITLE)
@@ -733,6 +735,12 @@ function UI.Render()
 		ns.CraftersPane.Show()
 		return
 	end
+	if current == "wishes" then
+		scroll:Hide()
+		ns.CensusPane.Hide()
+		ns.WishesPane.Show()
+		return
+	end
 	if current == "census" then
 		scroll:Hide()
 		ns.CensusPane.Show()
@@ -794,6 +802,11 @@ local function SideTab(def)
 		if def.key == "crafters" then
 			local count = ns.Crafters.Count()
 			tt:AddLine(count > 0 and L.TAB_CRAFTERS_COUNT:format(count) or L[def.text], 1, 1, 1)
+			return
+		end
+		if def.key == "wishes" then
+			local count = ns.Wishes.Count()
+			tt:AddLine(count > 0 and L.TAB_WISHES_COUNT:format(count) or L[def.text], 1, 1, 1)
 			return
 		end
 		local count = def.key == "requests" and #ns.Recruit.Requests() or 0
@@ -949,6 +962,7 @@ local function Create()
 	ns.CensusPane.Build(body)
 	ns.GroupsPane.Build(body)
 	ns.CraftersPane.Build(body)
+	ns.WishesPane.Build(body)
 	ns.UnionPane.Build(body)
 	ns.TransferPane.Build(body)
 	ns.RosterPane.Build(body)
@@ -960,7 +974,7 @@ local function Create()
 	UI.tabs = tabs
 
 	f:SetScript("OnShow", function() UI.Render() end)
-	f:SetScript("OnHide", function() ns.ChatPane.Hide(); ns.Recruit.Cancel(); ns.UnionPane.Hide(); ns.TransferPane.Hide(); ns.RosterPane.Hide(); ns.JournalPane.Hide(); ns.GroupsPane.Hide(); ns.CraftersPane.Hide() end)
+	f:SetScript("OnHide", function() ns.ChatPane.Hide(); ns.Recruit.Cancel(); ns.UnionPane.Hide(); ns.TransferPane.Hide(); ns.RosterPane.Hide(); ns.JournalPane.Hide(); ns.GroupsPane.Hide(); ns.CraftersPane.Hide(); ns.WishesPane.Hide() end)
 	local elapsed, debugElapsed, activityElapsed, pulse = 0, 0, 0, 0
 	f:SetScript("OnUpdate", ns.Perf.Wrap("window update", function(_, dt)
 		elapsed, debugElapsed = elapsed + (dt or 0), debugElapsed + (dt or 0)
@@ -981,7 +995,7 @@ local function Create()
 		elseif elapsed >= 30 then
 			elapsed, debugElapsed = 0, 0
 			if current == "census" or current == "kingdom" or current == "join" or current == "requests" or current == "union"
-				or current == "groups" or current == "crafters" or current == "transfer" or current == "roster" then
+				or current == "groups" or current == "crafters" or current == "wishes" or current == "transfer" or current == "roster" then
 				UI.Render()
 			else UI.RenderStatus() end
 		end
@@ -1090,6 +1104,7 @@ ns.Command("kingdom", function() UI.Toggle("kingdom") end, L.HELP_KINGDOM)
 ns.Command("census", function() UI.Toggle("census") end, L.HELP_CENSUS)
 ns.Command("groups", function() UI.Toggle("groups") end, L.HELP_GROUPS)
 ns.Command("crafters", function() UI.Toggle("crafters") end, L.HELP_CRAFTERS)
+ns.Command("wishes", function() UI.Toggle("wishes") end, L.HELP_WISHES)
 ns.Command("requests", function()
 	if not ns.RecruitSync.IsOfficer() then
 		ns.Print(L.REQUESTS_ONLY_OFFICERS)
