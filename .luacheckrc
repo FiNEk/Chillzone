@@ -51,6 +51,7 @@ read_globals = {
 	"ChatFrame_AddMessageEventFilter",
 	"ChatFrame_OpenChat",
 	"CreateFrame",
+	"DisplayChannelOwner",
 	"FCFDock_GetSelectedWindow",
 	"FCFDock_SelectWindow",
 	"FCF_CanOpenNewWindow",

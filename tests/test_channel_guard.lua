@@ -10,6 +10,7 @@ local STRANGER = "Злой Чужак-CAMWOWUS2Realm7PvE" -- вне объеди
 local MODER = "Хитрый Модер-CAMWOWUS2Realm7PvE" -- модератор канала без аддона
 
 -- stranger — посторонний входит в канал раньше всех и становится владельцем.
+-- blocked — игра не пускает команды канала (w.channelOpsBlocked) с самого входа.
 local function Build(opts)
 	opts = opts or {}
 	math.randomseed(tonumber(os.getenv("CZ_SEED") or "") or 41)
@@ -18,6 +19,7 @@ local function Build(opts)
 	w:Guild("Чиллзон Север")
 	w:Guild("Орден Чиллзона")
 	if opts.stranger then w:ChanStranger(CHAN, STRANGER) end
+	if opts.blocked then w.channelOpsBlocked = opts.blocked end
 	local c = {}
 	c.A = w:Client({ first = "Арагорн", surname = "Светлый", guild = "Чиллзон", rank = 1 })
 	c.K = w:Client({ first = "Карл", surname = "Великий", guild = "Чиллзон", rank = 0, class = "PALADIN" })
@@ -54,10 +56,11 @@ local function Logged(cl, text)
 	return n
 end
 
+-- Вызовы команд канала; без op — вызовы стража (снятия), без запроса владельца.
 local function Ops(cl, op)
 	local n = 0
 	for _, e in ipairs(cl.chanOps or {}) do
-		if not op or e.op == op then n = n + 1 end
+		if e.op == op or (not op and e.op ~= "owner") then n = n + 1 end
 	end
 	return n
 end
@@ -87,6 +90,8 @@ T.test("channel guard: первый вошедший — владелец, по�
 	local owner, key = Owner(w, c)
 	T.ok(owner, "канал у клиента объединения")
 	T.ok(owner.ns.Channel.Seated(), "клиент знает, что он владелец")
+	T.eq(Ops(owner, "owner"), 1, "создателю игра не сообщает — спросил владельца сам")
+	T.eq(Logged(owner, "OWNER_CHANGED"), 0)
 	T.eq(owner:Saw("сделала вас владельцем канала " .. CHAN), 1, "подсказка")
 	for name, cl in pairs(c) do
 		if cl ~= owner then T.no(cl.ns.Channel.Seated(), name .. " без места") end
@@ -99,6 +104,7 @@ T.test("channel guard: первый вошедший — владелец, по�
 	T.ok(R.ns.Channel.Seated(), "после /reload место прежнее")
 	T.eq(R:Saw("сделала вас владельцем"), 0, "подсказка один раз на персонажа")
 	T.eq(Ops(R), 0, "лечить нечего — вызовов нет")
+	T.eq(Ops(R, "owner"), 1, "после /reload сверил место")
 	Clean(c)
 end)
 
@@ -181,6 +187,25 @@ T.test("channel guard: стук в незабаненного безвреден
 	B:Slash("/cz1", "без канала три")
 	w:Run(200)
 	T.eq(Ops(owner, "unban"), 2, "через полчаса — снова")
+	Clean(c)
+end)
+
+T.test("channel guard: стук, на который сервер ответил «не найден», не повторяется", function()
+	local w, c = Build()
+	w.unbanNotFound = true
+	local owner = Owner(w, c)
+	local B = c.B
+	T.ok(owner and owner ~= B, "канал не у Бориса")
+	B.ns.Channel.SetEnabled(false)
+	w:Run(5)
+	B:Slash("/cz1", "без канала")
+	w:Run(200)
+	T.eq(Ops(owner, "unban"), 1, "стук")
+	T.eq(Logged(owner, ": PLAYER_NOT_FOUND Борис Быстрый"), 1, "сервер: не найден")
+	T.eq(Logged(owner, "Борис Быстрый не найден — стук не повторяю"), 1)
+	T.eq(owner.ns.Channel.Pending(), 0, "в работу не вернулся")
+	w:Run(7200)
+	T.eq(Ops(owner, "unban"), 1, "и через два часа не повторил")
 	Clean(c)
 end)
 
@@ -346,7 +371,7 @@ T.test("channel guard: бан из канала другой стороны не
 	Clean(c)
 end)
 
-T.test("channel guard: место, которое ушло во время /reload, снимается по отказу сервера", function()
+T.test("channel guard: место, которое ушло во время /reload, сверяется запросом владельца", function()
 	local w, c = Build()
 	local owner, key = Owner(w, c)
 	local R = w:Reload(owner)
@@ -355,6 +380,25 @@ T.test("channel guard: место, которое ушло во время /relo
 	local heir = owner == c.K and c.A or c.K
 	w.channels[CHAN].owner, w.channels[CHAN].mods = heir:Name(), {}
 	w:Run(30)
+	T.eq(Ops(R, "owner"), 1, "после /reload спросил владельца")
+	T.no(R.ns.Channel.Seated(), "сервер назвал другого владельца")
+	T.eq(R.ns.Channel.owner, heir:Name())
+	w:ChanBan(CHAN, Full(heir), Full(c.B))
+	w:Run(10)
+	T.eq(Ops(R), 0, "без места не вызывает")
+	Clean(c)
+end)
+
+T.test("channel guard: без запроса владельца ушедшее место снимается по отказу сервера", function()
+	local w, c = Build()
+	local owner, key = Owner(w, c)
+	local R = w:Reload(owner)
+	c[key] = R
+	R.env.DisplayChannelOwner = nil
+	local heir = owner == c.K and c.A or c.K
+	w.channels[CHAN].owner, w.channels[CHAN].mods = heir:Name(), {}
+	w:Run(30)
+	T.eq(Logged(R, "нет DisplayChannelOwner"), 1, "в журнале: спросить нечем")
 	T.ok(R.ns.Channel.Seated(), "клиент ещё считает себя владельцем")
 	local victim = c.B
 	T.ok(victim ~= R and victim ~= heir)
@@ -419,5 +463,26 @@ T.test("channel guard: игра запретила вызов стража и и
 	c[key] = R
 	w:Run(600)
 	T.eq(Ops(R), 0, "и после /reload")
+	Clean(c)
+end)
+
+T.test("channel guard: из таймера игра не пускает и запрос владельца — он уходит при отправке строки", function()
+	local w, c = Build({ blocked = "timer" })
+	local owner = Owner(w, c)
+	T.ok(owner, "канал у клиента объединения")
+	T.no(owner.ns.Channel.Seated(), "из таймера владельца не узнать")
+	T.eq(Ops(owner, "owner"), 1, "одна попытка из таймера")
+	T.eq(Logged(owner, "игра не пускает вызовы стража из таймера"), 1)
+	w:Run(600)
+	T.eq(Ops(owner, "owner"), 1, "из таймера больше не пробует")
+	owner:Slash("/cz1", "всем привет")
+	w:Run(5)
+	T.eq(Ops(owner, "owner"), 2, "спросил из нажатия Enter")
+	T.ok(owner.ns.Channel.Seated(), "теперь знает, что владелец")
+	T.eq(owner:Saw("сделала вас владельцем"), 1)
+	owner:Slash("/cz1", "ещё строка")
+	w:Run(5)
+	T.eq(Ops(owner, "owner"), 2, "больше не спрашивает")
+	T.eq(Ops(owner), 0, "снимать нечего")
 	Clean(c)
 end)

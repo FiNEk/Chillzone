@@ -244,7 +244,9 @@ end
 --   пароля игры (Olympus стучался и сюда по LOCKED_RETRY);
 -- - если игра не пускает вызовы стража из таймера, страж переходит на нажатие клавиши (строка
 --   /cz, Channel.Pressed) и выключается до новой версии аддона, только если и оттуда нельзя.
---   Так окно ошибки игры игрок видит не больше двух раз, а не теряет стража после первого.
+--   Так окно ошибки игры игрок видит не больше двух раз, а не теряет стража после первого;
+-- - владельца спрашиваем сами после входа и после /reload (AskOwner): создателю канала Forever
+--   о месте не сообщает, и у Olympus страж первого вошедшего не включался вовсе.
 ---------------------------------------------------------------------------
 local HEAL_GAP = 60 -- один и тот же вызов стража не чаще
 local HEAL_BURST = 3 -- вызовов стража за один проход, остальные — через HEAL_GAP
@@ -268,6 +270,7 @@ local tried = {} -- вызовы последнего прохода: верну
 local asked = {} -- [Key] = { entry, at }: бан только что снят, ждём ответа «нет такого игрока»
 local knocked = {} -- [Key] = время стука
 local byMe = {} -- [Key] = true: забанил я сам — свой бан не снимаю
+local ownerAsked, ownerPending = false, false -- владельца спросил или узнал (до выхода из канала)
 
 local function Store()
 	local s = ns.store
@@ -368,7 +371,9 @@ end
 local function Untry()
 	local g = Store()
 	for _, t in ipairs(tried) do
-		if t.password then
+		if t.owner then
+			ownerAsked, healAt[t.owner] = false, nil
+		elseif t.password then
 			SetPassword(true)
 		elseif g and not g.banned[t.key] then
 			g.banned[t.key], asked[t.key] = t.entry, nil
@@ -393,6 +398,37 @@ local function RecheckSoon()
 	ns.After(OFFLINE_RECHECK + 1, "channel heal recheck", function()
 		recheckPending = false
 		Channel.Heal()
+	end)
+end
+
+-- Тому, кто входит в пустой канал первым, Forever не сообщает, что он владелец (2026-11-14:
+-- только YOU_CHANGED, без OWNER_CHANGED). Поэтому после входа и после /reload владельца
+-- спрашиваем сами, как /owner без имени: ответ — уведомление CHANNEL_OWNER. Один раз, пока
+-- не вышли из канала; дальше смену владельца игра объявляет всем сама. Это тоже команда
+-- канала: заблокированная игрой, она ждёт нажатия клавиши, как вызовы стража.
+local AskOwnerSoon
+local function AskOwner()
+	if ownerAsked or Refused() or (PressOnly() and not pressing) then return end
+	if not Channel.Enabled() or not ns.IsMember() or Channel.Index() <= 0 then return end
+	if ns.Comm.InLockdown() then return AskOwnerSoon(HEAL_GAP) end
+	tried = { { owner = L.CHANNEL_ASK_OWNER } }
+	local r = Call(L.CHANNEL_ASK_OWNER, DisplayChannelOwner, joined)
+	if r == "later" then
+		AskOwnerSoon(HEAL_GAP)
+	elseif r == "missing" then
+		ownerAsked = true
+		ns.Log("канал %s: в клиенте нет DisplayChannelOwner — владельца узнаю только по его смене", joined or "?")
+	elseif r ~= "blocked" then
+		ownerAsked = true
+	end
+end
+
+function AskOwnerSoon(delay)
+	if ownerPending or ownerAsked then return end
+	ownerPending = true
+	ns.After(delay or 1, "channel owner", function()
+		ownerPending = false
+		AskOwner()
 	end)
 end
 
@@ -459,21 +495,28 @@ function Channel.Heal()
 end
 
 -- Нажатие клавиши (строка /cz, Chat.Send): если игра пускает вызовы стража только оттуда, лечим
--- здесь, после строки в канал.
+-- здесь, после строки в канал, а место ещё не знаем — спрашиваем владельца.
 function Channel.Pressed()
-	if not PressOnly() or Refused() or not Seated() then return end
+	if not PressOnly() or Refused() then return end
+	if not Seated() and ownerAsked then return end
 	pressing = true
-	local ok, err = pcall(Channel.Heal)
+	local ok, err = pcall(Seated() and Channel.Heal or AskOwner)
 	pressing = false
 	if not ok then error(err, 0) end
 end
 
 -- Сервер ответил, что снятого игрока нет в игре: его бан снимем позже, и с каждым таким
--- ответом всё позже (вдвое, но не реже OFFLINE_MAX).
+-- ответом всё позже (вдвое, но не реже OFFLINE_MAX). Кроме стука: он лишь догадка, а серверы
+-- вроде TrinityCore тем же PLAYER_NOT_FOUND отвечают и на снятие бана, которого нет. Стук
+-- не повторяем: автор напишет снова — постучим снова.
 local function NotFound(key)
 	local a = key and asked[key]
 	if not a or ns.Now() - a.at > ASK_WAIT or a.missed then return end
 	a.missed = true
+	if a.entry.knock then
+		ns.Log("канал %s: %s не найден — стук не повторяю", joined or "?", tostring(a.entry.n))
+		return
+	end
 	local g = Store()
 	if g and not g.banned[key] then
 		local miss = (tonumber(a.entry.miss) or 0) + 1
@@ -610,6 +653,7 @@ function Channel.Join(force)
 		joined, index = name, id
 		Unlocked()
 		if Seated() then HealSoon() end -- после /reload: место прежнее, список банов мог пополниться
+		AskOwnerSoon() -- после /reload: уведомление о смене владельца могло прийти без нас
 		return
 	end
 	if not force and WaitLogin() then return end
@@ -637,7 +681,7 @@ function Channel.Leave(force)
 		LeaveChannelByName(name)
 		ns.Log("выход из канала %s", name)
 	end
-	joined, index = nil, 0
+	joined, index, ownerAsked = nil, 0, false
 	LoseSeat(L.CHANNEL_SEAT_WHY_LEFT)
 end
 
@@ -713,8 +757,6 @@ end)
 local function Notice(notice, player, _, channelName, player2, _, _, number, baseName)
 	if Secret(notice) or Secret(player) or Secret(player2) or Secret(channelName) or Secret(baseName) then return end
 	if type(notice) ~= "string" or not Ours(baseName, channelName) then return end
-	player = type(player) == "string" and player ~= "" and U.Display(player) or nil
-	player2 = type(player2) == "string" and player2 ~= "" and U.Display(player2) or nil
 	local who, who2 = player, player2 -- как их назвал сервер: для снятия бана
 	player = type(player) == "string" and player ~= "" and U.Display(player) or nil
 	player2 = type(player2) == "string" and player2 ~= "" and U.Display(player2) or nil
@@ -727,15 +769,16 @@ local function Notice(notice, player, _, channelName, player2, _, _, number, bas
 		index = tonumber(number) or index
 		SetPassword(false) -- вошёл без пароля: пароля сейчас нет
 		Unlocked()
+		AskOwnerSoon()
 	elseif notice == "YOU_LEFT" or notice == "SUSPENDED" then
-		index = 0
+		index, ownerAsked = 0, false
 		LoseSeat(notice)
 	elseif notice == "WRONG_PASSWORD" or notice == "BANNED" or notice == "NOT_ALLOWED_IN_CHANNEL" then
 		Locked(notice)
 	elseif notice == "THROTTLED" then
 		Throttled()
 	elseif notice == "CHANNEL_OWNER" or notice == "OWNER_CHANGED" then
-		Channel.owner = player
+		Channel.owner, ownerAsked = player, true
 		SetSeat("owner", me)
 	elseif notice == "SET_MODERATOR" or notice == "UNSET_MODERATOR" then
 		if me then SetSeat("moderator", notice == "SET_MODERATOR") end
@@ -802,6 +845,7 @@ local function ActionBlocked(addon, func)
 	if Secret(addon) or addon ~= ADDON then return end
 	local fname = not Secret(func) and tostring(func) or "?"
 	if healing or fname:find("ChannelUnban", 1, true) or fname:find("SetChannelPassword", 1, true)
+		or fname:find("DisplayChannelOwner", 1, true)
 		or (ns.Now() - healCallAt <= 1 and healCallAt >= sendAt) then
 		if healing then blockedNow = true else Untry() end
 		if Refused() then return end

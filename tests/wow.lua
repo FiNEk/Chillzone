@@ -312,7 +312,8 @@ end
 ---------------------------------------------------------------------------
 -- Канал на сервере, как в игре 2026-11-11: участники по порядку входа, владелец — кто дольше
 -- всех; при его выходе канал переходит следующему (OWNER_CHANGED и SET_MODERATOR), пустой
--- канал исчезает вместе с банами и паролем. Бан выкидывает игрока, но его клиенту ничего не
+-- канал исчезает вместе с банами и паролем. Первому вошедшему игра о владельце ничего не
+-- сообщает (Forever 2026-11-14), владельца называет ответ на /owner без имени (CHANNEL_OWNER). Бан выкидывает игрока, но его клиенту ничего не
 -- приходит: клиент считает себя в канале, строк не получает, на свои — THROTTLED. Вход
 -- забаненного — NOT_ALLOWED_IN_CHANNEL (так, по-видимому, отвечает Forever), вход без пароля —
 -- CHANNEL_PASSWORD_REQUEST и WRONG_PASSWORD. Посторонние без аддона — World:ChanStranger.
@@ -371,10 +372,7 @@ function World:ChanAdd(name, full, client)
 		return
 	end
 	ch.members[#ch.members + 1] = { full = full, short = short, client = client }
-	if not ch.owner then
-		ch.owner = short
-		self:ChanNotify(name, "OWNER_CHANGED", full)
-	end
+	if not ch.owner then ch.owner = short end
 end
 
 function World:ChanRemove(name, short)
@@ -440,7 +438,7 @@ function World:ChanPassword(name, by, password)
 	self:ChanNotify(name, "PASSWORD_CHANGED", by)
 end
 
--- Команда канала от клиента c: unban — снять бан, password — пароль.
+-- Команда канала от клиента c: unban — снять бан, password — пароль, owner — кто владелец.
 function World:ChanOp(c, op, name, arg)
 	c.chanOps = c.chanOps or {}
 	c.chanOps[#c.chanOps + 1] = { op = op, name = name, arg = arg, t = self.now }
@@ -451,6 +449,10 @@ function World:ChanOp(c, op, name, arg)
 	end
 	local ch, me = self.channels[name], c:Name()
 	if not ch or not MemberIndex(ch, me) then return self:ChanReply(c, name, "NOT_MEMBER") end
+	if op == "owner" then
+		local i = ch.owner and MemberIndex(ch, ch.owner)
+		return self:ChanReply(c, name, "CHANNEL_OWNER", i and ch.members[i].full or "Nobody")
+	end
 	if op == "password" then
 		if ch.owner ~= me then return self:ChanReply(c, name, "NOT_OWNER") end
 		ch.password = arg ~= "" and arg or nil
@@ -463,7 +465,10 @@ function World:ChanOp(c, op, name, arg)
 		self:Schedule(self.now + 0.05, function() c:Fire("CHAT_MSG_SYSTEM", text) end, c)
 		return
 	end
-	if not ch.banned[short] then return self:ChanReply(c, name, "PLAYER_NOT_BANNED", arg) end
+	-- unbanNotFound — сервер вроде TrinityCore: на снятие бана, которого нет, «не найден».
+	if not ch.banned[short] then
+		return self:ChanReply(c, name, self.unbanNotFound and "PLAYER_NOT_FOUND" or "PLAYER_NOT_BANNED", arg)
+	end
 	ch.banned[short] = nil
 	self:ChanNotify(name, "PLAYER_UNBANNED", arg, c.first .. " " .. c.surname .. "-" .. c.realm)
 end
@@ -799,7 +804,8 @@ local function Env(c)
 		local id = c.nextChan
 		c.joined[name], c.joinedById[id] = id, name
 		w:Schedule(w.now + 0.1, function()
-			c:Fire("CHAT_MSG_CHANNEL_NOTICE", "YOU_JOINED", "", "", id .. ". " .. name, "", "", 0, id, name)
+			-- Forever на вход в канал присылает YOU_CHANGED, а не YOU_JOINED (2026-11-14).
+			c:Fire("CHAT_MSG_CHANNEL_NOTICE", "YOU_CHANGED", "", "", id .. ". " .. name, "", "", 0, id, name)
 			w:ChanAdd(name, Stamp(c), c)
 		end, c)
 	end
@@ -822,6 +828,7 @@ local function Env(c)
 		if i and ch.members[i].client == c then w:ChanRemove(name, c:Name()) end
 	end
 	env.ChannelUnban = function(name, who) return w:ChanOp(c, "unban", name, who) end
+	env.DisplayChannelOwner = function(name) return w:ChanOp(c, "owner", name) end
 	env.SetChannelPassword = function(name, password) return w:ChanOp(c, "password", name, password) end
 	env.SendChatMessage = function(msg, kind, _, id)
 		assert(#msg <= 255, "строка чата длиннее 255 байт")

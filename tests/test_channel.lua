@@ -375,7 +375,7 @@ T.test("channel: сырые строки и уведомления канала 
 	local logged = table.concat(B.ns.db.log, "\n")
 	T.ok(logged:find("OWNER_CHANGED Злой Чужак", 1, true), "смена владельца в журнале")
 	T.ok(logged:find("PASSWORD_CHANGED", 1, true), "пароль в журнале")
-	T.ok(logged:find("YOU_JOINED", 1, true), "вход в журнале")
+	T.ok(logged:find("YOU_CHANGED", 1, true), "вход в журнале")
 	B.ns.Channel.SetEnabled(false)
 	hidden = false
 	for _, fn in ipairs(B.filters.CHAT_MSG_CHANNEL or {}) do
