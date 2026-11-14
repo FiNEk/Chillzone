@@ -22,6 +22,7 @@ Core.lua
 Perf.lua
 Activity.lua
 Codec.lua
+Net.lua
 Comm.lua
 Diagnostics.lua
 Zones.lua
