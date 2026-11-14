@@ -85,7 +85,7 @@ local function Clean(c)
 	end
 end
 
-T.test("channel guard: первый вошедший — владелец, подсказка один раз, место переживает /reload", function()
+T.test("channel guard: первый вошедший — владелец, в чат об этом ни слова, место переживает /reload", function()
 	local w, c = Build()
 	local owner, key = Owner(w, c)
 	T.ok(owner, "канал у клиента объединения")
@@ -94,7 +94,8 @@ T.test("channel guard: первый вошедший — владелец, по�
 	T.eq(Logged(owner, ": CHANNEL_OWNER " .. owner.first), 1, "ответ без фамилии, а место узнал")
 	T.eq(owner.ns.Channel.owner, owner:Name(), "в статусе — полное имя")
 	T.eq(Logged(owner, "OWNER_CHANGED"), 0)
-	T.eq(owner:Saw("сделала вас владельцем канала " .. CHAN), 1, "подсказка")
+	T.eq(Logged(owner, "моё место — владелец"), 1, "место — в журнале")
+	T.eq(owner:Saw("владел"), 0, "игроку о месте не говорим")
 	for name, cl in pairs(c) do
 		if cl ~= owner then T.no(cl.ns.Channel.Seated(), name .. " без места") end
 	end
@@ -104,7 +105,6 @@ T.test("channel guard: первый вошедший — владелец, по�
 	c[key] = R
 	w:Run(30)
 	T.ok(R.ns.Channel.Seated(), "после /reload место прежнее")
-	T.eq(R:Saw("сделала вас владельцем"), 0, "подсказка один раз на персонажа")
 	T.eq(Ops(R), 0, "лечить нечего — вызовов нет")
 	T.eq(Ops(R, "owner"), 1, "после /reload сверил место")
 	Clean(c)
@@ -128,7 +128,8 @@ T.test("channel guard: бан постороннего снимает участ
 	w:Run(10)
 	local owner = Owner(w, c)
 	T.ok(owner, "канал перешёл к клиенту объединения")
-	T.eq(owner:Saw("сделала вас владельцем"), 1, "подсказка новому владельцу")
+	T.eq(Logged(owner, "моё место — владелец"), 1, "новый владелец знает о месте")
+	T.eq(owner:Saw("владел"), 0, "в чат ни слова")
 	T.eq(Ops(owner, "unban"), 1, "один вызов снятия")
 	T.eq(w.channels[CHAN].banned["Борис Быстрый"], nil, "бан снят")
 	for name, cl in pairs(c) do
@@ -348,7 +349,8 @@ T.test("channel guard: модератор не трогает пароль и н
 	w:ChanNotify(CHAN, "SET_MODERATOR", Full(A))
 	w:Run(5)
 	T.ok(A.ns.Channel.Seated(), "Арагорн — модератор")
-	T.eq(A:Saw("сделала вас модератором канала " .. CHAN), 1)
+	T.eq(Logged(A, "моё место — модератор"), 1)
+	T.eq(A:Saw("модератор"), 0, "в чат ни слова")
 	w:ChanPassword(CHAN, STRANGER, "secret")
 	w:ChanBan(CHAN, STRANGER, Full(c.B))
 	w:Run(10)
@@ -481,7 +483,7 @@ T.test("channel guard: из таймера игра не пускает и за�
 	w:Run(5)
 	T.eq(Ops(owner, "owner"), 2, "спросил из нажатия Enter")
 	T.ok(owner.ns.Channel.Seated(), "теперь знает, что владелец")
-	T.eq(owner:Saw("сделала вас владельцем"), 1)
+	T.eq(Logged(owner, "моё место — владелец"), 1)
 	owner:Slash("/cz1", "ещё строка")
 	w:Run(5)
 	T.eq(Ops(owner, "owner"), 2, "больше не спрашивает")

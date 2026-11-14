@@ -246,7 +246,9 @@ end
 --   /cz, Channel.Pressed) и выключается до новой версии аддона, только если и оттуда нельзя.
 --   Так окно ошибки игры игрок видит не больше двух раз, а не теряет стража после первого;
 -- - владельца спрашиваем сами после входа и после /reload (AskOwner): создателю канала Forever
---   о месте не сообщает, и у Olympus страж первого вошедшего не включался вовсе.
+--   о месте не сообщает, и у Olympus страж первого вошедшего не включался вовсе;
+-- - о полученном месте игроку не говорим (Olympus печатал подсказку): так он узнал бы о правах,
+--   которыми может отрезать канал другим.
 ---------------------------------------------------------------------------
 local HEAL_GAP = 60 -- один и тот же вызов стража не чаще
 local HEAL_BURST = 3 -- вызовов стража за один проход, остальные — через HEAL_GAP
@@ -560,19 +562,15 @@ local function SaveSeat()
 	ns.char.channelSeat = Seated() and { owner = seat.owner, moderator = seat.moderator } or nil
 end
 
--- Место пришло: подсказка игроку один раз на персонажа, потом страж. Через 2 с, чтобы два
--- уведомления владельца (OWNER_CHANGED и SET_MODERATOR) дали одну подсказку.
+-- Место пришло: страж. Через 2 с, чтобы два уведомления владельца (OWNER_CHANGED и
+-- SET_MODERATOR) дали один проход. Игроку о месте не говорим (только журнал и status):
+-- незачем лишний раз сообщать, что у него права, которыми он может отрезать канал другим.
 local function SeatGiven()
 	if seatPending then return end
 	seatPending = true
 	ns.After(2, "channel seat", function()
 		seatPending = false
-		if not Seated() then return end
-		if ns.char and not ns.char.channelSeatTold then
-			ns.char.channelSeatTold = true
-			ns.Print(L.CHANNEL_SEAT_YOU, seat.owner and L.CHANNEL_SEAT_OWNER_OF or L.CHANNEL_SEAT_MODERATOR_OF, joined or Channel.Name() or "?")
-		end
-		Channel.Heal()
+		if Seated() then Channel.Heal() end
 	end)
 end
 
