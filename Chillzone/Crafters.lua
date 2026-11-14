@@ -46,6 +46,13 @@ Crafters.ICONS = {
 local ORDER = {}
 for i, id in ipairs(Crafters.PROFS) do ORDER[id] = i end
 
+-- В каталог попадают только профессии из PROFS: ни свои, ни из чужих карточек. Остальное —
+-- прежде всего рыбная ловля, у которой на Forever бывают «рецепты», — выбрасывается, в том числе
+-- из карточек старых версий, которые её ещё рассылают.
+local function Known(id)
+	return ORDER[id] ~= nil
+end
+
 local saved -- ns.char.crafts: свои профессии, отметки, примечание, своя карточка
 local cards -- ns.store.crafters.cards: [ключ автора] = карточка
 local lists -- ns.store.crafters.lists: [ключ автора] = { [профессия] = { hash, ids, at } }
@@ -213,6 +220,20 @@ function Crafters.Receive(msg, _, dist, ctx)
 		end
 		return
 	end
+	local profs = {}
+	for _, p in ipairs(w.profs) do
+		if Known(p.id) then profs[#profs + 1] = p end
+	end
+	if #profs == 0 then
+		-- Только рыбная ловля и прочее не из каталога: прежняя карточка автора больше не верна,
+		-- и старый пакет её не вернёт, как после снятия.
+		closed[key] = { at = at, seq = seq }
+		if Drop(key) then
+			ns.Log("мастера: карточка %s <%s> убрана: в ней нет профессий каталога (%s)", name, w.guild, via)
+			Changed()
+		end
+		return
+	end
 	if ns.store.ignore[key] then
 		if Drop(key) then Changed() end
 		return
@@ -230,7 +251,7 @@ function Crafters.Receive(msg, _, dist, ctx)
 	end
 	cards[key] = {
 		key = key, name = name, guild = w.guild, class = w.class, level = w.level, st = w.st,
-		at = at, seq = seq, note = w.note, profs = w.profs,
+		at = at, seq = seq, note = w.note, profs = profs,
 	}
 	-- Список профессии, которой в карточке больше нет, не нужен.
 	for prof in pairs(lists[key] or {}) do
@@ -373,7 +394,7 @@ function Crafters.Opened()
 		return
 	end
 	Crafters.lastSkip = nil
-	if #p.ids == 0 then return end -- собирательные и пустые не показываются
+	if #p.ids == 0 or not Known(p.id) then return end -- собирательные, рыбная ловля и пустые не показываются
 	local packed, n = Codec.PackIds(p.ids, C.CRAFT_RECIPES_MAX)
 	local hash = Codec.IdsHash(packed)
 	local old = saved.profs[p.id]
@@ -1083,6 +1104,7 @@ local function Valid(card, key)
 		or type(card.seq) ~= "number" or type(card.profs) ~= "table" or #card.profs == 0 then return false end
 	card.key = key
 	card.note = type(card.note) == "string" and card.note or ""
+	local profs = {}
 	for _, p in ipairs(card.profs) do
 		if type(p) ~= "table" or type(p.id) ~= "number" or type(p.hash) ~= "string" then return false end
 		p.skill, p.max, p.n = tonumber(p.skill) or 0, tonumber(p.max) or 0, tonumber(p.n) or 0
@@ -1091,8 +1113,11 @@ local function Valid(card, key)
 			if type(id) == "number" and #show < C.CRAFT_SHOW then show[#show + 1] = id end
 		end
 		p.show = #show > 0 and show or nil
+		if Known(p.id) then profs[#profs + 1] = p end
 	end
-	return true
+	-- Рыбная ловля, сохранённая прежней версией, выбрасывается; без остального карточки нет.
+	card.profs = profs
+	return #profs > 0
 end
 
 local function Restore()
@@ -1101,17 +1126,22 @@ local function Restore()
 	for _, k in ipairs({ "profs", "post", "hinted" }) do
 		saved[k] = type(saved[k]) == "table" and saved[k] or {}
 	end
+	-- Рыбную ловлю прочитала прежняя версия: из своих профессий и отметок она уходит, а карточка без
+	-- неё уйдёт остальным правкой.
 	for id, p in pairs(saved.profs) do
-		if type(id) ~= "number" or type(p) ~= "table" or type(p.ids) ~= "string" or type(p.hash) ~= "string" then
+		if type(id) ~= "number" or not Known(id) or type(p) ~= "table" or type(p.ids) ~= "string" or type(p.hash) ~= "string" then
 			saved.profs[id] = nil
 		else
 			p.skill, p.max, p.n = tonumber(p.skill) or 0, tonumber(p.max) or 0, tonumber(p.n) or 0
 			p.readAt = tonumber(p.readAt) or 0
 		end
 	end
+	for id in pairs(saved.post) do
+		if not Known(id) then saved.post[id] = nil end
+	end
 	local show = {}
 	for _, s in ipairs(type(saved.show) == "table" and saved.show or {}) do
-		if type(s) == "table" and type(s.prof) == "number" and type(s.id) == "number" then
+		if type(s) == "table" and type(s.prof) == "number" and Known(s.prof) and type(s.id) == "number" then
 			show[#show + 1] = { prof = s.prof, id = s.id }
 		end
 	end

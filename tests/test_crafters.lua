@@ -327,7 +327,7 @@ local function Feed(cl, o)
 	local cert = o.cert or { key = ns.Util.Key(name), name = name, guild = guild }
 	local msg = ns.Codec.EncodeCraft({
 		mode = o.mode or "C", st = at, guild = guild, class = "PRIEST", level = 21, note = o.note,
-		profs = { { id = o.prof or 164, skill = o.skill or 1, max = 75, n = 1, hash = "0001" } },
+		profs = o.profs or { { id = o.prof or 164, skill = o.skill or 1, max = 75, n = 1, hash = "0001" } },
 	})
 	ns.Crafters.Receive(msg, name, o.dist or "RELAY", o.ctx or {
 		authenticated = true, certificate = cert, wire = ("S1~fp~%d~%d~x"):format(at, o.seq or 1),
@@ -776,6 +776,93 @@ T.test("crafters: каталог чистится по сроку и по чис
 	T.eq(Logged(c.K, "мастера: карточка Дина Добрая <Чиллзон Север> пропала из каталога"), 1)
 	T.eq(#K.Crafters.Cards(), 2)
 	NoErrors(c.K, "Карл")
+end)
+
+---------------------------------------------------------------------------
+-- Рыбная ловля: на Forever у неё бывают «рецепты», но в каталог она не попадает
+---------------------------------------------------------------------------
+local FISH = 356
+
+T.test("crafters: рыбная ловля не читается и выбрасывается из чужих карточек", function()
+	local _, c = Build()
+	local A, K = c.A.ns, c.K.ns
+	Learn(c.A, { id = FISH, skill = 150, max = 150, recipes = { [7620] = true } })
+	T.eq(#A.Crafters.MyProfs(), 0, "своё окно рыбной ловли не читается")
+	T.eq(c.A:Saw(A.L.CRAFT_HINT:format(A.Crafters.ProfName(FISH))), 0, "подсказки нет")
+	-- Карточка прежней версии с рыбной ловлей: остальные профессии остаются.
+	local now = c.K.env.GetServerTime()
+	local fish = { id = FISH, skill = 150, max = 150, n = 1, hash = "0002" }
+	local key = Feed(c.K, { at = now, profs = { { id = 164, skill = 73, max = 150, n = 3, hash = "0001" }, fish } })
+	local e = K.Crafters.Get(key)
+	T.ok(e, "карточка принята")
+	T.eq(#e.profs, 1)
+	T.eq(e.profs[1].id, 164)
+	T.same({ K.Crafters.Want(key, FISH) }, { false, "nocard" }, "список рыбной ловли не просят")
+	local profs, has = K.Views.CraftProfs()
+	for _, id in ipairs(profs) do T.no(id == FISH, "в фильтре нет рыбной ловли") end
+	T.no(has[FISH])
+	-- Карточка только с рыбной ловлей убирает прежнюю, и старый пакет её не возвращает.
+	Feed(c.K, { at = now + 10, profs = { fish } })
+	T.no(K.Crafters.Get(key), "профессий каталога нет")
+	T.eq(Logged(c.K, "мастера: карточка Борис Быстрый <Чиллзон Север> убрана: в ней нет профессий каталога (реле)"), 1)
+	Feed(c.K, { at = now + 5 })
+	T.no(K.Crafters.Get(key), "старый пакет не вернул карточку")
+	Feed(c.K, { at = now + 20 })
+	T.ok(K.Crafters.Get(key), "новая карточка принята")
+	NoErrors(c.A, "Арагорн")
+	NoErrors(c.K, "Карл")
+end)
+
+T.test("crafters: рыбная ловля из сохранений прежней версии уходит после /reload", function()
+	local w, c = Build()
+	-- Так её сохранила бы прежняя версия: среди своих профессий, с отметкой и на витрине.
+	local Codec, crafts = c.A.ns.Codec, c.A.ns.char.crafts
+	local packed, n = Codec.PackIds({ 7620 }, c.A.ns.Config.CRAFT_RECIPES_MAX)
+	crafts.profs[FISH] = { id = FISH, skill = 150, max = 150, n = n, ids = packed, hash = Codec.IdsHash(packed), readAt = 1 }
+	crafts.post[FISH] = true
+	crafts.show = { { prof = FISH, id = 7620 } }
+	local wires = Capture(c.A)
+	Master(c.A)
+	T.eq(#wires, 1)
+	T.ok(wires[1]:find(",356:", 1, true), "прежняя версия разослала рыбную ловлю")
+	local e = c.B.ns.Crafters.Get(Key(c.A))
+	T.eq(#e.profs, 1, "новая версия её не показывает")
+	-- В каталоге смотрящего прежней версии: в карточке мастера и в карточке только с ней.
+	local store = c.B.ns.store.crafters
+	local stored = store.cards[Key(c.A)]
+	stored.profs[#stored.profs + 1] = { id = FISH, skill = 150, max = 150, n = 1, hash = "0002" }
+	local angler = c.B.ns.Util.Key("Рыбак Тихий")
+	store.cards[angler] = {
+		name = "Рыбак Тихий", guild = "Чиллзон", at = stored.at, seq = 1,
+		profs = { { id = FISH, skill = 75, max = 75, n = 1, hash = "0003" } },
+	}
+	store.lists[angler] = { [FISH] = { hash = "0003", ids = packed, at = stored.at } }
+	local dbA, dbB = c.A.ns.db, c.B.ns.db
+	c.A:Logout()
+	c.B:Logout()
+	local a = w:Client({ first = "Арагорн", surname = "Светлый", guild = "Чиллзон", rank = 1, class = "WARRIOR", level = 24, db = dbA, reload = true })
+	local b = w:Client({ first = "Борис", surname = "Быстрый", guild = "Чиллзон Север", rank = 1, class = "PRIEST", level = 21, db = dbB, reload = true })
+	local again = Capture(a)
+	w:Run(5)
+	local mine = a.ns.Crafters.MyProfs()
+	T.eq(#mine, 1)
+	T.eq(mine[1].id, 164)
+	T.no(a.ns.char.crafts.post[FISH])
+	T.eq(#a.ns.char.crafts.show, 0, "витрина рыбной ловли выброшена")
+	T.eq(#a.ns.Crafters.Own().profs, 1)
+	e = b.ns.Crafters.Get(Key(c.A))
+	T.ok(e, "карточка мастера осталась")
+	T.eq(#e.profs, 1)
+	T.eq(e.profs[1].id, 164)
+	T.no(b.ns.Crafters.Get(angler), "карточки только с рыбной ловлей нет")
+	T.no(b.ns.store.crafters.lists[angler])
+	-- Карточка без рыбной ловли уходит остальным сама, как любая правка.
+	w:Run(a.ns.Config.CRAFT_UPDATE_GAP + 60)
+	T.eq(#again, 1, "правка ушла")
+	T.no(again[1]:find(",356:", 1, true), "без рыбной ловли")
+	T.ok(again[1]:find("~164:", 1, true))
+	NoErrors(a, "Арагорн после /reload")
+	NoErrors(b, "Борис после /reload")
 end)
 
 ---------------------------------------------------------------------------
