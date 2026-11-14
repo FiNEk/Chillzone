@@ -48,6 +48,49 @@ local function GuildLabel(s)
 end
 
 ---------------------------------------------------------------------------
+-- Аддон у людей из списков: чат, «Руководство» и «кто в игре» на «Переписи»
+---------------------------------------------------------------------------
+-- Аддон у согильдийца по приветам H1 (Census.Addon). «Нет» — только про того, кто в игре:
+-- от вышедшего привета и не должно быть.
+local function GuildAddon(key, online)
+	local has, version = ns.Census.Addon(key)
+	if has == false and not online then has = nil end
+	return has, version
+end
+
+-- Кто из других гильдий точно с аддоном: писал в общие каналы подписанной строкой или прислал
+-- отчёт переписи. Строку из канала игры (e.ch) может написать и игрок без аддона.
+-- Остальных не знаем: приветы H1 ходят только внутри гильдии. Значение — версия аддона или
+-- true, если версии не знаем: строка чата её не несёт, а отчёт R1 называет версию своего автора.
+local function AddonKnown(summary)
+	local known = {}
+	for tier in pairs(ns.Chat.TIER_LEVEL) do
+		for _, e in ipairs(ns.Chat.History(tier)) do
+			local k = not e.ch and U.Key(e.s)
+			if k then known[k] = true end
+		end
+	end
+	for _, s in ipairs(summary) do
+		local k = U.Key(s.origin)
+		if k then known[k] = s.r and s.r.version or known[k] or true end
+	end
+	return known
+end
+
+-- Аддон у человека с ключом k: согильдиец (own) — по приветам H1, остальные и согильдиец,
+-- о котором приветы пока молчат, — по known (AddonKnown). true и версия, если знаем, — есть;
+-- false — нет; nil — неизвестно.
+local function PersonAddon(k, own, inGame, known)
+	if own then
+		local has, version = GuildAddon(k, inGame)
+		if has ~= nil then return has, version end
+	end
+	local v = k and known[k]
+	if not v then return nil end
+	return true, v ~= true and v or nil
+end
+
+---------------------------------------------------------------------------
 -- Карточка гильдии на «Переписи» (CensusPane.lua рисует её справа от списка)
 ---------------------------------------------------------------------------
 local function SortedMap(map)
@@ -98,10 +141,13 @@ function Views.GuildCard(s)
 	}
 	card.extra = L.CARD_EXTRA:format(r.users or 0, r.inactive7 or 0, r.inactive30 or 0)
 	card.people = {}
+	local known = AddonKnown(ns.Data.Summary())
 	local function person(p, role)
+		local on = (s.fresh and p.online) and true or false
+		local has, version = PersonAddon(U.Key(p.name), s.mine, on, known)
 		card.people[#card.people + 1] = {
 			name = p.name, class = p.class, level = p.level, days = p.days, role = role,
-			online = (s.fresh and p.online) and true or false, guild = s.guild, main = s.main,
+			online = on, guild = s.guild, main = s.main, addon = has, version = version,
 		}
 	end
 	if r.leader then
@@ -130,7 +176,7 @@ function Views.GuildCard(s)
 	else
 		card.staleNote = L.CARD_STALE
 	end
-	card.onlineGroup = Views.OnlineGroup(s, L.ONLINE_HEAD)
+	card.onlineGroup = Views.OnlineGroup(s, L.ONLINE_HEAD, known)
 	return card
 end
 
@@ -303,32 +349,6 @@ local function ByRole(a, b)
 	return a.name < b.name
 end
 
--- Аддон у согильдийца по приветам H1 (Census.Addon). «Нет» — только про того, кто в игре:
--- от вышедшего привета и не должно быть.
-local function GuildAddon(key, online)
-	local has, version = ns.Census.Addon(key)
-	if has == false and not online then has = nil end
-	return has, version
-end
-
--- Кто из других гильдий точно с аддоном: писал в общие каналы подписанной строкой или прислал
--- отчёт переписи. Строку из канала игры (e.ch) может написать и игрок без аддона.
--- Остальных не знаем: приветы H1 ходят только внутри гильдии.
-local function AddonKnown(summary)
-	local known = {}
-	for tier in pairs(ns.Chat.TIER_LEVEL) do
-		for _, e in ipairs(ns.Chat.History(tier)) do
-			local k = not e.ch and U.Key(e.s)
-			if k then known[k] = true end
-		end
-	end
-	for _, s in ipairs(summary) do
-		local k = U.Key(s.origin)
-		if k then known[k] = true end
-	end
-	return known
-end
-
 -- Своя гильдия по ростеру: в G — кто в игре, в O — офицеры (в игре первыми).
 local function GuildPeople(channel)
 	local list = {}
@@ -389,11 +409,7 @@ function Views.People(channel, now)
 	local summary = ns.Data.Summary(now)
 	local known, mine = AddonKnown(summary), U.GuildKey(ns.MyGuild())
 	local function addon(k, guild, inGame)
-		if mine and U.GuildKey(guild) == mine then
-			local has, version = GuildAddon(k, inGame)
-			if has ~= nil then return has, version end
-		end
-		return known[k] or nil
+		return PersonAddon(k, mine ~= nil and U.GuildKey(guild) == mine, inGame, known)
 	end
 	for _, s in ipairs(summary) do
 		if s.recent then
@@ -468,10 +484,11 @@ function Views.OnlineGroup(s, label, known)
 		known = known or AddonKnown(ns.Data.Summary())
 		for _, p in ipairs(state.people) do
 			local k = U.Key(p.name)
+			local has, version = PersonAddon(k, false, true, known)
 			people[#people + 1] = {
 				name = p.name, class = p.class, level = p.level, online = true, days = 0,
 				role = roles[k] or "member", guild = s.guild, main = s.main,
-				addon = (p.addon or known[k]) and true or nil,
+				addon = (p.addon or has) and true or nil, version = version,
 			}
 		end
 	end
