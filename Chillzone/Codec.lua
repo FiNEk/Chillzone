@@ -28,7 +28,8 @@
 --           id     серверное время размещения: по нему заявка находит объявление
 --           kind   D подземелья, R рейды, P PvP, Q задания, O прочее
 --           t.h.d  G: сколько ещё нужно танков, лекарей и бойцов; P: кем может идти автор
---           size   сколько уже в группе, cap — сколько всего мест, min — уровень от (0 — любой)
+--           size   сколько уже в группе (с записанными, после 0.15.1), cap — сколько всего
+--                  мест, min — уровень от (0 — любой)
 --           every  через сколько минут автор повторит объявление
 --           title  и note — свободный текст автора без "~" и "|"
 --         Подписывается и идёт как чат: S1 по GUILD своей гильдии и через реле (режим P).
@@ -37,8 +38,8 @@
 --                               старше пересылают его как строку чата и сами отбрасывают
 --                               (третье поле не номер), а новые клиенты читают вложенное G1.
 --         GQ~ по GUILD — вошедший просит объявления заново.
---         GA~id~fp~guild~class~level~t.h.d~note (заявка) · GW~id (отзыв) · GR~id~I|D (ответ:
---         приглашён, отказ) — шёпотом напрямую, без реле.
+--         GA~id~fp~guild~class~level~t.h.d~note (заявка) · GW~id (отзыв) · GR~id~A|I|D (ответ:
+--         записан, приглашён, отказ; A — после 0.15.1) — шёпотом напрямую, без реле.
 -- Мастера: W1~C~st~guild~class~level~profs~note · W1~X~st~guild (карточка снята)   (после 0.14.2)
 --           st     серверное время последней правки карточки, десятичное
 --           profs  id:skill:max:n:hash[:show][,...] — не больше CRAFT_PROFS профессий: номер
@@ -676,13 +677,14 @@ function Codec.DecodeGroupWithdraw(s)
 	return groupId(type(s) == "string" and s:match("^GW~(%d+)"))
 end
 
--- Ответ автора объявления: I — приглашён, D — отказ.
+-- Ответ автора объявления: A — записан (место за ним, группа игры пока не собирается),
+-- I — приглашён, D — отказ. Клиенты 0.15.1 и старше читают только I и D, A молча пропускают.
 function Codec.EncodeGroupReply(id, answer)
 	return ("GR~%d~%s"):format(id, answer)
 end
 
 function Codec.DecodeGroupReply(s)
-	local rawId, answer = (type(s) == "string" and s or ""):match("^GR~(%d+)~([ID])")
+	local rawId, answer = (type(s) == "string" and s or ""):match("^GR~(%d+)~([AID])")
 	local id = groupId(rawId)
 	if not id then return nil end
 	return id, answer
