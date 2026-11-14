@@ -75,6 +75,97 @@ T.test("window: уголок меняет размер, после /reload ок�
 	Errors(again)
 end)
 
+-- Окно с геометрией: игра после StartSizing и StopMovingOrSizing сама перепривязывает его к
+-- ближайшему углу экрана и отмечает поставленным игроком (кэш расположения).
+local function Geometry(c, frame)
+	local g = { points = {}, size = { 814, 426 }, placed = nil, left = 100, top = 900 }
+	c.env.UIParent.GetTop = function() return 1080 end
+	frame.GetLeft = function() return g.left end
+	frame.GetTop = function() return g.top end
+	frame.GetWidth = function() return g.size[1] end
+	frame.GetHeight = function() return g.size[2] end
+	frame.ClearAllPoints = function() g.points = {} end
+	frame.SetPoint = function(_, ...) g.points[#g.points + 1] = { ... } end
+	frame.GetPoint = function(_, i)
+		local p = g.points[i or 1]
+		if p then return p[1], p[2], p[3], p[4], p[5] end
+	end
+	frame.SetSize = function(_, w, h) g.size = { w, h } end
+	frame.SetUserPlaced = function(_, on) g.placed = on end
+	local corner = function()
+		g.points = { { "BOTTOMRIGHT", c.env.UIParent, "BOTTOMRIGHT", -5, 3 } }
+		g.placed = true
+	end
+	frame.StartMoving, frame.StopMovingOrSizing = corner, corner
+	-- Как окно было привязано, когда игра начала растягивание.
+	frame.StartSizing = function(_, point)
+		local p = g.points[1]
+		g.start = { #g.points, p[1], p[3], p[4], p[5], g.size[1], g.size[2], point }
+		corner()
+	end
+	return g
+end
+
+local function Pinned(c, g, x, y)
+	T.eq(#g.points, 1, "одна точка")
+	local p = g.points[1]
+	T.ok(p[2] == c.env.UIParent, "к экрану")
+	T.same({ p[1], p[3], p[4], p[5] }, { "TOPLEFT", "TOPLEFT", x, y }, "левый верхний угол от верха экрана")
+	T.eq(g.placed, false, "кэш расположения игры выключен")
+end
+
+T.test("window: окно держится за левый верхний угол, кэш расположения игры выключен", function()
+	local _, c = Build()
+	local UI = c.ns.UI
+	UI.Toggle("chat")
+	local grip, frame = UI.grip, UI.frame
+	local g = Geometry(c, frame)
+	grip.scripts.OnMouseDown(grip, "LeftButton")
+	T.same(g.start, { 1, "TOPLEFT", "TOPLEFT", 100, -180, 814, 426, "BOTTOMRIGHT" },
+		"тянется правый нижний угол окна, привязанного одной точкой за левый верхний")
+	g.size = { 1000, 600 }
+	frame.scripts.OnSizeChanged(frame, 1000, 600)
+	grip.scripts.OnMouseUp(grip)
+	Pinned(c, g, 100, -180)
+	T.same(g.size, { 1000, 600 })
+	local saved = c.ns.db.settings.frame
+	T.same({ saved.point, saved.rel, saved.x, saved.y, saved.w, saved.h }, { "TOPLEFT", "TOPLEFT", 100, -180, 1000, 600 })
+	-- Перетаскивание тоже оставляет одну точку и не включает кэш игры.
+	g.left, g.top = 300, 800
+	frame.scripts.OnDragStart(frame)
+	frame.scripts.OnDragStop(frame)
+	Pinned(c, g, 300, -280)
+	T.same(g.size, { 1000, 600 })
+	T.eq(c.ns.db.settings.frame.x, 300)
+	Errors(c)
+end)
+
+T.test("window: размер, сменившийся без уголка, возвращается и пишется в журнал", function()
+	local _, c = Build()
+	local UI = c.ns.UI
+	UI.Toggle("chat")
+	local grip, frame = UI.grip, UI.frame
+	local g = Geometry(c, frame)
+	grip.scripts.OnMouseDown(grip, "LeftButton")
+	g.size = { 1000, 600 }
+	frame.scripts.OnSizeChanged(frame, 1000, 600)
+	grip.scripts.OnMouseUp(grip)
+	frame:Hide()
+	frame:Show()
+	-- Так выглядела ошибка в игре: окно после нового открытия становилось больше само.
+	g.size = { 1798, 1139 }
+	frame.scripts.OnSizeChanged(frame, 1798, 1139)
+	T.same(g.size, { 1000, 600 }, "прежний размер вернулся")
+	T.same({ UI.Size() }, { 1000, 600 })
+	T.eq(c.ns.db.settings.frame.w, 1000)
+	local log = c.ns.db.log
+	T.ok(log[#log]:find("1798x1139 без уголка", 1, true), log[#log])
+	-- Ответное OnSizeChanged с прежним размером ничего не меняет.
+	frame.scripts.OnSizeChanged(frame, 1000, 600)
+	T.same({ UI.Size() }, { 1000, 600 })
+	Errors(c)
+end)
+
 T.test("window: лишняя ширина делится между колонками по долям, остаток — последней растущей", function()
 	local _, c = Build()
 	local Widths = c.ns.CensusPane.Widths

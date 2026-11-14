@@ -699,3 +699,42 @@ T.test("online: в высоком окне строк таблицы больш�
 	T.eq(widths[#widths], P.Widths(t.columns, 486)[at])
 	T.eq(#(K.ns.db.errors or {}), 0)
 end)
+
+T.test("online: пока окно тянут, таблица людей не сортируется и не перекладывается", function()
+	local w, c = Build()
+	local K = c.K
+	local P, UI = K.ns.CensusPane, K.ns.UI
+	for i = 1, 60 do
+		w:AddOnline("Чиллзон", ("Боец%03d Длинный-CAMWOWUS2Realm7PvE"):format(i), 3, 60, "ROGUE")
+	end
+	K.ns.Roster.Scan()
+	UI.Toggle("census")
+	P.Select(K.ns.Util.GuildKey("Чиллзон"))
+	local t = P.frames.cardTable
+	local name, widths = Heads(t).name, {}
+	name.SetWidth = function(_, width) widths[#widths + 1] = width end
+	local sorts, groups = 0, 0
+	local sort, layout = K.ns.Views.SortOnline, K.ns.GroupsPane.Layout
+	K.ns.Views.SortOnline = function(...) sorts = sorts + 1; return sort(...) end
+	K.ns.GroupsPane.Layout = function(...) groups = groups + 1; return layout(...) end
+	local grip, frame = UI.grip, UI.frame
+	grip.scripts.OnMouseDown(grip, "LeftButton")
+	-- Игра шлёт размер каждый кадр, пока игрок тянет.
+	for step = 1, 10 do frame.scripts.OnSizeChanged(frame, 814 + 30 * step, 426 + 16 * step) end
+	T.eq(sorts, 0, "без сортировки")
+	T.eq(#widths, 0, "колонки на месте")
+	T.eq(#t.rows, 22, "новые строки — по отпусканию")
+	T.eq(groups, 0, "закрытые вкладки ждут отпускания")
+	T.same({ UI.Size() }, { 1114, 586 })
+	grip.scripts.OnMouseUp(grip)
+	T.ok(sorts > 0, "по отпусканию — полная отрисовка")
+	T.eq(groups, 1, "и раскладка всех вкладок")
+	T.eq(#t.rows, 32)
+	T.eq(#VisibleRows(t), 32)
+	local at
+	for i, col in ipairs(t.columns) do
+		if col.key == "name" then at = i end
+	end
+	T.eq(widths[#widths], P.Widths(t.columns, 786)[at])
+	T.eq(#(K.ns.db.errors or {}), 0)
+end)

@@ -25,8 +25,13 @@ local MIN_W, MIN_H = 814, 426
 local INSET_W, INSET_H = 10, 86 -- вставка уже и ниже окна: (4,-60) → (-6,26)
 local GRIP = 16 -- уголок растягивания
 local TABS_W = 40 -- столбец значков справа за окном: окно с ним не шире экрана
--- Вкладки со своей раскладкой под размер вставки: Layout(ширина, высота).
+-- Вкладки со своей раскладкой под размер вставки: Layout(ширина, высота, live). live — игрок ещё
+-- тянет уголок: раскладывается только открытая вкладка и только дешёвое, остальное — по отпусканию.
 local LAYOUTS = { "CensusPane", "GroupsPane", "CraftersPane", "RosterPane", "TransferPane", "UnionPane", "RecruitPane" }
+local PANE_OF = {
+	census = "CensusPane", groups = "GroupsPane", crafters = "CraftersPane", roster = "RosterPane",
+	transfer = "TransferPane", union = "UnionPane", join = "RecruitPane", requests = "RecruitPane",
+}
 -- Значок аддона: логотип «Chill Zone», обрезанный по золотому кольцу (media/icon.tga, 64×64 TGA
 -- с прозрачностью). Он уже круглый, маска не нужна. Логотип целиком — media/logo.tga, для списка аддонов (toc).
 local ICON = "Interface\\AddOns\\" .. ADDON .. "\\media\\icon"
@@ -881,28 +886,74 @@ function UI.InsetSize()
 	return math.max(width, MIN_W) - INSET_W, math.max(height, MIN_H) - INSET_H
 end
 
+local function Round(v, fallback)
+	return math.floor((tonumber(v) or fallback) + 0.5)
+end
+
+-- Привязка окна для журнала: точка, к чему и смещение.
+local function Anchor(f)
+	local point, _, rel, x, y = f:GetPoint(1)
+	return ("%s %s %d %d"):format(tostring(point), tostring(rel), Round(x, 0), Round(y, 0))
+end
+
+-- Окно держится одной точкой TOPLEFT от верхнего левого угла экрана и явным размером. После
+-- StartMoving, StartSizing и StopMovingOrSizing игра сама перепривязывает окно к ближайшему углу
+-- экрана, а раз окно именованное — ещё и пишет его место и размер в свой кэш расположения
+-- (layout-local.txt) как поставленное игроком. Место и размер хранит аддон, кэш игры выключен.
+local function Pin(f)
+	local left, top, screenTop = f:GetLeft(), f:GetTop(), UIParent:GetTop()
+	if type(left) == "number" and type(top) == "number" and type(screenTop) == "number" then
+		f:ClearAllPoints()
+		f:SetPoint("TOPLEFT", UIParent, "TOPLEFT", left, top - screenTop)
+	end
+	f:SetSize(Round(f:GetWidth(), width), Round(f:GetHeight(), height))
+	if type(f.SetUserPlaced) == "function" then f:SetUserPlaced(false) end
+end
+
 -- Окно сменило размер: вкладки раскладывают свои списки под новую вставку. Пока игрок тянет за
--- уголок, это бывает каждый кадр, поэтому раскладка дешёвая: открытая вкладка перерисовывает
--- уже готовые данные, а заново их не собирает.
-local function Resized(w, h)
-	w, h = math.floor((tonumber(w) or width) + 0.5), math.floor((tonumber(h) or height) + 0.5)
-	if laidOut and w == width and h == height then return end
+-- уголок, это бывает каждый кадр: тогда раскладывается только открытая вкладка и без нового сбора
+-- и сортировки (live), а все вкладки и полная отрисовка — по отпусканию. force — разложить все
+-- вкладки, даже если размер тот же: пока тянули, остальные не раскладывались.
+local function Resized(w, h, force)
+	w, h = Round(w, width), Round(h, height)
+	if not force and laidOut and w == width and h == height then return end
 	width, height, laidOut = w, h, true
 	local iw, ih = UI.InsetSize()
 	if child then child:SetWidth(iw - 40) end
+	if sizing then
+		local name = PANE_OF[current]
+		local pane = name and ns[name]
+		if pane and pane.Layout then ns.SafeCall("layout " .. name, pane.Layout, iw, ih, true) end
+		return
+	end
 	for _, name in ipairs(LAYOUTS) do
 		local pane = ns[name]
 		if pane and pane.Layout then ns.SafeCall("layout " .. name, pane.Layout, iw, ih) end
 	end
+	UI.Render()
+end
+
+-- OnSizeChanged. Размер окна меняют только уголок и сам аддон. Если он сменился без них (так
+-- было: после растягивания, закрытия и нового открытия окно само становилось больше), прежний
+-- размер возвращается, а в журнале остаётся запись.
+local function SizeChanged(w, h)
+	if not sizing and laidOut and (Round(w, width) ~= width or Round(h, height) ~= height) then
+		ns.Log("окно: размер %dx%d без уголка, возвращён %dx%d (%s)", Round(w, width), Round(h, height), width, height,
+			Anchor(frame))
+		frame:SetSize(width, height)
+		return
+	end
+	Resized(w, h)
 end
 
 local function StopSizing()
 	if not sizing then return end
 	sizing = false
 	frame:StopMovingOrSizing()
-	Resized(frame:GetWidth(), frame:GetHeight())
+	Resized(frame:GetWidth(), frame:GetHeight(), true)
+	Pin(frame)
 	SavePosition(frame)
-	UI.Render()
+	ns.Log("окно: размер %dx%d (%s)", width, height, Anchor(frame))
 end
 
 -- Уголок справа внизу, как у окон чата игры.
@@ -918,7 +969,10 @@ local function BuildGrip(f)
 	if hl and hl.SetBlendMode then hl:SetBlendMode("ADD") end
 	grip:SetScript("OnMouseDown", function(_, button)
 		if button ~= "LeftButton" then return end
+		ns.Log("окно: растягивание с %dx%d (%s)", Round(f:GetWidth(), width), Round(f:GetHeight(), height), Anchor(f))
 		ApplyBounds(f)
+		-- Тянется правый нижний угол, поэтому окно держится за левый верхний, а не за угол из кэша игры.
+		Pin(f)
 		sizing = true
 		f:StartSizing("BOTTOMRIGHT")
 	end)
@@ -934,6 +988,7 @@ local function Create()
 	local pos = ns.db.settings.frame
 	width, height = Fit(pos and pos.w, pos and pos.h)
 	f:SetSize(width, height)
+	f:ClearAllPoints()
 	if pos and pos.point then
 		f:SetPoint(pos.point, UIParent, pos.rel or pos.point, pos.x or 0, pos.y or 0)
 	else
@@ -945,11 +1000,14 @@ local function Create()
 	f:SetToplevel(true)
 	f:SetClampedToScreen(true)
 	f:SetMovable(true)
+	-- Прежние версии оставили окно в кэше расположения игры: без этого оно там и останется.
+	if type(f.SetUserPlaced) == "function" then f:SetUserPlaced(false) end
 	f:EnableMouse(true)
 	f:RegisterForDrag("LeftButton")
 	f:SetScript("OnDragStart", f.StartMoving)
 	f:SetScript("OnDragStop", function(self)
 		self:StopMovingOrSizing()
+		Pin(self)
 		SavePosition(self)
 	end)
 	f:Hide()
@@ -984,6 +1042,7 @@ local function Create()
 	status:SetScript("OnDragStart", function() f:StartMoving() end)
 	status:SetScript("OnDragStop", function()
 		f:StopMovingOrSizing()
+		Pin(f)
 		SavePosition(f)
 	end)
 	-- Нижняя полоса окна, под вставкой: в правом углу уголок растягивания, левее кнопка, строка растёт
@@ -1060,7 +1119,7 @@ local function Create()
 	-- Вкладки собраны под исходное окно: сохранённый размер раздаём им сразу.
 	Resized(width, height)
 	-- HookScript: рамка из шаблона игры может сама слушать свой размер.
-	f:HookScript("OnSizeChanged", function(_, w, h) ns.SafeCall("window resize", Resized, w, h) end)
+	f:HookScript("OnSizeChanged", function(_, w, h) ns.SafeCall("window resize", SizeChanged, w, h) end)
 	f:SetScript("OnShow", function() UI.Render() end)
 	f:SetScript("OnHide", function()
 		-- Окно закрыли, пока игрок тянул уголок (Esc): размер всё равно сохраняется.
@@ -1113,9 +1172,8 @@ function UI.Resize(w, h)
 	if not frame then Create() end
 	w, h = Fit(w, h)
 	frame:SetSize(w, h)
-	Resized(w, h)
+	Resized(w, h, true)
 	SavePosition(frame)
-	UI.Render()
 	return w, h
 end
 

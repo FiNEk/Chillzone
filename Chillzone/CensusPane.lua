@@ -532,8 +532,17 @@ local function ApplyColumns(t, columns)
 	end
 end
 
--- Заполнить таблицу с отметки y; возвращает её высоту (пустая не занимает места).
-local function RenderTable(t, columns, persons, y)
+-- Заполнить таблицу с отметки y; возвращает её высоту (пустая не занимает места). light — окно
+-- тянут: без сортировки и раскладки колонок, строки только переезжают, если текст выше переносится
+-- иначе. Это самая дорогая часть вкладки, её полная раскладка — по отпусканию.
+local function RenderTable(t, columns, persons, y, light)
+	if light then
+		if t.y ~= y then
+			t.y = y
+			PlaceRows(t)
+		end
+		return #t.people > 0 and TABLE_HEAD_H + #t.people * PERSON_H or 0
+	end
 	ApplyColumns(t, columns)
 	local known = false
 	for _, col in ipairs(columns) do known = known or col.key == t.sort.key end
@@ -549,7 +558,7 @@ local function RenderTable(t, columns, persons, y)
 	return #persons > 0 and TABLE_HEAD_H + #persons * PERSON_H or 0
 end
 
-local function RenderAll(c)
+local function RenderAll(c, light)
 	all:SetShown(c ~= nil)
 	if not c then return end
 	w.allCount:SetText(L.ONLINE_ALL_COUNT:format(ns.Util.Num(c.known), ns.Util.Num(c.online)))
@@ -559,10 +568,10 @@ local function RenderAll(c)
 		w.allStatus:SetText(c.status)
 		y = y + 14
 	end
-	allChild:SetHeight(y + RenderTable(allTable, TABLE_ALL, c.people, y) + 8)
+	allChild:SetHeight(y + RenderTable(allTable, TABLE_ALL, c.people, y, light) + 8)
 end
 
-local function RenderCard(c)
+local function RenderCard(c, light)
 	card:SetShown(c ~= nil)
 	if not c then return end
 	w.title:SetText(c.guild)
@@ -593,7 +602,7 @@ local function RenderCard(c)
 	w.onlineTitle:SetText(c.onlineGroup.title)
 	Place(w.onlineTitle, 0, y)
 	y = y + 18
-	y = y + RenderTable(cardTable, c.onlineGroup.mine and TABLE_MINE or TABLE_OTHER, c.onlineGroup.people, y)
+	y = y + RenderTable(cardTable, c.onlineGroup.mine and TABLE_MINE or TABLE_OTHER, c.onlineGroup.people, y, light)
 	cardChild:SetHeight(y + 8)
 end
 
@@ -780,9 +789,10 @@ function CensusPane.Render()
 end
 
 -- Раскладка под вставку w×h (UI.lua). Лишняя ширина уходит карточке: плиткам, полосе классов,
--- зонам и колонкам таблицы; лишняя высота — строкам таблицы. Открытая вкладка перерисовывает
--- то, что уже на экране.
-function CensusPane.Layout(width, height)
+-- зонам и колонкам таблицы; лишняя высота — строкам таблицы. live — окно ещё тянут: открытая
+-- вкладка перекладывает карточку из того, что уже на экране, а таблицу людей не трогает. Без
+-- live строки и колонки готовятся к полной отрисовке, её делает UI.Render после раскладки.
+function CensusPane.Layout(width, height, live)
 	if not pane then return end
 	cardW = math.max(CARD_W, math.floor(width - CARD_X - CARD_RIGHT))
 	colLW = COL_L_W + math.floor((cardW - CARD_W) / 3)
@@ -800,16 +810,19 @@ function CensusPane.Layout(width, height)
 	w.classLegend:SetWidth(colRW)
 	w.stale:SetWidth(colRW)
 	for _, p in ipairs(people) do p:SetWidth(colLW) end
+	for _, t in ipairs({ cardTable, allTable }) do t.head:SetWidth(cardW) end
+	if live then
+		if pane:IsShown() then
+			RenderAll(shownAll, true)
+			RenderCard(shownCard, true)
+		end
+		return
+	end
 	tableRows = math.max(tableRows, TableRows(height))
 	for _, t in ipairs({ cardTable, allTable }) do
-		t.head:SetWidth(cardW)
 		for _, r in ipairs(t.rows) do r:SetWidth(cardW) end
 		for i = #t.rows + 1, tableRows do t.rows[i] = NewTableRow(t.parent) end
 		t.width = nil -- колонки разложатся заново, в том числе у новых строк
-	end
-	if pane:IsShown() then
-		RenderAll(shownAll)
-		RenderCard(shownCard)
 	end
 end
 
