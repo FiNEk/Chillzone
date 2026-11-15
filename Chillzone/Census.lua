@@ -267,10 +267,25 @@ function Census.Hello(gap)
 	if helloReady ~= (ns.Security.MyCertificate() ~= nil) or ns.Now() - helloAt >= gap then Census.SendHello() end
 end
 
--- Ответ новому соседу. Задержка выбирается сразу: случайная задержка не зависит от того,
--- ответит ли клиент, и порядок случайных чисел у всех клиентов прежний.
-local function HelloBack()
-	if Answers() then Census.SendHello() end
+-- Ответ вошедшему — один на вход, на его первое объявление ключа (K1, Census.Entered из
+-- Security). K1 уходит, только когда у вошедшего свежий ростер, а без него он не принимает
+-- ничего по GUILD: H1 он может прислать раньше (в главной гильдии участник сразу), и ответ на
+-- такой H1 пропал бы. А в гильдии объединения H1 — лишь после каталога доверия, когда строки
+-- гильдии от репортёра уже идут: без ответа на K1 вошедший их отбросил бы (MayForward).
+-- Ответ на H1 нового соседа — запасной: если K1 уже был, а я тогда не пересылал гильдии.
+-- Ждущий в очереди привет один на всех вошедших: Comm.Send заменяет его по ключу.
+local entered = {} -- [Key] = когда согильдиец объявил новый ключ: с тех пор он слышит гильдию
+local greeted = {} -- [Key] = когда я ответил ему приветом
+local function Greet(key)
+	local now = ns.Now()
+	if not Answers() or (greeted[key] and now - greeted[key] < C.PEER_WINDOW) then return end
+	greeted[key] = now
+	Census.SendHello()
+end
+
+function Census.Entered(key)
+	entered[key] = ns.Now()
+	Greet(key)
 end
 
 ns.Comm.On("H1", function(msg, sender, dist)
@@ -282,10 +297,15 @@ ns.Comm.On("H1", function(msg, sender, dist)
 	local since = known and now - known.t <= C.PEER_WINDOW and known.since or now
 	peers[key] = { t = now, since = since, z = h.zones, r = h.relay, name = sender, version = h.version, unready = h.unready }
 	ns.Update.Heard(key, h.version)
-	-- Новый согильдиец с аддоном: отметить его в списке людей окна, а репортёру — ответить
-	-- своим приветом (HelloBack), чтобы вошедший сразу принимал его RG.
+	-- Новый согильдиец с аддоном: отметить его в списке людей окна, а репортёру — ответить, если
+	-- на его K1 ещё не отвечал (Greet). Задержка выбирается сразу: случайная задержка не зависит
+	-- от того, ответит ли клиент, и порядок случайных чисел у всех клиентов прежний.
 	if not known or known.version ~= h.version then ns.Fire("PEERS") end
-	if not known then ns.After(math.random(2, 6), "hello back", HelloBack) end
+	if not known then
+		ns.After(math.random(2, 6), "hello back", function()
+			if entered[key] then Greet(key) end
+		end)
+	end
 end)
 
 ---------------------------------------------------------------------------
@@ -545,6 +565,8 @@ end)
 
 ns.On("GUILD_CHANGED", function()
 	wipe(peers)
+	wipe(entered)
+	wipe(greeted)
 	helloReady, helloAt = nil, -1e9
 	listenSince = ns.Now()
 	elected, previous, acting, handingUntil = nil, nil, false, nil

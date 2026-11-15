@@ -418,6 +418,30 @@ T.test("union: новый участник главной гильдии пол�
     T.eq(#reader.ns.db.errors, 0)
 end)
 
+-- Сертификат вошедшему уходит раньше решения главы о его гильдии: пока решение в пути, у него
+-- есть сертификат и главный корень, а членства нет. Проба каталога 0.8 у главного корня в эти
+-- секунды — лишний шёпот с сертификатом и ответный каталог на каждый вход.
+T.test("union: вошедший рядовой не просит каталог у главного корня, пока свой каталог в пути", function()
+    for seed = 1, 6 do
+        math.randomseed(seed)
+        local w, k, _, v = Build()
+        w:Pair(v, k)
+        w:Run(40)
+        local n = w:Client({ first = "Новый", surname = "Северный", guild = v.guild, rank = 3 })
+        local send, probes = n.ns.Comm.Send, 0
+        n.ns.Comm.Send = function(dist, msg, opts)
+            if opts and opts.key == "legacy-union-probe" then probes = probes + 1 end
+            return send(dist, msg, opts)
+        end
+        v.ns.Roster.Scan()
+        w:Run(120)
+        T.ok(n.ns.IsMember(), "seed " .. seed .. ": каталог пришёл от своей гильдии")
+        T.ok(n.ns.Util.IsMemberGuild(k.guild), "seed " .. seed .. ": главная гильдия в составе")
+        T.eq(probes, 0, "seed " .. seed .. ": главному корню вошедший не шепчет")
+        T.eq(#n.ns.db.errors, 0)
+    end
+end)
+
 T.test("union: решение офицера с настоящей подписью не меняет состав", function()
     local w, k, o, v = Build()
     w:Pair(v, k)

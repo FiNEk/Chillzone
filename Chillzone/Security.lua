@@ -28,6 +28,7 @@ local policySent = {}
 local ownerSent = {} -- [Key адресата] = { raw, at }: владелец, отправленный в ответ реле (SendPolicies)
 local pendingPolicies = {}
 local lastLegacyProbe = -1e9
+local probeSince -- с каких пор у меня сертификат и главный корень, а членства нет (Tick)
 local unionQueries = {}
 local unionQueryAt, unionQueryDelay = -1e9, 0
 local MAX_CERT, MAX_WIRE, MAX_PENDING, FP_LEN = 1800, 7000, 32, 16
@@ -1194,16 +1195,15 @@ ns.Comm.On("KT", function(msg, sender, dist)
 end)
 -- Запрос вошедшего: весь каталог (union) или только корни. Запрос запоминается временем
 -- прихода, а сами записи уходят через окно TrustCatalog: одна копия на всех спросивших и на
--- всех офицеров. fresh — первый K1 соседа: корни ему через окно и привет (Census.Hello, не
--- чаще окна). Остальные K1 — плановое объявление ключа раз в минуту от каждого клиента: на них
--- корень повторяется лишь раз в TRUST_SHARE_ROOTS, а привета нет.
+-- всех офицеров. fresh — первый K1 соседа: корни ему через окно. Остальные K1 — плановое
+-- объявление ключа раз в минуту от каждого клиента: на них корень повторяется лишь раз в
+-- TRUST_SHARE_ROOTS. Привет вошедшему шлёт обработчик K1 (Census.Greet).
 local function NativeTrustReply(union, bootstrap, key, fresh)
     if not S.CanAdmin() then return end
     if union then
         S.ShareTrust(bootstrap, key)
     else
         ns.TrustCatalog.Request(key, true, nil, fresh)
-        if fresh and ns.Census then ns.Census.Hello(C.TRUST_SHARE_WINDOW) end
     end
 end
 ns.Comm.On("UQ", function(msg, sender, dist, ctx)
@@ -1222,6 +1222,8 @@ ns.Comm.On("K1", function(msg, sender, dist)
     if not raw or #raw ~= 32 then return end
     local k = U.Key(sender)
     local firstPeer = not keys[k] or keys[k].public ~= public
+    -- Новый ключ — вход согильдийца: репортёр называет себя сразу, не дожидаясь его H1.
+    if firstPeer and ns.Census then ns.Census.Entered(k) end
     -- certified — объявил, что сертификат у него есть (без ~0): Issue продлевает его без корня.
     keys[k] = { name = sender, public = public, at = ns.Now(), certified = not flag:find("~0", 1, true) }
     -- У участника нет сертификата, а у меня, активного издателя, он есть: первый KP до него
@@ -1454,10 +1456,15 @@ local function Tick()
     -- Старое RP с настоящим своим сертификатом запрашивает подписанный каталог у
     -- уже доверенного главного корня. Нативный KT сам по себе членства не даёт.
     -- Персонажу своего аккаунта не шепчем, корню не в игре — не чаще C.UNION_CONTACT_RETRY.
+    -- Нативный каталог идёт по записи, и сертификат вошедшему часто приходит раньше решения
+    -- главы: проба — только если членства нет и через окно каталога (TRUST_SHARE_WINDOW).
+    -- Иначе почти каждый вход рядового стоил шёпота корню с сертификатом и ответного каталога.
     local mainRoot, mine = Root(C.MAIN_GUILD), S.MyCertificate()
     local probing = not Store().governed and not ns.IsMember() and mainRoot and mine
     probeKey = probing and U.Key(mainRoot.name) or nil
-    if probing and Reachable(mainRoot.name) and now - lastLegacyProbe >= 120 then
+    if not probing then probeSince = nil elseif not probeSince then probeSince = now end
+    if probing and now - probeSince >= C.TRUST_SHARE_WINDOW and Reachable(mainRoot.name)
+        and now - lastLegacyProbe >= 120 then
         lastLegacyProbe = now
         S.Introduce(mainRoot.name)
         ns.Comm.Send("WHISPER", "RP~" .. mine.fp, { target = mainRoot.name,

@@ -744,7 +744,15 @@ T.test("relay: смена репортёра — чат гильдии не те
 		lines[i] = ("смена репортёра %02d"):format(i)
 		c.G:Slash("/cz1", lines[i])
 	end
-	w:Run(15); Line(1)
+	-- Строку, пришедшую раньше решения главы о гильдии автора, вошедшая отбросит, как и строки до
+	-- своего членства: это потеря входа, а не смены репортёра. Каталог доверия приходит за
+	-- десяток секунд, смена же длится LOGIN_QUIET и дольше — строки ниже идут уже во время неё.
+	for _ = 1, 60 do
+		if Al.ns.IsMember() and Al.ns.Util.IsMemberGuild("Орден Чиллзона") then break end
+		w:Run(1)
+	end
+	T.ok(Al.ns.Util.IsMemberGuild("Орден Чиллзона"), "у Аллы каталог доверия с гильдией автора")
+	w:Run(1); Line(1)
 	w:Run(15); Line(2)
 	-- Кандидатом Алла становится, когда получит сертификат и объявит готовность в H1.
 	for _ = 1, 30 do
@@ -829,27 +837,31 @@ T.test("census: вошедшему отвечает приветом тольк�
 	T.ok(reporter, "у гильдии есть репортёр")
 	local P = w:Client({ first = "Пётр", surname = "Поздний", guild = "Чиллзон", rank = 3, config = { CHANNEL_CHAT = false } })
 	c.A.ns.Roster.Scan(); c.K.ns.Roster.Scan(); c.M.ns.Roster.Scan()
-	local function FirstHello()
+	-- Слышит гильдию вошедший со свежим ростером, тогда же он объявляет ключ (K1). Свой H1 в
+	-- главной гильдии он может прислать раньше, и ответ на него пропал бы.
+	local function First(kind)
 		for _, e in ipairs(w.log) do
-			if e.from == P:Name() and e.dist == "GUILD" and e.msg:sub(1, 2) == "H1" then return e.t end
+			if e.from == P:Name() and e.dist == "GUILD" and e.msg:sub(1, 2) == kind then return e.t end
 		end
 	end
-	for _ = 1, 30 do
-		if FirstHello() then break end
+	for _ = 1, 40 do
+		if First("K1") and First("H1") then break end
 		w:Run(1)
 	end
-	local t0 = FirstHello()
-	T.ok(t0, "вошедший объявил себя")
+	T.ok(First("H1"), "вошедший объявил себя")
+	local t0 = First("K1")
+	T.ok(t0, "вошедший объявил ключ")
 	w:Run(10)
 	T.ok(P.ns.Census.Peers()[reporter], "через 10 секунд вошедший знает репортёра")
 	T.ok(P.ns.Census.MayForward(reporter), "и принимает его RG")
-	-- Остальных он услышит в плановых приветах: окно короче HELLO_EVERY вмещает один плановый
-	-- привет каждого, ответ на вход — только у репортёра.
+	-- Остальных он услышит в плановых приветах: окно короче HELLO_EVERY от его первого сообщения
+	-- вмещает один плановый привет каждого, ответ на вход — только у репортёра и один.
 	w:Run(c.A.ns.Config.HELLO_EVERY - 12)
+	local t1 = math.min(t0, First("H1"))
 	for _, cl in ipairs({ c.A, c.K, c.M }) do
 		local n = 0
 		for _, e in ipairs(w.log) do
-			if e.from == cl:Name() and e.dist == "GUILD" and e.msg:sub(1, 2) == "H1" and e.t >= t0 and e.t < t0 + c.A.ns.Config.HELLO_EVERY - 2 then
+			if e.from == cl:Name() and e.dist == "GUILD" and e.msg:sub(1, 2) == "H1" and e.t >= t1 and e.t < t1 + c.A.ns.Config.HELLO_EVERY - 2 then
 				n = n + 1
 			end
 		end
