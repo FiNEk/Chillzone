@@ -13,6 +13,9 @@
 -- позванные. «Записать» занимает место без приглашения; «Позвать» и «Позвать всех» в заголовке
 -- записанных приглашают в группу игры; крестик отказывает или вычёркивает. «Кого ещё ищем» на
 -- панели только показано: записанные убавляют роль сами, вручную число меняют в «Изменить».
+--
+-- Ширины заданы под исходное окно (вставка 804×340). Растянутое окно (Layout) отдаёт лишнюю ширину
+-- доске, а правая панель той же ширины стоит у правого края и растёт вниз: длиннее список заявок.
 local ADDON, ns = ...
 
 local L = ns.L
@@ -28,8 +31,13 @@ local SIDE_X, SIDE_W = 512, 282
 local HEADER_H, ROW_H = 22, 38
 local APPLICANT_H, SECTION_H = 36, 20
 local ACTION_W, INFO_W = 96, 112
+local BASE_W, BASE_H, SIDE_V = 804, 340, 16 -- вставка исходного окна; панель ниже её верха и выше низа
+local listW, sideX = LIST_W, SIDE_X -- доска и правая панель под ширину вставки (Layout)
 
-local pane, list, listChild, empty, side
+-- Ширина названия и строки под ним в строке доски: справа сведения и кнопка.
+local function TextW() return listW - 6 - ACTION_W - INFO_W - 16 end
+
+local pane, list, listChild, empty, side, divider
 local idle, form, own, picker
 local rows, filters, applicantRows, sectionRows, pickerRows = {}, {}, {}, {}, {}
 local filter -- вид мест или nil — все
@@ -221,7 +229,7 @@ local function Row(i)
 	local r = rows[i]
 	if r then return r end
 	r = CreateFrame("Button", nil, listChild)
-	r:SetWidth(LIST_W)
+	r:SetWidth(listW)
 	r.bg = r:CreateTexture(nil, "BACKGROUND")
 	r.bg:SetAllPoints()
 	r.bg:SetColorTexture(1, 1, 1, 0.03)
@@ -245,7 +253,7 @@ local function Row(i)
 	r.detail = FS(r, "GameFontDisableSmall", "RIGHT")
 	r.detail:SetPoint("BOTTOMRIGHT", -(ACTION_W + 8), 6)
 	r.detail:SetWidth(INFO_W)
-	local textWidth = LIST_W - 6 - ACTION_W - INFO_W - 16
+	local textWidth = TextW()
 	r.name = FS(r, "GameFontHighlight")
 	r.name:SetPoint("TOPLEFT", 6, -5)
 	r.name:SetWidth(textWidth)
@@ -324,7 +332,7 @@ local function BuildList()
 	empty:SetWidth(LIST_W - 12)
 	empty:Hide()
 
-	local divider = pane:CreateTexture(nil, "ARTWORK")
+	divider = pane:CreateTexture(nil, "ARTWORK")
 	divider:SetColorTexture(1, 1, 1, 0.08)
 	divider:SetWidth(1)
 	divider:SetPoint("TOPLEFT", SIDE_X - 8, -10)
@@ -848,7 +856,7 @@ function Pane.Build(parent)
 	BuildList()
 	side = CreateFrame("Frame", nil, pane)
 	side:SetPoint("TOPLEFT", SIDE_X, -8)
-	side:SetSize(SIDE_W, 324)
+	side:SetSize(SIDE_W, BASE_H - SIDE_V)
 	BuildIdle()
 	BuildForm()
 	BuildOwn()
@@ -856,8 +864,32 @@ function Pane.Build(parent)
 	Pane.frames.pane, Pane.frames.rows, Pane.frames.filters = pane, rows, filters
 	Pane.frames.idle, Pane.frames.form, Pane.frames.own, Pane.frames.picker = idle, form, own, picker
 	Pane.frames.applicants, Pane.frames.sections, Pane.frames.pickerRows = applicantRows, sectionRows, pickerRows
+	Pane.frames.list, Pane.frames.side = list, side
 	pane:Hide()
 	return pane
+end
+
+-- Раскладка под вставку width×height (UI.lua): доска шире, правая панель у правого края и выше.
+-- Её содержимое привязано к её краям: кнопки снизу, списки заявок и занятий тянутся вниз.
+function Pane.Layout(width, height)
+	if not pane then return end
+	local extra = math.max(0, math.floor(width - BASE_W))
+	listW, sideX = LIST_W + extra, SIDE_X + extra
+	list:SetWidth(listW)
+	listChild:SetWidth(listW)
+	empty:SetWidth(listW - 12)
+	local textWidth = TextW()
+	for _, r in ipairs(rows) do
+		r:SetWidth(listW)
+		r.name:SetWidth(textWidth)
+		r.sub:SetWidth(textWidth)
+	end
+	divider:ClearAllPoints()
+	divider:SetPoint("TOPLEFT", sideX - 8, -10)
+	divider:SetPoint("BOTTOMLEFT", sideX - 8, 10)
+	side:ClearAllPoints()
+	side:SetPoint("TOPLEFT", sideX, -8)
+	side:SetHeight(math.max(BASE_H, math.floor(height)) - SIDE_V)
 end
 
 function Pane.Render()

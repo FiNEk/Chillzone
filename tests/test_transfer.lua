@@ -462,3 +462,38 @@ T.test("кадры: неполный ростер — исключение за�
 	T.no(rf.tools.showAll:IsShown())
 	Errors(c)
 end)
+
+T.test("кадры: «Состав» в большом окне — больше строк, шире имя и звание", function()
+	local w, c = Build()
+	for i = 1, 40 do
+		w:AddOffline(NORTH, ("Боец%02d Запасной"):format(i) .. REALM, 3, 30, "ROGUE", 10 + i)
+	end
+	local V = c.V.ns
+	V.Roster.Scan()
+	V.UI.Toggle("roster")
+	local f = V.RosterPane.frames
+	local function Shown()
+		local n = 0
+		for _, r in ipairs(f.rows) do
+			if r:IsShown() then n = n + 1 end
+		end
+		return n
+	end
+	T.eq(Shown(), 17, "исходное окно: 15 видимых строк и запас")
+	local x = {}
+	for col = 1, 4 do
+		f.head.cells[col].SetPoint = function(_, _, _, _, at) x[col] = at end
+	end
+	-- Вставка 1014×520: таблица 970 в ширину, прибавка 210 — имени 126, званию 84;
+	-- видимых строк (520 - 56 - 8) / 18 = 25.
+	V.UI.Resize(814 + 210, 426 + 180)
+	T.same(x, { 4, 424, 478, 776 }, "уровень, звание и давность сдвинулись вправо")
+	T.eq(Shown(), 27, "25 видимых строк и запас")
+	f.scroll:SetVerticalScroll(18 * 5)
+	T.eq(f.rows[1].index, 6, "прокрутка в высоком окне")
+	T.eq(f.rows[27].index, 32, "строки подряд")
+	V.UI.Resize(814, 426)
+	T.same(x, { 4, 298, 352, 566 }, "исходные колонки")
+	T.eq(Shown(), 17, "лишние строки спрятаны")
+	Errors(c)
+end)
