@@ -48,6 +48,39 @@ T.test("union-review: повторный запрос каталога полу�
     T.eq(priorities[#priorities], false, "повторный каталог наравне с чатом")
 end)
 
+T.test("union-review: реле не повторяет владельца и решения в каждом ответе репортёру", function()
+    local w, k, o, v = Build()
+    w:Pair(v, k); w:Run(120)
+    T.ok(v.ns.Census.IsReporter() and k.ns.Relay.IAmRelay() and o.ns.Relay.IAmRelay(), "Вера регистрируется у двух реле")
+    -- Первые куски шёпотов Вере: [тип][кто] = сколько.
+    local function Count(from)
+        local n = {}
+        for i = from + 1, #w.log do
+            local e = w.log[i]
+            local kind = e.dist == "WHISPER" and e.target == v:Name()
+                and (e.msg:match("^C[^:]*:1:%d+:(%u%w)~") or e.msg:match("^(%u%w)~"))
+            if kind then
+                n[kind] = n[kind] or {}
+                n[kind][e.from] = (n[kind][e.from] or 0) + 1
+            end
+        end
+        return n
+    end
+    local from = #w.log
+    w:Run(300)
+    local n = Count(from)
+    T.ok(n.RY and (n.RY[k:Name()] or 0) >= 15 and (n.RY[o:Name()] or 0) >= 15, "реле отвечают на каждую регистрацию")
+    T.eq(n.UO, nil, "владелец в ответе не повторяется")
+    T.eq(n.KA, nil, "решения в ответе не повторяются")
+    -- Раз в AUTH_INTRODUCE — снова, по разу от каждого реле: страховка от потерянного шёпота.
+    -- Глава ещё и сам доставляет решение контакту гильдии раз в UNION_CONTACT_RETRY.
+    from = #w.log
+    w:Run(k.ns.Config.AUTH_INTRODUCE + 60)
+    n = Count(from)
+    T.ok(n.UO and n.UO[o:Name()] == 1 and n.UO[k:Name()] and n.UO[k:Name()] <= 2, "владелец раз в AUTH_INTRODUCE")
+    T.ok(n.KA and n.KA[o:Name()] == 1 and n.KA[k:Name()] and n.KA[k:Name()] <= 2, "решение раз в AUTH_INTRODUCE")
+end)
+
 T.test("union-review: очистка истёкшего допуска сохраняет ручной запрет корня", function()
     local w, k, o = Build()
     w:Run(90)
@@ -383,6 +416,30 @@ T.test("union: новый участник главной гильдии пол�
     w:Run(60)
     T.ok(reader.ns.Util.IsMemberGuild(v.guild), "главная гильдия тоже запрашивает состав при первом объявлении")
     T.eq(#reader.ns.db.errors, 0)
+end)
+
+-- Сертификат вошедшему уходит раньше решения главы о его гильдии: пока решение в пути, у него
+-- есть сертификат и главный корень, а членства нет. Проба каталога 0.8 у главного корня в эти
+-- секунды — лишний шёпот с сертификатом и ответный каталог на каждый вход.
+T.test("union: вошедший рядовой не просит каталог у главного корня, пока свой каталог в пути", function()
+    for seed = 1, 6 do
+        math.randomseed(seed)
+        local w, k, _, v = Build()
+        w:Pair(v, k)
+        w:Run(40)
+        local n = w:Client({ first = "Новый", surname = "Северный", guild = v.guild, rank = 3 })
+        local send, probes = n.ns.Comm.Send, 0
+        n.ns.Comm.Send = function(dist, msg, opts)
+            if opts and opts.key == "legacy-union-probe" then probes = probes + 1 end
+            return send(dist, msg, opts)
+        end
+        v.ns.Roster.Scan()
+        w:Run(120)
+        T.ok(n.ns.IsMember(), "seed " .. seed .. ": каталог пришёл от своей гильдии")
+        T.ok(n.ns.Util.IsMemberGuild(k.guild), "seed " .. seed .. ": главная гильдия в составе")
+        T.eq(probes, 0, "seed " .. seed .. ": главному корню вошедший не шепчет")
+        T.eq(#n.ns.db.errors, 0)
+    end
 end)
 
 T.test("union: решение офицера с настоящей подписью не меняет состав", function()

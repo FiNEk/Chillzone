@@ -103,6 +103,12 @@ T.test("кадры: системные строки гильдии, формат
 	T.eq((R.GuildEvent("Борис Быстрый has left the guild.")), "left", "ушёл сам")
 	T.eq(R.GuildEvent("Вера Верная has joined the guild."), nil, "строка о себе")
 	T.eq(R.GuildEvent("Что-то другое."), nil)
+	-- Защищённая строка системы: тип string, но читать её нельзя (в игре — ошибка Lua).
+	local hidden = "Борис Быстрый has left the guild."
+	cl.env.issecretvalue = function(v) return v == hidden end
+	T.eq(R.GuildEvent(hidden), nil, "защищённую строку не разбираем")
+	T.eq(R.MatchFormat(hidden, "%s has left the guild."), nil)
+	cl.env.issecretvalue = function() return false end
 	-- В переводе игры порядок аргументов бывает другим.
 	cl.env.ERR_GUILD_REMOVE_SS = "%2$s исключает из гильдии: %1$s."
 	what, name = R.GuildEvent("Вера Верная исключает из гильдии: Борис Быстрый.")

@@ -1,5 +1,6 @@
 -- Chillzone: аддон-сообщения. Очередь отправки с двумя полосами, GUILD и WHISPER (раз в 1.2 с
--- каждая полоса отправляет кусок, у реле — 4 куска), повтор при «не сейчас» от игры, блокировка
+-- каждая полоса отправляет кусок, GUILD после тишины — до 8 из запаса, у реле шёпот — 4 куска),
+-- повтор при «не сейчас» от игры, блокировка
 -- чата в подземельях, сборка кусков и разбор входящих по типам. Правила очереди — из Olympus Comm.lua.
 --
 -- Полосы. Сервер Forever режет аддон-сообщения GUILD: около 10 сразу, затем 1 в секунду на
@@ -24,7 +25,12 @@ local Comm = {}
 ns.Comm = Comm
 
 Comm.SEND_INTERVAL = 1.2
-Comm.PARTS_RELAY = 4
+Comm.PARTS_RELAY = 4 -- кусков шёпота за тик у реле
+-- Запас GUILD (Comm.Quota): сервер пропускает около 10 сообщений сразу и затем 1 в секунду,
+-- запас полосы — до GUILD_BURST и копится по куску за SEND_INTERVAL, то есть всегда меньше
+-- серверного. После тишины пачка (ответ на Q1, выдача сертификатов) уходит сразу, в потоке —
+-- кусок за тик у всех, и у реле тоже.
+Comm.GUILD_BURST = 8
 Comm.MAX_QUEUE = 200
 Comm.HOLD_MAX = 600 -- не начатое и ждавшее столько, пока его полоса стояла, — выбрасывается
 -- Управление связью (опрос корня, отзыв, соединение, приветствия) идёт первым, объявления
@@ -51,12 +57,13 @@ local assemblers = {}
 local nextId = math.random(0, 1000)
 -- Полосы по dist: refused — отказов подряд, waitUntil — пауза после отказа, held — полоса
 -- стояла (пауза или блокировка): когда она пойдёт, её давние задания выбрасываются; size —
--- заданий полосы в очереди.
+-- заданий полосы в очереди; tokens и filled — запас GUILD и когда он пополнен (Comm.Quota).
 local lanes, laneOrder = {}, {}
 local function Lane(dist)
 	local lane = lanes[dist]
 	if not lane then
 		lane = { dist = dist, refused = 0, waitUntil = 0, size = 0 }
+		if dist == "GUILD" then lane.tokens, lane.filled = Comm.GUILD_BURST, 0 end
 		lanes[dist] = lane
 		laneOrder[#laneOrder + 1] = lane
 	end
@@ -137,12 +144,16 @@ function Comm.SendNow(dist, msg, target, logged, prefix, kind, source)
 	end
 	if ok and IsSuccess(res) then
 		Comm.stats.sent = Comm.stats.sent + 1
-		Lane(dist).refused = 0
+		local lane = Lane(dist)
+		lane.refused = 0
+		if lane.tokens then lane.tokens = math.max(0, lane.tokens - 1) end
 		return true
 	end
 	if ok and RETRYABLE[res] then
 		-- Пауза — только полосе этого сообщения: лимит GUILD шёпот не задерживает.
 		for _, lane in ipairs(res == LOCKDOWN and laneOrder or { Lane(dist) }) do
+			-- Сервер отказал раньше, чем кончился запас: копить его заново.
+			if lane.tokens then lane.tokens = 0 end
 			lane.refused = lane.refused + 1
 			local now = ns.Now()
 			local untilAt = now + RETRY_WAIT[math.min(lane.refused, #RETRY_WAIT)]
@@ -411,17 +422,34 @@ local function Release(now)
 	return lockdown
 end
 
--- Тик насоса: каждая полоса отправляет до своей квоты кусков (у реле — PARTS_RELAY), беря
--- первое по порядку очереди своё задание. Квота своя у каждой полосы: иначе поток GUILD с
--- приоритетом выше, который сервер принимает, навсегда обгонял бы шёпот.
+-- Сколько кусков полоса может отправить сейчас. Шёпот — кусок за тик, у реле PARTS_RELAY.
+-- GUILD — целые куски запаса (GUILD_BURST), одинаково у всех: лишнее сервер отвечает кодом 3,
+-- и полоса встаёт на паузу.
+function Comm.Quota(dist, now)
+	local lane = Lane(dist)
+	if lane.tokens then
+		now = now or ns.Now()
+		lane.tokens = math.min(Comm.GUILD_BURST, lane.tokens + math.max(0, now - lane.filled) / Comm.SEND_INTERVAL)
+		lane.filled = now
+		return math.floor(lane.tokens + 1e-9)
+	end
+	local R = ns.Relay
+	if R and R.IAmRelay and R.IAmRelay() then return Comm.PARTS_RELAY end
+	return 1
+end
+
+-- Тик насоса: каждая полоса отправляет до своей квоты кусков (Comm.Quota), беря первое по
+-- порядку очереди своё задание. Квота своя у каждой полосы: иначе поток GUILD с приоритетом
+-- выше, который сервер принимает, навсегда обгонял бы шёпот.
 function Comm.Pump()
 	if not queue[1] then return end
 	local now = ns.Now()
 	if Release(now) then return end
-	local R = ns.Relay
-	local parts = (R and R.IAmRelay and R.IAmRelay()) and Comm.PARTS_RELAY or 1
-	local left, sent = {}, {}
-	for _, lane in ipairs(laneOrder) do left[lane], sent[lane] = parts, 0 end
+	local left, sent, quota = {}, {}, {}
+	for _, lane in ipairs(laneOrder) do
+		quota[lane] = Comm.Quota(lane.dist, now)
+		left[lane], sent[lane] = quota[lane], 0
+	end
 	local function Open(lane)
 		return (left[lane] or 0) > 0 and now >= lane.waitUntil
 	end
@@ -440,17 +468,17 @@ function Comm.Pump()
 	end
 	-- Для счётчиков сети: полоса потратила всю квоту, а задания в ней остались — очередь не успевает.
 	for _, lane in ipairs(laneOrder) do
-		Net.Tick(lane.dist, sent[lane] or 0, (sent[lane] or 0) >= parts and lane.size > 0)
+		Net.Tick(lane.dist, sent[lane] or 0, (sent[lane] or 0) >= quota[lane] and lane.size > 0)
 	end
 end
 
 -- Срочное прямо сейчас, не дожидаясь насоса: до n кусков. Каждый раз — первое по порядку
--- задание с приоритетом, чья полоса не на паузе; обычное задание на очереди — конец.
+-- задание с приоритетом, чья полоса не на паузе и не без запаса; обычное задание на очереди — конец.
 function Comm.Flush(n)
 	local now = ns.Now()
 	if Release(now) then return end
 	local function Open(lane)
-		return now >= lane.waitUntil
+		return now >= lane.waitUntil and Comm.Quota(lane.dist, now) > 0
 	end
 	local parts = 0
 	while parts < (n or 1) do

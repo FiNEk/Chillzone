@@ -2,7 +2,8 @@
 -- пик за минуту, отказы сервера, выброшенные задания и ожидание в очереди. Ведутся всегда, без записи
 -- журнала, и стоят несколько сложений на кусок. Нужны, чтобы знать бюджет: сервер Forever пропускает
 -- по GUILD около 10 сообщений сразу и затем 1 в секунду на отправителя и префикс, а насос Comm
--- отправляет по куску раз в SEND_INTERVAL (у реле — PARTS_RELAY кусков). Формат обмена не меняется.
+-- отправляет по куску раз в SEND_INTERVAL (GUILD после тишины — до GUILD_BURST из запаса, у реле шёпотом —
+-- PARTS_RELAY кусков). Формат обмена не меняется.
 --
 -- Считаются куски: их считает и сервер. Тип — у целого сообщения (Net.Label): снаружи конверт реле
 -- (RL, RM, RG), внутри — само сообщение без подписи S1, у конверта строки чата (M1~A~гильдия~G1~...)
@@ -500,7 +501,7 @@ end
 function Net.Report()
 	local interval = ns.Comm.SEND_INTERVAL
 	local quota = floor(60 / interval + 0.5)
-	local lines = { L.NET_TITLE:format(quota, quota * ns.Comm.PARTS_RELAY) }
+	local lines = { L.NET_TITLE:format(quota, ns.Comm.GUILD_BURST, quota * ns.Comm.PARTS_RELAY) }
 	SessionLines(lines, session, true)
 	local store = ns.db and type(ns.db.net) == "table" and ns.db.net
 	local history = store and type(store.history) == "table" and store.history or {}

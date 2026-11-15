@@ -571,9 +571,10 @@ for _, who in ipairs({ "K", "B" }) do
 		local Comm = me.ns.Comm
 		for i = 1, 60 do Comm.Send("GUILD", "ZZ~" .. i, { prio = Comm.PRIO_CONTROL, key = "flood:" .. i }) end
 		w:Run(15)
-		-- Реле шлёт по 4 куска за тик и упирается в лимит; не реле лимит не задевает, но поток
-		-- с приоритетом выше прежде всё равно шёл бы впереди заявки.
-		if me.ns.Relay.IAmRelay() then T.ok((me.guildRefused or 0) > 0, "сервер уже отказывает по GUILD") end
+		-- Запас GUILD (Comm.Quota) у всех, и у реле, меньше серверного: отказов нет. Раньше реле
+		-- слало по 4 куска за тик и упиралось в лимит. Поток с приоритетом выше всё равно шёл бы
+		-- впереди заявки, будь у шёпота общая с GUILD квота.
+		T.eq(me.guildRefused or 0, 0, "сервер не отказывает по GUILD")
 		T.ok(Comm.QueueSize("GUILD") > 20, "в полосе GUILD ждёт поток с приоритетом выше")
 		T.ok(me.ns.Groups.Apply(Key(c.A), { t = 0, h = 1, d = 0 }))
 		local took

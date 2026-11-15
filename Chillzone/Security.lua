@@ -25,9 +25,13 @@ local serial, lastHello, lastPolicy = 0, -1e9, -1e9
 local lastSaid
 local policySigning = {}
 local policySent = {}
+local ownerSent = {} -- [Key адресата] = { raw, at }: владелец, отправленный в ответ реле (SendPolicies)
 local pendingPolicies = {}
 local lastLegacyProbe = -1e9
+local probeSince -- с каких пор у меня сертификат и главный корень, а членства нет (Tick)
 local unionQueries = {}
+local haves = {} -- [Key] = { at, set }: хэши записей каталога, названные согильдийцем перед UQ (UH)
+local HaveWire -- хэши своих записей каталога для сверки (ниже, у Security.Catalog)
 local unionQueryAt, unionQueryDelay = -1e9, 0
 local MAX_CERT, MAX_WIRE, MAX_PENDING, FP_LEN = 1800, 7000, 32, 16
 
@@ -276,7 +280,7 @@ function S.CheckCertificate(raw, owner, done, from)
     -- сертификаты не должны вытеснять мой (повторно его не выдадут до продления).
     local own = c.key == ns.myKey and identity ~= nil and c.public == identity.public
     if not Budget(own and "own" or "n:" .. Peer(from or owner or c.name), C.AUTH_NEW_PER_MIN) then return false end
-    checking[raw], inflight[c.fp] = { done }, true
+    checking[raw], inflight[c.fp] = { done, key = c.key }, true
     local accepted = Job(function() return VerifyCertificate(raw) end, function(valid)
         local callbacks = checking[raw] or {}
         checking[raw], inflight[c.fp] = nil, nil
@@ -286,6 +290,14 @@ function S.CheckCertificate(raw, owner, done, from)
     end)
     if not accepted then checking[raw], inflight[c.fp] = nil, nil end
     return accepted
+end
+-- Проверяется ли сейчас сертификат игрока name (KP пришёл, подпись ещё считается).
+function S.Checking(name)
+    local key = U.Key(name)
+    for _, waiters in pairs(checking) do
+        if waiters.key == key then return true end
+    end
+    return false
 end
 -- fn(c) — когда известен проверенный действующий сертификат с этим отпечатком: сразу или
 -- после того, как sender ответит на KQ. owner — чей это должен быть сертификат.
@@ -423,6 +435,15 @@ local function Issue(name, public, root, delegation)
     local old = S.Member(ns.MyGuild(), name)
     local renew = role == "member" and C.AUTH_TTL / 2 or C.AUTH_RENEW
     if old and old.public == public and old.role == role and old.rank == rank and now - old.issued < renew then return end
+    -- Продление: у получателя действующий сертификат от этого корня (S.Member) на тот же ключ, и
+    -- в последнем K1 он объявил, что сертификат у него есть (без ~0). Значит, корень он знает, и
+    -- KT перед KP не нужен: роль офицера продлевается раз в AUTH_RENEW, и такие KT были самой
+    -- частой копией корня в гильдии. Не получивший прежний KP объявляет K1 с ~0, и тогда
+    -- сертификат с корнем уходит ему шёпотом заново (обработчик K1). Свой сертификат издатель
+    -- продлевает себе: корень он знает сам.
+    local peer = keys[key]
+    local knowsRoot = old ~= nil and old.public == public
+        and (key == ns.myKey or (peer ~= nil and peer.public == public and peer.certified == true))
     if old then now = math.max(now, old.issued + 1) end
     local expires = now + C.AUTH_TTL
     if delegation ~= "" then
@@ -444,8 +465,9 @@ local function Issue(name, public, root, delegation)
         if not c then return end
         Keep(Approve(c, root.public))
         -- Корень — раньше сертификата: без корня новичок отбросит KP, а повторно его не выдадут.
+        -- При продлении (knowsRoot) корень у получателя уже есть.
         local queuedKey = "credential:" .. key
-        ShareRoot(root.guild, root, true, queuedKey)
+        if not knowsRoot then ShareRoot(root.guild, root, true, queuedKey) end
         ns.Comm.Send("GUILD", "KP~" .. Ed.ToB64(raw), { prio = true, key = queuedKey, guard = S.CanAdmin })
     end)
     if not started then issuing[key] = nil end
@@ -506,7 +528,14 @@ function S.Say()
     -- K1 понимает и 0.8; новый запрос состава идёт отдельно, чтобы старый издатель не потерял ключ.
     -- UQ раньше K1: приоритетный каталог не должен прерывать уже начатую выдачу KP.
     if needUnion and lastHello >= unionQueryAt then
-        ns.Comm.Send("GUILD", "UQ~1", { prio = unionQueryDelay == 0 and ns.Comm.PRIO_BOOTSTRAP or true, key = "union-query" })
+        local prio = unionQueryDelay == 0 and ns.Comm.PRIO_BOOTSTRAP or true
+        -- Сверка раньше UQ (before): после /reload записи у меня есть, и каталог не нужен заново.
+        -- Прежние версии UH не знают и шлют весь каталог.
+        local have = HaveWire()
+        if have ~= "" then
+            ns.Comm.Send("GUILD", "UH~" .. have, { prio = prio, key = "union-have", before = "union-query" })
+        end
+        ns.Comm.Send("GUILD", "UQ~1", { prio = prio, key = "union-query" })
         unionQueryDelay = math.min(3600, math.max(60, unionQueryDelay * 2))
         unionQueryAt = lastHello + unionQueryDelay
     elseif not needUnion then unionQueryAt, unionQueryDelay = -1e9, 0 end
@@ -559,10 +588,11 @@ local function PolicyCurrent(p)
 end
 -- Каталог доверия своей гильдии: корни своей гильдии и объединения, владелец объединения,
 -- действующие решения главы, допуски издателей и отзывы. Рассылает его TrustCatalog.lua —
--- один раз на всех офицеров, а не по копии от каждого. Записи — TrustCatalog.Record.
-function S.Catalog()
+-- один раз на всех офицеров, а не по копии от каждого. Записи — TrustCatalog.Record. Те же
+-- записи есть и у рядового: их хэши он называет при входе (UH).
+local function Records()
     local list, TC = {}, ns.TrustCatalog
-    if not S.CanAdmin() or not Store() then return list end
+    if not Store() then return list end
     for gk, root in pairs(S.Roots()) do
         if LocalOrMember(root.guild) then
             list[#list + 1] = TC.Record("KT", "KT:" .. gk, "KT~" .. root.guild .. "~" .. root.name .. "~" .. root.public,
@@ -577,6 +607,27 @@ function S.Catalog()
         end
     end
     return list
+end
+function S.Catalog()
+    return S.CanAdmin() and Records() or {}
+end
+-- Сверка перед UQ: хэши записей каталога, которые у меня уже есть, — офицеры пришлют только
+-- недостающие. Сначала корни и владелец: без них недостающим считается и всё, что на них
+-- опирается. Пустая строка — записей нет, сверять нечего.
+HaveWire = function()
+    local list = Records()
+    table.sort(list, function(a, b)
+        if a.tier ~= b.tier then return a.tier < b.tier end
+        return a.slot < b.slot
+    end)
+    local out = {}
+    for i = 1, math.min(#list, C.TRUST_HAVE_MAX) do out[i] = ns.TrustCatalog.Digest(list[i]) end
+    return table.concat(out)
+end
+-- Что назвал согильдиец key своей сверкой (UH): действует, пока его вход ещё отвечается.
+local function Have(key)
+    local h = key and haves[key]
+    return h and ns.Now() - h.at < 2 * C.TRUST_SHARE_WINDOW and h.set or nil
 end
 -- Офицеры, которые делят рассылку каталога: объявили ключ (K1) за PEER_WINDOW, не вышли из
 -- игры по ростеру, и я сам. У всех клиентов список примерно один и тот же.
@@ -601,7 +652,7 @@ function S.ShareTrust(bootstrap, asker, urgent)
     if urgent then
         ns.TrustCatalog.Urgent(asker)
     else
-        ns.TrustCatalog.Request(asker, false, bootstrap)
+        ns.TrustCatalog.Request(asker, false, bootstrap, nil, Have(asker))
     end
     return true
 end
@@ -699,15 +750,23 @@ ns.Comm.On("KU", function(msg, sender, dist)
     local guild, public = msg:match("^KU~([^~]+)~([%w_-]+)$")
     if guild and U.IsMemberGuild(guild) and U.GuildKey(guild) ~= GuildKey() then Unretire(U.GuildKey(guild), public) end
 end)
+-- Ответ реле (Pong) на каждую регистрацию репортёра, а она раз в 15 секунд. Владелец и решения
+-- уходят адресату, только если изменились или с прошлой отправки прошло AUTH_INTRODUCE, как допуски
+-- (Issuers.Share): те же байты получатель всё равно отбрасывает, а смену решения главы реле
+-- ещё и сразу шлёт держателю аренды (UNION_POLICY в Relay.lua).
 function S.SendPolicies(target)
     local key, now = U.Key(target), ns.Now()
-    ns.UnionAuthority.Share(target, true)
+    local owner, sent = ns.UnionAuthority.Current(), ownerSent[key]
+    if owner and (not sent or sent.raw ~= owner.raw or now - sent.at >= C.AUTH_INTRODUCE) then
+        ownerSent[key] = { raw = owner.raw, at = now }
+        ns.UnionAuthority.Share(target, true)
+    end
     ns.Issuers.Share(target, true)
     policySent[key] = policySent[key] or {}
     for _, p in pairs(Store() and Store().policies or {}) do
         local old = policySent[key][p.guild]
         if PolicyCurrent(p)
-            and (not old or old.wire ~= p.wire or now - old.at >= 120) then
+            and (not old or old.wire ~= p.wire or now - old.at >= C.AUTH_INTRODUCE) then
             policySent[key][p.guild] = { wire = p.wire, at = now }
             ns.Comm.Send("WHISPER", p.wire, { target = target, prio = true,
                 key = "policy:" .. U.Key(target) .. ":" .. p.guild, prefix = PolicyPrefix(p) })
@@ -1175,16 +1234,27 @@ ns.Comm.On("KT", function(msg, sender, dist)
 end)
 -- Запрос вошедшего: весь каталог (union) или только корни. Запрос запоминается временем
 -- прихода, а сами записи уходят через окно TrustCatalog: одна копия на всех спросивших и на
--- всех офицеров. Привет — не чаще того же окна.
-local function NativeTrustReply(union, bootstrap, key)
+-- всех офицеров. fresh — первый K1 соседа: корни ему через окно. Остальные K1 — плановое
+-- объявление ключа раз в минуту от каждого клиента: на них корень повторяется лишь раз в
+-- TRUST_SHARE_ROOTS. Привет вошедшему шлёт обработчик K1 (Census.Greet).
+local function NativeTrustReply(union, bootstrap, key, fresh)
     if not S.CanAdmin() then return end
     if union then
         S.ShareTrust(bootstrap, key)
     else
-        ns.TrustCatalog.Request(key, true)
-        if ns.Census then ns.Census.Hello(C.TRUST_SHARE_WINDOW) end
+        ns.TrustCatalog.Request(key, true, nil, fresh)
     end
 end
+-- Сверка вошедшего перед UQ: хэши записей каталога, которые у него есть (TrustCatalog.Digest).
+-- Его UQ и первый K1 тогда просят только недостающие записи.
+ns.Comm.On("UH", function(msg, sender, dist)
+    if dist ~= "GUILD" or not S.CanAdmin() or not NativeRole(sender) then return end
+    local list, size = msg:match("^UH~([%w_-]+)$"), ns.TrustCatalog.DIGEST
+    if not list or #list % size ~= 0 or #list > C.TRUST_HAVE_MAX * size then return end
+    local set = {}
+    for i = 1, #list, size do set[list:sub(i, i + size - 1)] = true end
+    haves[U.Key(sender)] = { at = ns.Now(), set = set }
+end)
 ns.Comm.On("UQ", function(msg, sender, dist, ctx)
     if msg == "UQ~1" and dist == "GUILD" and ctx and ctx.unionControl and NativeRole(sender) then
         local key = U.Key(sender)
@@ -1201,7 +1271,10 @@ ns.Comm.On("K1", function(msg, sender, dist)
     if not raw or #raw ~= 32 then return end
     local k = U.Key(sender)
     local firstPeer = not keys[k] or keys[k].public ~= public
-    keys[k] = { name = sender, public = public, at = ns.Now() }
+    -- Новый ключ — вход согильдийца: репортёр называет себя сразу, не дожидаясь его H1.
+    if firstPeer and ns.Census then ns.Census.Entered(k) end
+    -- certified — объявил, что сертификат у него есть (без ~0): Issue продлевает его без корня.
+    keys[k] = { name = sender, public = public, at = ns.Now(), certified = not flag:find("~0", 1, true) }
     -- У участника нет сертификата, а у меня, активного издателя, он есть: первый KP до него
     -- не дошёл (лимит, ещё не было корня). Issue свежий сертификат заново не выдаёт.
     -- Пока выданный сертификат ещё ждёт в очереди или очередь выдачи полна — не дублировать.
@@ -1226,7 +1299,8 @@ ns.Comm.On("K1", function(msg, sender, dist)
     -- слышал, а новый запрос сдвинул бы его запрос за них, и каталог ушёл бы повторно.
     -- Тогда K1 просит только корни. Если UQ не дошёл или был давно, весь каталог просит K1.
     local sameEntry = unionQueries[k] and ns.Now() - unionQueries[k] < C.TRUST_SHARE_WINDOW
-    NativeTrustReply(requested or (firstPeer and not sameEntry and Store().owner ~= nil), requested, k)
+    NativeTrustReply(requested or (firstPeer and not sameEntry and Store().owner ~= nil), requested, k,
+        firstPeer and not sameEntry)
 end)
 ns.Comm.On("KP", function(msg, sender, dist)
     if dist ~= "GUILD" and dist ~= "WHISPER" then return end
@@ -1431,10 +1505,15 @@ local function Tick()
     -- Старое RP с настоящим своим сертификатом запрашивает подписанный каталог у
     -- уже доверенного главного корня. Нативный KT сам по себе членства не даёт.
     -- Персонажу своего аккаунта не шепчем, корню не в игре — не чаще C.UNION_CONTACT_RETRY.
+    -- Нативный каталог идёт по записи, и сертификат вошедшему часто приходит раньше решения
+    -- главы: проба — только если членства нет и через окно каталога (TRUST_SHARE_WINDOW).
+    -- Иначе почти каждый вход рядового стоил шёпота корню с сертификатом и ответного каталога.
     local mainRoot, mine = Root(C.MAIN_GUILD), S.MyCertificate()
     local probing = not Store().governed and not ns.IsMember() and mainRoot and mine
     probeKey = probing and U.Key(mainRoot.name) or nil
-    if probing and Reachable(mainRoot.name) and now - lastLegacyProbe >= 120 then
+    if not probing then probeSince = nil elseif not probeSince then probeSince = now end
+    if probing and now - probeSince >= C.TRUST_SHARE_WINDOW and Reachable(mainRoot.name)
+        and now - lastLegacyProbe >= 120 then
         lastLegacyProbe = now
         S.Introduce(mainRoot.name)
         ns.Comm.Send("WHISPER", "RP~" .. mine.fp, { target = mainRoot.name,
@@ -1521,13 +1600,19 @@ ns.On("LOGIN", function()
         for key, t in pairs(served) do if clock - t >= 60 then served[key] = nil end end
         for key, t in pairs(resent) do if clock - t >= 60 then resent[key] = nil end end
         for key, t in pairs(introduced) do if clock - t >= C.AUTH_INTRODUCE then introduced[key] = nil end end
+        for key, sent in pairs(ownerSent) do if clock - sent.at >= C.AUTH_INTRODUCE then ownerSent[key] = nil end end
+        for key, list in pairs(policySent) do
+            for guild, sent in pairs(list) do if clock - sent.at >= C.AUTH_INTRODUCE then list[guild] = nil end end
+            if not next(list) then policySent[key] = nil end
+        end
         for key, t in pairs(unionQueries) do if clock - t >= 3600 then unionQueries[key] = nil end end
+        for key, h in pairs(haves) do if clock - h.at >= 2 * C.TRUST_SHARE_WINDOW then haves[key] = nil end end
     end)
 end)
 ns.On("GUILD_CHANGED", function()
     keys, issuing, pending, outgoing, hints = {}, {}, {}, {}, {}
     acceptedLinks = {}
-    unionQueries, unionQueryAt, unionQueryDelay = {}, -1e9, 0
+    unionQueries, unionQueryAt, unionQueryDelay, haves = {}, -1e9, 0, {}
     lastHello, lastPolicy, lastSaid = -1e9, -1e9, nil
     S.Say()
 end)

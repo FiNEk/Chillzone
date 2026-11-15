@@ -52,6 +52,7 @@ end)
 
 T.test("net: отправка — куски и сообщения по типам, отказы, пауза, выброс, снятие, ожидание", function()
 	local w, c, comm, sent, codes = Fresh({ GUILD = 3 })
+	comm.GUILD_BURST = 1 -- кусок за тик: «очередь не успевает» без запаса после простоя
 	comm.Send("GUILD", "H1~a", { prio = comm.PRIO_CONTROL })
 	comm.Pump()
 	local g = Tx(c, "GUILD")
@@ -75,6 +76,7 @@ T.test("net: отправка — куски и сообщения по типа
 	T.eq(#sent, 1 + parts)
 	-- Снятое как ненужное — не выброс.
 	comm.Send("GUILD", "KT~skip", { skip = function() return true end })
+	w.now = w.now + comm.SEND_INTERVAL -- запас GUILD после Drain пуст: снятие проверяется в свой тик
 	comm.Pump()
 	T.eq(g.skipped, 1)
 	T.eq(next(g.dropped), nil)
@@ -113,7 +115,8 @@ T.test("net: пик — скользящая минута и её состав, 
 	end
 	Stream(60, "ZA")
 	local g = Tx(c, "GUILD")
-	local perMinute = math.floor(60 / comm.SEND_INTERVAL)
+	-- Кусок за тик и запас GUILD в начале потока (Comm.GUILD_BURST).
+	local perMinute = math.floor(60 / comm.SEND_INTERVAL) + comm.GUILD_BURST
 	T.ok(g.peak >= perMinute - 10 and g.peak <= perMinute, "пик за минуту: " .. g.peak)
 	T.ok(type(g.peakAt) == "number")
 	T.same(g.top[1], { "ZA", g.peak }, "пик сложился из одного типа")
@@ -196,7 +199,7 @@ T.test("net: сессия — переживает /reload, давняя ухо�
 	T.ok(report:find(L.NET_HISTORY, 1, true))
 	T.ok(report:find("(" .. L.NET_PAST .. ")", 1, true))
 	T.ok(report:find("(" .. L.NET_CURRENT .. ")", 1, true))
-	T.ok(report:find(L.NET_TITLE:format(50, 200), 1, true), "раздел «Сеть» с квотой насоса")
+	T.ok(report:find(L.NET_TITLE:format(50, 8, 200), 1, true), "раздел «Сеть» с квотой насоса")
 	-- История ограничена.
 	for _ = 1, c.ns.Net.HISTORY + 3 do
 		c:Logout()
@@ -222,7 +225,7 @@ T.test("net: чужая или испорченная запись в сохра
 	for _, net in ipairs({ "строка", { current = "x", history = "y" }, { current = { schema = 99 }, history = { 1, {} } } }) do
 		local c = w:Client(setmetatable({ db = { net = net } }, { __index = opts }))
 		w:Run(5)
-		T.ok(c.ns.Diagnostics.Report():find(c.ns.L.NET_TITLE:format(50, 200), 1, true))
+		T.ok(c.ns.Diagnostics.Report():find(c.ns.L.NET_TITLE:format(50, 8, 200), 1, true))
 		T.eq(c.ns.db.net.current, c.ns.Net.Session())
 		T.eq(#c.ns.db.errors, 0)
 		c:Logout()

@@ -410,6 +410,72 @@ T.test("trust-catalog: привет в ответ на запросы катал
 	T.eq(calls, before + 1, "готовность сменилась — сразу")
 end)
 
+T.test("trust-catalog: без входов корень повторяется не чаще TRUST_SHARE_ROOTS, новому соседу — в окне", function()
+	local w, k, _, m = Build(2)
+	local C = k.ns.Config
+	local heard = Listen(m)
+	local root = k.ns.store.security.roots[k.ns.Util.GuildKey(k.guild)]
+	local id = k.ns.PREFIX .. "\n" .. "KT~" .. root.guild .. "~" .. root.name .. "~" .. root.public
+	local function Count(since)
+		local n, last = 0, nil
+		for _, e in ipairs(heard) do
+			if e.id == id and e.started >= since then n, last = n + 1, e.started end
+		end
+		return n, last
+	end
+	local function Admins(fn)
+		for _, c in ipairs(w.clients) do
+			if c.guild == k.guild and c.ns.Security.CanAdmin() then fn(c) end
+		end
+	end
+	-- Без входов корень просят только K1 раз в минуту и плановое объявление офицера.
+	local t0 = w.now
+	w:Run(3 * C.TRUST_SHARE_ROOTS)
+	local n = Count(t0)
+	T.ok(n >= 1 and n <= 4, "копий корня за " .. 3 * C.TRUST_SHARE_ROOTS .. " с: " .. n)
+	-- Сразу после копии плановые запросы её не повторяют.
+	local t1 = w.now
+	T.ok(RunUntil(w, function() return Count(t1) > 0 end, C.TRUST_SHARE_ROOTS + 60), "копия корня по плановым запросам")
+	local _, copied = Count(t1)
+	Admins(function(c) c.ns.TrustCatalog.Request(nil, true) end)
+	w:Run(90)
+	T.eq(Count(copied + 0.5), 0, "плановый запрос через 90 с после копии")
+	-- Корни новому соседу — через окно, а не через TRUST_SHARE_ROOTS.
+	local t2 = w.now
+	Admins(function(c) c.ns.TrustCatalog.Request(m.ns.myKey, true, nil, true) end)
+	T.ok(RunUntil(w, function() return Count(t2) > 0 end, C.TRUST_SHARE_DELAY + C.TRUST_SHARE_JITTER + 5),
+		"новому соседу корень пришёл через " .. (w.now - t2) .. " с")
+	T.eq(#k.ns.db.errors, 0, "без ошибок")
+end)
+
+T.test("trust-catalog: продление сертификата идёт без корня, первый сертификат вошедшему — с корнем", function()
+	local w, k, _, _, officers = Build(1)
+	local o, C = officers[1], k.ns.Config
+	-- Корень перед выданным сертификатом (Security.ShareRoot) — KT с before = "credential:<ключ>".
+	-- Продлевает издатель-корень (Карл) и роль офицера, и свою.
+	local roots, renewals = 0, { [o.ns.myKey] = 0, [k.ns.myKey] = 0 }
+	local send = k.ns.Comm.Send
+	k.ns.Comm.Send = function(dist, msg, opts)
+		if dist == "GUILD" and opts and msg:sub(1, 3) == "KT~" and tostring(opts.before):find("^credential:") then
+			roots = roots + 1
+		end
+		local to = dist == "GUILD" and opts and msg:sub(1, 3) == "KP~" and tostring(opts.key):match("^credential:(.+)$")
+		if to and renewals[to] then renewals[to] = renewals[to] + 1 end
+		return send(dist, msg, opts)
+	end
+	local since = k.ns.ServerTime()
+	w:Run(2 * C.AUTH_RENEW + 60)
+	T.ok(renewals[o.ns.myKey] >= 1, "роль офицера продлена: " .. renewals[o.ns.myKey])
+	T.ok(renewals[k.ns.myKey] >= 1, "своя роль главы продлена: " .. renewals[k.ns.myKey])
+	T.eq(roots, 0, "корень перед продлением не уходит")
+	local mine = o.ns.Security.MyCertificate()
+	T.ok(mine and mine.issued >= since, "офицер принял продлённый сертификат")
+	local g = Join(w, "Новичок")
+	T.ok(RunUntil(w, function() return g.ns.Security.MyCertificate() ~= nil end, 120), "вошедший получил сертификат")
+	T.ok(roots >= 1, "перед первым сертификатом — корень: " .. roots)
+	T.eq(#k.ns.db.errors, 0, "без ошибок")
+end)
+
 -- Офицер прежней версии: на каждый запрос шлёт весь каталог (или только корни) сразу, без окна.
 -- reversed — в обратном порядке: допуски и решения раньше корня и владельца; once — весь каталог
 -- только на первый запрос, дальше молчит.
@@ -515,4 +581,150 @@ T.test("trust-catalog: допуск раньше корня не засчиты�
 		if EarlyPermit(seed) then early = early + 1 end
 	end
 	T.ok(early > 0, "хотя бы на одном seed прежний прислал допуск раньше корня")
+end)
+
+-- Записи каталога, которые отправили сами clients (свои отправки Comm.Watch, без отправителя): [id] = n.
+local function Sent(clients)
+	local out = {}
+	for _, c in ipairs(clients) do
+		c.ns.Comm.Watch(function(msg, sender, prefix)
+			if not sender and KINDS[msg:sub(1, 2)] then
+				local id = prefix .. "\n" .. msg
+				out[id] = (out[id] or 0) + 1
+			end
+		end)
+	end
+	return out
+end
+
+-- Сообщения GUILD от c в журнале мира начиная с from, которые начинаются с head.
+local function Logged(w, c, from, head)
+	local out = {}
+	for i = from, #w.log do
+		local e = w.log[i]
+		if e.dist == "GUILD" and e.from == c:Name() and e.msg:sub(1, #head) == head then out[#out + 1] = e.msg end
+	end
+	return out
+end
+
+T.test("trust-catalog: хэш сверки — шесть знаков, у всех одинаковый, UO главы и без доказательства совпадают", function()
+	local _, k, _, m = Build(1)
+	local TC, seen = k.ns.TrustCatalog, {}
+	for _, r in ipairs(k.ns.Security.Catalog()) do
+		local d = TC.Digest(r)
+		T.ok(#d == TC.DIGEST and d:match("^[%w_-]+$") ~= nil, r.slot .. ": " .. d)
+		T.eq(m.ns.TrustCatalog.Digest(r), d, r.slot .. ": у рядового тот же")
+		T.ok(not seen[d], r.slot .. ": хэш не повторяется")
+		seen[d] = true
+	end
+	local uo = k.ns.UnionAuthority.Record()
+	T.ok(uo.base ~= nil, "у главы UO с доказательством")
+	local bare = TC.Record("UO", "UO", uo.base:match("\n(.*)$"), uo.prefix)
+	T.eq(TC.Digest(bare), TC.Digest(uo), "UO без доказательства — тот же хэш")
+end)
+
+-- /reload рядового: k, офицеры и сам рядовой; drop — что рядовой после перезагрузки не отправит,
+-- idle — сколько он перед этим в игре. Возвращает перезагруженного, отправленные офицерами
+-- записи, начало журнала и офицеров с главой.
+local function Reload(w, k, m, officers, drop, idle)
+	local senders = { k }
+	for _, o in ipairs(officers) do senders[#senders + 1] = o end
+	w:Run(idle or 60)
+	local sent, from = Sent(senders), #w.log + 1
+	local m2 = w:Reload(m)
+	if drop then
+		local send = m2.ns.Comm.Send
+		m2.ns.Comm.Send = function(dist, msg, opts)
+			if dist == "GUILD" and msg:find(drop) then return true end
+			return send(dist, msg, opts)
+		end
+	end
+	w:Run(120)
+	return m2, sent, from, senders
+end
+
+-- После /reload записи каталога у рядового есть: сверка (UH) перед UQ называет их, и офицеры не
+-- повторяют ничего — ни по UQ, ни репортёр на Q1. Прежде каждый /reload стоил гильдии всего каталога.
+-- Перезагрузка — через KEEP после входа: офицеры уже забыли и его прежний запрос, и свои копии.
+T.test("trust-catalog: /reload рядового с полным каталогом — сверка вместо каталога", function()
+	local w, k, _, m, officers = Build(3)
+	T.ok(HasCatalog(k, m), "у рядового весь каталог")
+	local m2, sent, from, senders = Reload(w, k, m, officers, nil, 16 * 60)
+	T.ok(HasCatalog(k, m2), "каталог на месте")
+	T.ok(m2.ns.IsMember(), "и членство")
+	local uh = Logged(w, m2, from, "UH~")
+	T.eq(#uh, 1, "сверка ушла один раз")
+	T.eq(#Logged(w, m2, from, "UQ~1"), 1, "и UQ")
+	-- Ответ репортёра на его Q1 (Census.lua): кто бы ни был репортёром, срочно — ничего.
+	for _, o in ipairs(senders) do o.ns.Security.ShareTrust(false, m2.ns.myKey, true) end
+	w:Run(30)
+	local set = {}
+	for i = 4, #(uh[1] or ""), 6 do set[uh[1]:sub(i, i + 5)] = true end
+	for _, r in ipairs(k.ns.Security.Catalog()) do
+		T.ok(set[k.ns.TrustCatalog.Digest(r)], r.slot .. ": есть в сверке рядового")
+		-- Корень (KT) не в счёт: перед сертификатами авторов отчётов его шлёт Security.ShareRoot.
+		local got = (sent[r.id] or 0) + (r.base and sent[r.base] or 0)
+		if r.kind ~= "KT" then T.eq(got, 0, r.slot .. ": не повторялась") end
+	end
+	Errors(w)
+end)
+
+-- Сверка не дошла (или прежняя версия): UQ просит весь каталог, как прежде.
+T.test("trust-catalog: /reload без сверки — весь каталог, как прежде", function()
+	local w, k, _, m, officers = Build(3)
+	local m2, sent = Reload(w, k, m, officers, "^UH~")
+	T.ok(HasCatalog(k, m2), "каталог на месте")
+	for _, r in ipairs(k.ns.Security.Catalog()) do
+		local got = (sent[r.id] or 0) + (r.base and sent[r.base] or 0)
+		T.ok(got >= 1, r.slot .. ": разослана")
+	end
+	Errors(w)
+end)
+
+-- Пока рядового не было, у него пропал допуск офицера: сверка его не называет, и приходит только
+-- он и корень гильдии, без которого допуск не примут.
+T.test("trust-catalog: после сверки — только недостающая запись и её корень", function()
+	local w, k, _, m, officers = Build(3)
+	local gk = k.ns.Util.GuildKey(MAIN)
+	local key = officers[2].ns.myKey
+	local d = k.ns.store.security.issuers[gk][key]
+	T.ok(d and d.active, "у офицера допуск")
+	m.ns.store.security.issuers[gk][key] = nil
+	T.no(HasCatalog(k, m), "у рядового его нет")
+	local m2, sent = Reload(w, k, m, officers)
+	T.ok(HasCatalog(k, m2), "допуск пришёл")
+	local wire = "KD~" .. k.ns.Ed25519.ToB64(d.raw)
+	for _, r in ipairs(k.ns.Security.Catalog()) do
+		local got = (sent[r.id] or 0) + (r.base and sent[r.base] or 0)
+		if r.wire == wire then
+			T.ok(got >= 1 and got <= 2, r.slot .. ": недостающий допуск, копий " .. got)
+		elseif r.slot == "KT:" .. gk then
+			T.ok(got >= 1, "корень гильдии — перед ним: " .. got)
+		elseif r.kind ~= "KT" then
+			T.eq(got, 0, r.slot .. ": не повторялась")
+		end
+	end
+	Errors(w)
+end)
+
+-- Без входов каталог не повторяется: копии забываются через KEEP, и запросы — тоже, вместе с
+-- последним (иначе забытая копия снова делала запись неразосланной). UO главы с продлённым
+-- сертификатом (новые байты раз в AUTH_RENEW) — тот же владелец: его не повторяют. Корни идут
+-- плановым объявлением, как прежде.
+T.test("trust-catalog: без входов каталог не повторяется — ни после KEEP, ни после продления главы", function()
+	local w, k, _, _, officers = Build(3)
+	local senders = { k }
+	for _, o in ipairs(officers) do senders[#senders + 1] = o end
+	local sent = Sent(senders)
+	w:Run(45 * 60)
+	for _, r in ipairs(k.ns.Security.Catalog()) do
+		local got = (sent[r.id] or 0) + (r.base and sent[r.base] or 0)
+		if r.kind ~= "KT" then T.eq(got, 0, r.slot .. ": копий без входов") end
+	end
+	local other = 0
+	for id, n in pairs(sent) do
+		if not id:find("\nKT~") then other = other + n end
+	end
+	T.eq(other, 0, "и прежних байтов той же записи (UO до продления)")
+	Errors(w)
 end)

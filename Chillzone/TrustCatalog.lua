@@ -15,11 +15,25 @@
 -- * Запрос. UQ и первый K1 соседа просят весь каталог, остальные K1 и плановое объявление
 --   офицера (раз в 30 с) — только корни. Первый K1 меньше окна после UQ того же соседа — тот же
 --   вход (Security.lua): он просит только корни, иначе его запрос сдвинулся бы за уже
---   разосланное. Запрос запоминается временем прихода. Запись нужна, пока её не разослали
---   после последнего запроса: кто пришёл после рассылки, её не слышал.
+--   разосланное. Первый K1 без владельца объединения просит корни нового соседа (fresh).
+--   Запрос запоминается временем прихода. Запись нужна, пока её не разослали после последнего
+--   запроса: кто пришёл после рассылки, её не слышал.
+-- * Сверка. Вошедший новой версии перед UQ называет хэши своих записей (UH, Security.lua), и
+--   его UQ просит не весь каталог, а только записи, которых у него нет (asks.slots), вместе с
+--   их зависимостями (Deps): копия записи засчитывается, только если зависимости разосланы
+--   после того же запроса (Served). Хэш — от точных байтов, поэтому новая версия записи
+--   (решение, отзыв, владелец) у него всегда недостающая. Без UH (прежние версии, UH потерян,
+--   записей нет) — весь каталог. После /reload прежде уходил весь каталог, теперь — ничего.
+-- * Память. Запросы и копии помнятся KEEP и забываются целиком, вместе с последним запросом:
+--   иначе запись, чья копия уже забыта, снова была бы неразосланной, и без входов каталог
+--   уходил бы раз в KEEP. UO главы того же владельца с прежним доказательством — та же запись
+--   (Last): сертификат главы продлевается раз в AUTH_RENEW, и байты UO меняются.
 -- * Окно. Те же байты — не чаще TRUST_SHARE_WINDOW. Запросы внутри окна ждут его конца, и
---   одна копия обслуживает их все. Корень по одним плановым объявлениям — не чаще
---   TRUST_SHARE_ROOTS: иначе его свежая копия почти всегда держала бы окно для вошедших.
+--   одна копия обслуживает их все. Корни новому соседу — тоже через окно: вошедший офицер
+--   узнаёт корень гильдии раньше, чем возьмётся за /chillzone trust init. Корень по одним
+--   плановым объявлениям — не чаще TRUST_SHARE_ROOTS: это лишь страховка для того, кто
+--   пропустил каталог при входе, а у гильдии с десятком корней каждые две минуты выходило
+--   четыре-пять KT в минуту от одного офицера.
 -- * Кто шлёт. У каждой записи свой порядок офицеров на связи (хэш записи и имени, у всех
 --   клиентов одинаковый). Первый шлёт через TRUST_SHARE_DELAY..+JITTER секунд, каждый
 --   следующий — ещё на TRUST_SHARE_STEP позже, если копии так и не было. Офицеры делят
@@ -42,8 +56,8 @@
 --   очереди, её мог разослать другой. Снятое так задание не считается выброшенным. Начатое
 --   сообщение досылается.
 -- * Срочно (TC.Urgent). Репортёр отвечает на Q1 отчётами, и каталог должен прийти раньше них:
---   записи, не разосланные после последнего запроса каталога спросившим (UQ при входе), уходят
---   сразу и по уровням, без окна и очереди офицеров. Ответ на Q1 — не чаще Q1_GAP. Остальные
+--   записи, не разосланные после последнего запроса каталога спросившим (UQ при входе; после
+--   сверки — только недостающие), уходят сразу и по уровням, без окна и очереди офицеров. Ответ на Q1 — не чаще Q1_GAP. Остальные
 --   офицеры, услышав копию от репортёра вскоре после Q1, своё по окну не начинают, пока он шлёт.
 -- * Сразу (TC.Direct): новые и изменённые записи (другие байты) и явные действия. Снимается
 --   только запись, разосланная меньше окна назад и после всех запросов: её гильдия только что
@@ -58,9 +72,12 @@ local KINDS = { KT = 1, UO = 1, KA = 2, KD = 3, KV = 3 } -- вид → уров�
 local HISTORY = 6 -- копий одной записи помнится
 local KEEP = 15 * 60 -- столько помнятся запросы и копии
 local copies = {} -- [id] = { { at, done, seq, served }, ... } по возрастанию at: рассылки по GUILD
-local asks = { all = {}, roots = {} } -- времена запросов по порядку
+-- Времена запросов по порядку; slots — [slot] = запросы этой записи после сверки (UH).
+local asks = { all = {}, roots = {}, fresh = {}, slots = {} }
 local bootAt, urgentSince = -1e9, -1e9 -- последний запрос входа; срочно — что не разослано после
 local lastAsk = {} -- [Key] = когда согильдиец последний раз попросил весь каталог (UQ при входе)
+local checked = {} -- [Key] = { at, slots }: когда он после сверки попросил недостающие записи, их slot
+local urgentSlots = {} -- [slot] = срочно после сверки: запись не разослана после этого момента
 local mine = {} -- [вид] = { когда ушли мои сообщения этого вида по GUILD }
 local queued, queuedCount = {}, 0 -- [slot] = запись: мои задания каталога в очереди
 local timerAt
@@ -115,6 +132,13 @@ end
 local function Latest(id)
 	local list = copies[id]
 	return list and list[#list]
+end
+
+-- Последняя копия записи r. UO главы того же владельца с прежним доказательством — тоже она:
+-- сертификат главы продлевается раз в AUTH_RENEW, и байты UO меняются, а спросившим раньше
+-- владелец уже известен. Свежее доказательство получит тот, кто спросит после копии.
+local function Last(r)
+	return Latest(r.base and r.base .. "~" or r.id)
 end
 
 -- Последняя копия id, пришедшая целиком раньше копии c, или nil.
@@ -214,20 +238,31 @@ end
 
 -- Запрос, которого запись r ещё не обслужила, с какого момента окно позволяет её повторить
 -- (от начала последней копии) и до какого момента запросы обслужены (served); e = nil — запись
--- никому не нужна. Плановое объявление корней (asks.roots) — не чаще TRUST_SHARE_ROOTS:
--- иначе свежая копия корня почти всегда держала бы окно и задерживала вошедших.
+-- никому не нужна. Весь каталог (asks.all) и эта запись после сверки (asks.slots) — через окно,
+-- корни новому соседу (asks.fresh) — тоже, плановое объявление корней (asks.roots) — не чаще
+-- TRUST_SHARE_ROOTS.
 local function Pending(list, r)
-	local last = Latest(r.id)
+	local last = Last(r)
 	local at = last and last.at or -1e9
 	local served = last and Served(list, r, last) or -1e9
 	local e = After(asks.all, served)
+	local own = asks.slots[r.slot]
+	local slot = own and After(own, served)
+	if slot and (not e or slot < e) then e = slot end
 	local ready = e and math.max(e, at + C.TRUST_SHARE_WINDOW)
 	if r.kind == "KT" then
+		local fresh = After(asks.fresh, served)
+		local soon = fresh and math.max(fresh, at + C.TRUST_SHARE_WINDOW)
+		if soon and (not ready or soon < ready) then e, ready = fresh, soon end
 		local root = After(asks.roots, served)
-		local soon = root and math.max(root, at + C.TRUST_SHARE_ROOTS)
+		soon = root and math.max(root, at + C.TRUST_SHARE_ROOTS)
 		if soon and (not ready or soon < ready) then e, ready = root, soon end
 	end
 	return e, ready, served
+end
+
+local function Expire(list, now)
+	while list[1] and now - list[1] > KEEP do table.remove(list, 1) end
 end
 
 local function Push(list, t)
@@ -246,6 +281,28 @@ local function Hash(s)
 	h = h % P
 	for _ = 1, 3 do h = (h * h + 7919) % P end
 	return h
+end
+
+-- Хэш записи для сверки (UH): 36 бит, TC.DIGEST знаков base64url, у всех клиентов одинаковый.
+-- От точных байтов с префиксом; UO — без доказательства главы (base): у главы и офицеров он один.
+TC.DIGEST = 6
+local DIGITS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+local digests, digestCount = {}, 0
+function TC.Digest(r)
+	local id = r.base or r.id
+	local d = digests[id]
+	if d then return d end
+	local v = Hash(id) * 1024 + Hash(id .. "|") % 1024 -- меньше 2^36: точно и в Lua 5.1
+	local out = {}
+	for i = 1, TC.DIGEST do
+		local n = v % 64
+		out[i] = DIGITS:sub(n + 1, n + 1)
+		v = (v - n) / 64
+	end
+	d = table.concat(out)
+	if digestCount >= 1024 then digests, digestCount = {}, 0 end
+	digests[id], digestCount = d, digestCount + 1
+	return d
 end
 
 local function Score(key, slot)
@@ -285,7 +342,10 @@ end
 local function Officers()
 	local list, now = {}, ns.Now()
 	for _, key in ipairs(ns.Security.ShareOfficers()) do
-		if key == ns.myKey or not lastAsk[key] or now - lastAsk[key] >= 2 * C.TRUST_SHARE_WINDOW then
+		local asked = lastAsk[key]
+		local c = checked[key]
+		if c and c.slots[1] and (not asked or c.at > asked) then asked = c.at end
+		if key == ns.myKey or not asked or now - asked >= 2 * C.TRUST_SHARE_WINDOW then
 			list[#list + 1] = key
 		end
 	end
@@ -337,10 +397,18 @@ local function Catalog(now)
 	return catalog
 end
 
--- served — до какого момента запросы обслужены (Pending).
-local function Priority(served)
+-- Срочна ли запись r (served — до какого момента обслужены запросы, Pending): она не разослана
+-- после запроса того, кому репортёр отвечает на Q1, — всего каталога или её самой после сверки.
+local function Urgent(r, served)
+	return urgentSince > served or (urgentSlots[r.slot] or -1e9) > served
+end
+
+-- Приоритет записи r; served — до какого момента запросы обслужены (Pending).
+local function Priority(r, served)
 	if bootAt > served then return ns.Comm.PRIO_BOOTSTRAP end
-	if urgentSince > served or After(asks.all, served) then return true end
+	local own = asks.slots[r.slot]
+	if Urgent(r, served) or After(asks.all, served) or After(asks.fresh, served)
+		or (own and After(own, served)) then return true end
 	return nil -- только плановое объявление корней: не обгоняет чат
 end
 
@@ -348,7 +416,7 @@ end
 local function Wanted(r)
 	if not ns.Security.CanAdmin() then return false end
 	local e, ready, served = Pending(Catalog(ns.Now()), r)
-	if urgentSince > served then return e ~= nil end
+	if Urgent(r, served) then return e ~= nil end
 	return e ~= nil and ns.Now() >= ready and ns.Now() >= pushUntil
 end
 
@@ -377,9 +445,9 @@ local function QueueUrgent(list, now)
 	local prio = true
 	for _, r in ipairs(list) do
 		local e, _, served = Pending(list, r)
-		if not queued[r.slot] and urgentSince > served and e and Room(r.kind, now) <= now then
+		if not queued[r.slot] and Urgent(r, served) and e and Room(r.kind, now) <= now then
 			urgent[#urgent + 1] = r
-			if Priority(served) == ns.Comm.PRIO_BOOTSTRAP then prio = ns.Comm.PRIO_BOOTSTRAP end
+			if Priority(r, served) == ns.Comm.PRIO_BOOTSTRAP then prio = ns.Comm.PRIO_BOOTSTRAP end
 		end
 	end
 	table.sort(urgent, function(a, b)
@@ -407,7 +475,7 @@ local function Pass(urgent)
 		local gate = e and Gate(list, r, e)
 		if gate then
 			local base
-			if urgentSince > served then
+			if Urgent(r, served) then
 				base = gate
 			else
 				-- Пауза — от запроса (или конца окна), а после зависимостей — секунда: их
@@ -429,7 +497,7 @@ local function Pass(urgent)
 		end
 	end
 	if best then
-		Queue(best, Priority(bestServed))
+		Queue(best, Priority(best, bestServed))
 	elseif wake then
 		Schedule(wake)
 	end
@@ -445,12 +513,43 @@ Schedule = function(at)
 	end)
 end
 
+-- Записи list, которых нет у спросившего (have — хэши его записей, TC.Digest), вместе с их
+-- зависимостями: без них копия записи его запрос не обслужит (Served), и она уходила бы снова.
+local function Missing(list, have)
+	local out, seen = {}, {}
+	local function add(r)
+		if seen[r] then return end
+		seen[r] = true
+		for _, low in ipairs(Deps(list, r)) do add(low) end
+		out[#out + 1] = r
+	end
+	for _, r in ipairs(list) do
+		if not have[TC.Digest(r)] then add(r) end
+	end
+	return out
+end
+
 -- Согильдиец key попросил каталог: весь (UQ, первый K1 без недавнего UQ) или только корни
--- (roots: остальные K1, плановое объявление офицера). boot — его первый запрос: записи обгоняют чат.
-function TC.Request(key, roots, boot)
+-- (roots: остальные K1, плановое объявление офицера). fresh — корни новому соседу, через окно,
+-- а не раз в TRUST_SHARE_ROOTS. boot — его первый запрос: записи обгоняют чат. have — его
+-- сверка (UH): тогда просятся только недостающие записи.
+function TC.Request(key, roots, boot, fresh, have)
 	local now = ns.Now()
+	local missing
 	if roots then
-		Push(asks.roots, now)
+		Push(fresh and asks.fresh or asks.roots, now)
+	elseif have then
+		missing = Missing(Catalog(now), have)
+		local slots = {}
+		for _, r in ipairs(missing) do
+			local list = asks.slots[r.slot] or {}
+			asks.slots[r.slot] = list
+			Push(list, now)
+			slots[#slots + 1] = r.slot
+		end
+		if key then checked[key] = { at = now, slots = slots } end
+		if boot and missing[1] then bootAt = now end
+		if not missing[1] then return end
 	else
 		Push(asks.all, now)
 		if key then lastAsk[key] = now end
@@ -460,23 +559,31 @@ function TC.Request(key, roots, boot)
 end
 
 -- Репортёр отвечает на Q1 согильдийца key (Census.lua): каталог раньше отчётов. Сразу уходит
--- то, что не разослано после последнего запроса каталога спросившим (UQ при входе), а если
--- его нет или он давний — после этого Q1.
+-- то, что не разослано после последнего запроса каталога спросившим (UQ при входе; после
+-- сверки — только недостающие записи), а если его нет или он давний — после этого Q1.
 function TC.Urgent(key)
 	local now = ns.Now()
 	local since = key and lastAsk[key]
-	if not since or not asks.all[1] or since < asks.all[1] then
-		since = now
-		Push(asks.all, now)
-		if key then lastAsk[key] = now end
+	local c = key and checked[key]
+	if c and (not since or c.at > since) then
+		-- После сверки — только то, чего у него не было: остальное он уже знает.
+		for _, slot in ipairs(c.slots) do
+			if c.at > (urgentSlots[slot] or -1e9) then urgentSlots[slot] = c.at end
+		end
+	else
+		if not since or not asks.all[1] or since < asks.all[1] then
+			since = now
+			Push(asks.all, now)
+			if key then lastAsk[key] = now end
+		end
+		if since > urgentSince then urgentSince = since end
 	end
-	if since > urgentSince then urgentSince = since end
 	Pass(true)
 end
 
 -- Рассылала ли гильдия эти байты меньше окна назад и после всех запросов.
 local function Heard(r)
-	local last = Latest(r.id)
+	local last = Last(r)
 	return last ~= nil and ns.Now() - last.at < C.TRUST_SHARE_WINDOW and not Pending(Catalog(ns.Now()), r)
 end
 
@@ -484,7 +591,8 @@ end
 -- и при постановке, и перед первым куском — только запись, которую гильдия слышала меньше окна
 -- назад и после всех запросов. force — без этой проверки. Возвращает, поставлено ли сообщение.
 -- Корень перед сертификатом (KT, затем KP с before) сюда не ходит: Security.ShareRoot шлёт его
--- всегда. А снятое задание Comm сразу убирает из очереди, и ждавшие его через before идут.
+-- всегда, кроме продления тому, кто корень уже знает. А снятое задание Comm сразу убирает из
+-- очереди, и ждавшие его через before идут.
 function TC.Direct(r, prio, force, guard)
 	if not r then return false end
 	if not force and Heard(r) then return false end
@@ -519,9 +627,13 @@ ns.Comm.Watch(function(msg, sender, prefix, started)
 		local r = Index(list).byId[id]
 		if r then Served(list, r, c) end
 	end
-	-- UO главы с доказательством покрывает тот же UO без него (не наоборот).
+	-- UO главы с доказательством покрывает тот же UO без него (не наоборот); base~ — копии
+	-- UO того же владельца с любым доказательством (Last).
 	local bare = Bare(kind, msg)
-	if bare then Note(Id(prefix, bare), at, now) end
+	if bare then
+		Note(Id(prefix, bare), at, now)
+		Note(Id(prefix, bare) .. "~", at, now)
+	end
 	-- Чужая копия могла открыть следующий уровень: проверить сразу, а не в свой срок.
 	if sender and queuedCount == 0 then Schedule(now + 0.2) end
 end)
@@ -535,11 +647,27 @@ ns.On("LOGIN", function()
 		for key, t in pairs(lastAsk) do
 			if now - t > KEEP then lastAsk[key] = nil end
 		end
+		for key, c in pairs(checked) do
+			if now - c.at > KEEP then checked[key] = nil end
+		end
+		for slot, t in pairs(urgentSlots) do
+			if now - t > KEEP then urgentSlots[slot] = nil end
+		end
+		-- Запросы забываются целиком, вместе с последним: иначе запись, чьи копии уже забыты,
+		-- снова считалась бы неразосланной, и весь каталог уходил бы раз в KEEP без входов.
+		for _, list in ipairs({ asks.all, asks.roots, asks.fresh }) do Expire(list, now) end
+		for slot, list in pairs(asks.slots) do
+			Expire(list, now)
+			if not list[1] then asks.slots[slot] = nil end
+		end
+		if now - urgentSince > KEEP then urgentSince = -1e9 end
+		if now - bootAt > KEEP then bootAt = -1e9 end
 	end)
 end)
 
 ns.On("GUILD_CHANGED", function()
-	copies, asks, lastAsk, mine = {}, { all = {}, roots = {} }, {}, {}
+	copies, asks, lastAsk, mine = {}, { all = {}, roots = {}, fresh = {}, slots = {} }, {}, {}
+	checked, urgentSlots = {}, {}
 	bootAt, urgentSince, q1At, pushUntil = -1e9, -1e9, -1e9, -1e9
 	catalog, ranks, rankSig = nil, {}, nil
 end)
