@@ -327,7 +327,7 @@ local function Feed(cl, o)
 	local cert = o.cert or { key = ns.Util.Key(name), name = name, guild = guild }
 	local msg = ns.Codec.EncodeCraft({
 		mode = o.mode or "C", st = at, guild = guild, class = "PRIEST", level = 21, note = o.note,
-		profs = { { id = o.prof or 164, skill = o.skill or 1, max = 75, n = 1, hash = "0001" } },
+		profs = o.profs or { { id = o.prof or 164, skill = o.skill or 1, max = 75, n = 1, hash = "0001" } },
 	})
 	ns.Crafters.Receive(msg, name, o.dist or "RELAY", o.ctx or {
 		authenticated = true, certificate = cert, wire = ("S1~fp~%d~%d~x"):format(at, o.seq or 1),
@@ -779,6 +779,93 @@ T.test("crafters: каталог чистится по сроку и по чис
 end)
 
 ---------------------------------------------------------------------------
+-- Рыбная ловля: на Forever у неё бывают «рецепты», но в каталог она не попадает
+---------------------------------------------------------------------------
+local FISH = 356
+
+T.test("crafters: рыбная ловля не читается и выбрасывается из чужих карточек", function()
+	local _, c = Build()
+	local A, K = c.A.ns, c.K.ns
+	Learn(c.A, { id = FISH, skill = 150, max = 150, recipes = { [7620] = true } })
+	T.eq(#A.Crafters.MyProfs(), 0, "своё окно рыбной ловли не читается")
+	T.eq(c.A:Saw(A.L.CRAFT_HINT:format(A.Crafters.ProfName(FISH))), 0, "подсказки нет")
+	-- Карточка прежней версии с рыбной ловлей: остальные профессии остаются.
+	local now = c.K.env.GetServerTime()
+	local fish = { id = FISH, skill = 150, max = 150, n = 1, hash = "0002" }
+	local key = Feed(c.K, { at = now, profs = { { id = 164, skill = 73, max = 150, n = 3, hash = "0001" }, fish } })
+	local e = K.Crafters.Get(key)
+	T.ok(e, "карточка принята")
+	T.eq(#e.profs, 1)
+	T.eq(e.profs[1].id, 164)
+	T.same({ K.Crafters.Want(key, FISH) }, { false, "nocard" }, "список рыбной ловли не просят")
+	local profs, has = K.Views.CraftProfs()
+	for _, id in ipairs(profs) do T.no(id == FISH, "в фильтре нет рыбной ловли") end
+	T.no(has[FISH])
+	-- Карточка только с рыбной ловлей убирает прежнюю, и старый пакет её не возвращает.
+	Feed(c.K, { at = now + 10, profs = { fish } })
+	T.no(K.Crafters.Get(key), "профессий каталога нет")
+	T.eq(Logged(c.K, "мастера: карточка Борис Быстрый <Чиллзон Север> убрана: в ней нет профессий каталога (реле)"), 1)
+	Feed(c.K, { at = now + 5 })
+	T.no(K.Crafters.Get(key), "старый пакет не вернул карточку")
+	Feed(c.K, { at = now + 20 })
+	T.ok(K.Crafters.Get(key), "новая карточка принята")
+	NoErrors(c.A, "Арагорн")
+	NoErrors(c.K, "Карл")
+end)
+
+T.test("crafters: рыбная ловля из сохранений прежней версии уходит после /reload", function()
+	local w, c = Build()
+	-- Так её сохранила бы прежняя версия: среди своих профессий, с отметкой и на витрине.
+	local Codec, crafts = c.A.ns.Codec, c.A.ns.char.crafts
+	local packed, n = Codec.PackIds({ 7620 }, c.A.ns.Config.CRAFT_RECIPES_MAX)
+	crafts.profs[FISH] = { id = FISH, skill = 150, max = 150, n = n, ids = packed, hash = Codec.IdsHash(packed), readAt = 1 }
+	crafts.post[FISH] = true
+	crafts.show = { { prof = FISH, id = 7620 } }
+	local wires = Capture(c.A)
+	Master(c.A)
+	T.eq(#wires, 1)
+	T.ok(wires[1]:find(",356:", 1, true), "прежняя версия разослала рыбную ловлю")
+	local e = c.B.ns.Crafters.Get(Key(c.A))
+	T.eq(#e.profs, 1, "новая версия её не показывает")
+	-- В каталоге смотрящего прежней версии: в карточке мастера и в карточке только с ней.
+	local store = c.B.ns.store.crafters
+	local stored = store.cards[Key(c.A)]
+	stored.profs[#stored.profs + 1] = { id = FISH, skill = 150, max = 150, n = 1, hash = "0002" }
+	local angler = c.B.ns.Util.Key("Рыбак Тихий")
+	store.cards[angler] = {
+		name = "Рыбак Тихий", guild = "Чиллзон", at = stored.at, seq = 1,
+		profs = { { id = FISH, skill = 75, max = 75, n = 1, hash = "0003" } },
+	}
+	store.lists[angler] = { [FISH] = { hash = "0003", ids = packed, at = stored.at } }
+	local dbA, dbB = c.A.ns.db, c.B.ns.db
+	c.A:Logout()
+	c.B:Logout()
+	local a = w:Client({ first = "Арагорн", surname = "Светлый", guild = "Чиллзон", rank = 1, class = "WARRIOR", level = 24, db = dbA, reload = true })
+	local b = w:Client({ first = "Борис", surname = "Быстрый", guild = "Чиллзон Север", rank = 1, class = "PRIEST", level = 21, db = dbB, reload = true })
+	local again = Capture(a)
+	w:Run(5)
+	local mine = a.ns.Crafters.MyProfs()
+	T.eq(#mine, 1)
+	T.eq(mine[1].id, 164)
+	T.no(a.ns.char.crafts.post[FISH])
+	T.eq(#a.ns.char.crafts.show, 0, "витрина рыбной ловли выброшена")
+	T.eq(#a.ns.Crafters.Own().profs, 1)
+	e = b.ns.Crafters.Get(Key(c.A))
+	T.ok(e, "карточка мастера осталась")
+	T.eq(#e.profs, 1)
+	T.eq(e.profs[1].id, 164)
+	T.no(b.ns.Crafters.Get(angler), "карточки только с рыбной ловлей нет")
+	T.no(b.ns.store.crafters.lists[angler])
+	-- Карточка без рыбной ловли уходит остальным сама, как любая правка.
+	w:Run(a.ns.Config.CRAFT_UPDATE_GAP + 60)
+	T.eq(#again, 1, "правка ушла")
+	T.no(again[1]:find(",356:", 1, true), "без рыбной ловли")
+	T.ok(again[1]:find("~164:", 1, true))
+	NoErrors(a, "Арагорн после /reload")
+	NoErrors(b, "Борис после /reload")
+end)
+
+---------------------------------------------------------------------------
 -- Списки рецептов
 ---------------------------------------------------------------------------
 T.test("crafters: список рецептов приходит шёпотом, совпавший не загружается заново", function()
@@ -842,12 +929,12 @@ T.test("crafters: длинный список приходит страница�
 	V.UI.Toggle("crafters")
 	V.CraftersPane.Open(key)
 	local f = V.CraftersPane.frames
-	T.ok(#f.recipes <= 10, "строк в карточке: " .. #f.recipes)
+	T.ok(#f.recipes <= 12, "строк в карточке: " .. #f.recipes)
 	local shown = 0
 	for _, r in ipairs(f.recipes) do
 		if r:IsShown() then shown = shown + 1 end
 	end
-	T.eq(shown, 8, "видно 166 / 22 строк")
+	T.eq(shown, 11, "видно 230 / 22 строк: у наименьшего окна список выше исходного на 64")
 	T.eq(f.recipes[1].it.id, 11000)
 	f.card.scroll:SetVerticalScroll(22 * 100)
 	T.eq(f.recipes[1].it.id, 10000 + 101 * 1000, "после прокрутки — сто первый")
@@ -868,6 +955,41 @@ T.test("crafters: длинный список приходит страница�
 	T.ok(st and st.failed and st.why == "broken", "ошибка списка")
 	T.ok(c.B.ns.Views.CraftListState(key, 164):find(c.B.ns.L.CRAFT_BROKEN, 1, true))
 	NoErrors(c.B, "Борис")
+end)
+
+T.test("crafters: в высоком окне в карточке видно больше рецептов", function()
+	local w, c = Build()
+	local recipes = {}
+	for i = 1, 60 do recipes[10000 + i * 1000] = true end
+	Learn(c.A, Smith(300, recipes))
+	c.A.ns.Crafters.SetPost(164, true)
+	T.ok(c.A.ns.Crafters.Post())
+	w:Run(30)
+	local key, V = Key(c.A), c.V.ns
+	T.ok(V.Crafters.Want(key, 164))
+	w:Run(60)
+	T.eq(#(V.Crafters.Recipes(key, 164) or {}), 60)
+	V.UI.Toggle("crafters")
+	V.CraftersPane.Open(key)
+	local f = V.CraftersPane.frames
+	local function Shown()
+		local n = 0
+		for _, r in ipairs(f.recipes) do
+			if r:IsShown() then n = n + 1 end
+		end
+		return n
+	end
+	-- Наименьшее окно 860×490: вставка выше исходной 804×340 на 64, список рецептов 166 + 64.
+	T.eq(Shown(), 11, "наименьшее окно: 230 / 22")
+	-- Вставка выше на 220: список рецептов 386 в высоту; карточка открыта, строки перекладываются сразу.
+	V.UI.Resize(814 + 200, 426 + 220)
+	T.eq(Shown(), 18, "386 / 22")
+	T.ok(#f.recipes <= 19, "строк создано на видимую часть: " .. #f.recipes)
+	f.card.scroll:SetVerticalScroll(22 * 30)
+	T.eq(f.recipes[1].it.id, 10000 + 31 * 1000, "прокрутка в высоком окне")
+	V.UI.Resize(860, 490)
+	T.eq(Shown(), 11, "обратно — как было")
+	NoErrors(c.V, "Вера")
 end)
 
 T.test("crafters: страницу принимают только от того, кого спросили", function()
@@ -1319,7 +1441,8 @@ T.test("crafters pane: поиск в списке рецептов карточ�
 	f.card.state.GetStringHeight = function() return 26 end
 	P.Render()
 	T.eq(f.card.listH, oneLine - 12, "список короче на строку состояния")
-	T.ok(88 + 26 + 2 + 24 + f.card.listH <= 292, "низ списка выше кнопок")
+	-- 292 — низ списка у исходной вставки 804×340, у наименьшего окна он ниже на 64.
+	T.ok(88 + 26 + 2 + 24 + f.card.listH <= 292 + 64, "низ списка выше кнопок")
 	f.card.state.GetStringHeight = nil
 	P.Render()
 	T.eq(f.card.listH, oneLine)
@@ -1427,7 +1550,7 @@ T.test("crafters pane: рецепты персональных предмето�
 	T.eq(CardText(c.V), "Грубое точило\nМедная кольчуга", "персональный скрыт")
 	T.ok(f.card.bound:IsShown(), "переключатель есть")
 	T.eq(f.card.bound.label:GetText(), L.CRAFT_BOUND:format(1))
-	T.ok(width < 282 - 24, "поле поиска уступает место переключателю")
+	T.ok(width < 328 - 24, "поле поиска уступает место переключателю")
 	local tip = Tip(c.V, f.card.bound)
 	T.ok(tip:find(L.CRAFT_BOUND_TIP, 1, true))
 	T.ok(tip:find(L.CRAFT_BOUND_SHOW, 1, true))
@@ -1464,7 +1587,7 @@ T.test("crafters pane: рецепты персональных предмето�
 	PaneRow(c.V, c.B):Click()
 	w:Run(1)
 	T.no(f.card.bound:IsShown(), "переключателя нет")
-	T.eq(width, 282 - 24)
+	T.eq(width, 328 - 24, "правая панель 328: шире исходной на 46")
 	NoErrors(c.V, "Вера")
 end)
 

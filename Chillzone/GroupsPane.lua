@@ -8,6 +8,15 @@
 --
 -- Штатные выпадающие списки и popup игры не используются (taint): подсказка названий — свой
 -- список, поля ввода — свои EditBox. Приглашение в группу вызывается только из щелчка.
+--
+-- Заявки к своей группе разложены по разделам (Views.GroupApplicants): новые, записанные,
+-- приглашённые. «Записать» занимает место без приглашения; «Позвать» и «Позвать всех» в заголовке
+-- записанных приглашают в группу игры; крестик отказывает или вычёркивает. «Кого ещё ищем» на
+-- панели только показано: записанные убавляют роль сами, вручную число меняют в «Изменить».
+--
+-- Ширины заданы под наименьшее окно (вставка 850 в ширину), высоты — под исходную вставку 340.
+-- Растянутое окно (Layout) отдаёт лишнюю ширину доске, а правая панель той же ширины стоит у правого
+-- края и растёт вниз: длиннее список заявок.
 local ADDON, ns = ...
 
 local L = ns.L
@@ -19,14 +28,19 @@ local Pane = { frames = {} }
 ns.GroupsPane = Pane
 
 local LIST_W = 468 -- доска; справа от неё полоса прокрутки
-local SIDE_X, SIDE_W = 512, 282
+local SIDE_X, SIDE_W = 512, 328 -- панель шире исходной на 46: на столько наименьшее окно шире исходного
 local HEADER_H, ROW_H = 22, 38
-local APPLICANT_H = 36
+local APPLICANT_H, SECTION_H, SECTION_GAP = 36, 20, 12 -- SECTION_GAP — пустое место перед вторым и дальше разделом
 local ACTION_W, INFO_W = 96, 112
+local BASE_W, BASE_H, SIDE_V = 850, 340, 16 -- ширина вставки наименьшего окна, высота исходной; панель ниже её верха и выше низа
+local listW, sideX = LIST_W, SIDE_X -- доска и правая панель под ширину вставки (Layout)
 
-local pane, list, listChild, empty, side
+-- Ширина названия и строки под ним в строке доски: справа сведения и кнопка.
+local function TextW() return listW - 6 - ACTION_W - INFO_W - 16 end
+
+local pane, list, listChild, empty, side, divider
 local idle, form, own, picker
-local rows, filters, applicantRows, pickerRows = {}, {}, {}, {}
+local rows, filters, applicantRows, sectionRows, pickerRows = {}, {}, {}, {}, {}
 local filter -- вид мест или nil — все
 local editing -- "G" или "P", пока открыта форма
 local picking = false -- открыт список занятий игры: он показан вместо формы
@@ -60,11 +74,15 @@ local function Tip(owner, fn)
 	owner:SetScript("OnLeave", function() GameTooltip:Hide() end)
 end
 
-local function TextTip(owner, title, text)
-	Tip(owner, function(tt)
+local function TipText(title, text)
+	return function(tt)
 		tt:AddLine(title, 1, 0.82, 0)
 		if text then tt:AddLine(text, 1, 1, 1, true) end
-	end)
+	end
+end
+
+local function TextTip(owner, title, text)
+	Tip(owner, TipText(title, text))
 end
 
 local function Button(parent, text, width, where, fn)
@@ -212,7 +230,7 @@ local function Row(i)
 	local r = rows[i]
 	if r then return r end
 	r = CreateFrame("Button", nil, listChild)
-	r:SetWidth(LIST_W)
+	r:SetWidth(listW)
 	r.bg = r:CreateTexture(nil, "BACKGROUND")
 	r.bg:SetAllPoints()
 	r.bg:SetColorTexture(1, 1, 1, 0.03)
@@ -236,7 +254,7 @@ local function Row(i)
 	r.detail = FS(r, "GameFontDisableSmall", "RIGHT")
 	r.detail:SetPoint("BOTTOMRIGHT", -(ACTION_W + 8), 6)
 	r.detail:SetWidth(INFO_W)
-	local textWidth = LIST_W - 6 - ACTION_W - INFO_W - 16
+	local textWidth = TextW()
 	r.name = FS(r, "GameFontHighlight")
 	r.name:SetPoint("TOPLEFT", 6, -5)
 	r.name:SetWidth(textWidth)
@@ -315,7 +333,7 @@ local function BuildList()
 	empty:SetWidth(LIST_W - 12)
 	empty:Hide()
 
-	local divider = pane:CreateTexture(nil, "ARTWORK")
+	divider = pane:CreateTexture(nil, "ARTWORK")
 	divider:SetColorTexture(1, 1, 1, 0.08)
 	divider:SetWidth(1)
 	divider:SetPoint("TOPLEFT", SIDE_X - 8, -10)
@@ -625,30 +643,41 @@ local function ApplicantRow(i)
 	if r then return r end
 	r = CreateFrame("Button", nil, own.child)
 	r:SetSize(SIDE_W - 26, APPLICANT_H)
-	r:SetPoint("TOPLEFT", own.child, "TOPLEFT", 0, -(i - 1) * (APPLICANT_H + 2))
 	local bg = r:CreateTexture(nil, "BACKGROUND")
 	bg:SetAllPoints()
 	bg:SetColorTexture(1, 1, 1, 0.03)
+	-- Новая заявка ждёт ответа, записанный занял место; у позванных подсветки нет.
+	r.fresh = r:CreateTexture(nil, "BORDER")
+	r.fresh:SetAllPoints()
+	r.fresh:SetColorTexture(1, 0.82, 0, 0.07)
+	r.roster = r:CreateTexture(nil, "BORDER")
+	r.roster:SetAllPoints()
+	r.roster:SetColorTexture(0.25, 1, 0.25, 0.08)
 	local hl = r:CreateTexture(nil, "HIGHLIGHT")
 	hl:SetAllPoints()
 	hl:SetColorTexture(1, 1, 1, 0.07)
-	r.refuse = Button(r, L.GROUPS_REFUSE, 40, "decline", function() Groups.Decline(r.key) end)
-	r.refuse:SetHeight(20)
-	r.refuse:SetPoint("RIGHT", -3, 0)
+	-- Отказ и вычёркивание — крестик: большая кнопка в строке одна.
+	r.refuse = CreateFrame("Button", nil, r, "UIPanelCloseButton")
+	r.refuse:SetSize(24, 24)
+	r.refuse:SetPoint("RIGHT", 0, 0)
+	r.refuse:SetScript("OnClick", function() ns.SafeCall("groups: decline", Groups.Decline, r.key) end)
 	TextTip(r.refuse, L.GROUPS_REFUSE, L.GROUPS_REFUSE_TIP)
-	r.take = Button(r, L.GROUPS_TAKE, 58, "invite", function() Groups.Invite(r.key) end)
+	-- Заявку записывает, записанного зовёт в группу игры.
+	r.take = Button(r, L.GROUPS_SIGN, 68, "sign", function()
+		if r.state == "new" then Groups.Sign(r.key) else Groups.Invite(r.key) end
+	end)
 	r.take:SetHeight(20)
-	r.take:SetPoint("RIGHT", r.refuse, "LEFT", -2, 0)
-	TextTip(r.take, L.GROUPS_TAKE, L.GROUPS_TAKE_TIP)
+	r.take:SetPoint("RIGHT", r.refuse, "LEFT", 0, 0)
+	TextTip(r.take, L.GROUPS_SIGN, L.GROUPS_SIGN_TIP)
 	r.mark = FS(r, "GameFontDisableSmall", "RIGHT")
 	r.mark:SetPoint("RIGHT", -6, 0)
 	r.mark:SetText(L.GROUPS_INVITED_MARK)
 	r.name = FS(r, "GameFontHighlight")
 	r.name:SetPoint("TOPLEFT", 5, -4)
-	r.name:SetWidth(SIDE_W - 26 - 110)
+	r.name:SetWidth(SIDE_W - 26 - 100)
 	r.sub = FS(r, "GameFontHighlightSmall")
 	r.sub:SetPoint("BOTTOMLEFT", 5, 5)
-	r.sub:SetWidth(SIDE_W - 26 - 110)
+	r.sub:SetWidth(SIDE_W - 26 - 100)
 	for _, fs in ipairs({ r.name, r.sub }) do
 		if fs.SetWordWrap then fs:SetWordWrap(false) end
 	end
@@ -660,11 +689,28 @@ local function ApplicantRow(i)
 	return r
 end
 
+-- Заголовок раздела заявок: название с числом и черта под ним.
+local function SectionRow(i)
+	local h = sectionRows[i]
+	if h then return h end
+	h = CreateFrame("Frame", nil, own.child)
+	h:SetSize(SIDE_W - 26, SECTION_H)
+	h.text = FS(h, "GameFontNormalSmall")
+	h.text:SetPoint("BOTTOMLEFT", 2, 4)
+	local line = h:CreateTexture(nil, "ARTWORK")
+	line:SetColorTexture(1, 1, 1, 0.12)
+	line:SetHeight(1)
+	line:SetPoint("BOTTOMLEFT", 0, 1)
+	line:SetPoint("BOTTOMRIGHT", 0, 1)
+	sectionRows[i] = h
+	return h
+end
+
 local function BuildOwn()
 	own = CreateFrame("Frame", nil, side)
 	own:SetAllPoints(side)
 	own.title = Label(own, 0, 4, nil, "GameFontNormal")
-	-- Название — одной строкой, примечание — не больше двух: ниже стоят счётчики и заявки.
+	-- Название — одной строкой, примечание — не больше двух: ниже стоят роли и заявки.
 	own.name = Label(own, 0, 26, nil, "GameFontHighlight")
 	own.name:SetWidth(SIDE_W)
 	if own.name.SetWordWrap then own.name:SetWordWrap(false) end
@@ -673,20 +719,17 @@ local function BuildOwn()
 	if own.note.SetMaxLines then own.note:SetMaxLines(2) end
 	own.info = Label(own, 0, 70, nil, "GameFontHighlightSmall")
 	own.info:SetWidth(SIDE_W)
-	own.needLabel = Label(own, 0, 92, L.GROUPS_FIELD_NEED, "GameFontDisableSmall")
-	own.steppers = {}
-	for _, role in ipairs(Groups.ROLES) do
-		own.steppers[#own.steppers + 1] = Stepper(own, role,
-			function()
-				local mine = Groups.Mine()
-				return mine and mine.roles[role] or 0
-			end,
-			function(n) Groups.SetNeed(role, n) end)
-	end
-	PlaceRow(own, own.steppers, 0, 106, 9)
-	own.applicantsLabel = Label(own, 0, 138, nil, "GameFontNormalSmall")
+	-- «Кого ещё ищем» — строка без кнопок: те же счётчики есть в «Изменить».
+	own.need = CreateFrame("Frame", nil, own)
+	own.need:SetPoint("TOPLEFT", 0, -88)
+	own.need:SetSize(SIDE_W, 18)
+	own.need:EnableMouse(true)
+	own.need.text = FS(own.need, "GameFontDisableSmall")
+	own.need.text:SetPoint("LEFT", 0, 0)
+	own.need.text:SetWidth(SIDE_W)
+	TextTip(own.need, L.GROUPS_FIELD_NEED, L.GROUPS_NEED_TIP)
 	own.scroll = CreateFrame("ScrollFrame", nil, own, "UIPanelScrollFrameTemplate")
-	own.scroll:SetPoint("TOPLEFT", 0, -154)
+	own.scroll:SetPoint("TOPLEFT", 0, -108)
 	own.scroll:SetPoint("BOTTOMRIGHT", -24, 30)
 	own.child = CreateFrame("Frame", nil, own.scroll)
 	own.child:SetSize(SIDE_W - 26, 10)
@@ -695,6 +738,10 @@ local function BuildOwn()
 	own.none:SetPoint("TOPLEFT", 2, -4)
 	own.none:SetWidth(SIDE_W - 30)
 	own.none:SetText(L.GROUPS_NO_APPLICANTS)
+	-- «Позвать всех» встаёт в заголовок раздела записанных, когда их двое и больше.
+	own.callAll = Button(own.child, L.GROUPS_CALL_ALL, 104, "invite all", function() Groups.InviteAll() end)
+	own.callAll:SetHeight(18)
+	TextTip(own.callAll, L.GROUPS_CALL_ALL, L.GROUPS_CALL_ALL_TIP)
 	own.hint = Label(own, 0, 92, L.GROUPS_MINE_PLAYER_HINT, "GameFontDisableSmall")
 	own.hint:SetWidth(SIDE_W)
 	local edit = Button(own, L.GROUPS_EDIT, 150, "edit", function()
@@ -707,6 +754,30 @@ local function BuildOwn()
 	own.edit, own.lower = edit, lower
 end
 
+local function RenderApplicant(r, it)
+	r.key, r.who, r.tip, r.state = it.key, it.who, it.tip, it.state
+	r.name:SetText(it.name)
+	r.sub:SetText(it.sub)
+	r.fresh:SetShown(it.state == "new")
+	r.roster:SetShown(it.state == "signed")
+	-- Кнопки — у заявки и у записанного, которого ещё не звали; позванный и вошедший — отметка.
+	local buttons = it.state == "new" or it.state == "signed"
+	r.take:SetShown(buttons)
+	r.refuse:SetShown(buttons)
+	r.mark:SetShown(not buttons)
+	if it.state == "new" then
+		r.take:SetText(L.GROUPS_SIGN)
+		r.take.tip = TipText(L.GROUPS_SIGN, L.GROUPS_SIGN_TIP)
+		r.refuse.tip = TipText(L.GROUPS_REFUSE, L.GROUPS_REFUSE_TIP)
+	elseif it.state == "signed" then
+		r.take:SetText(L.GROUPS_CALL)
+		r.take.tip = TipText(L.GROUPS_CALL, L.GROUPS_CALL_TIP)
+		r.refuse.tip = TipText(L.GROUPS_DROP, L.GROUPS_DROP_TIP)
+	else
+		r.mark:SetText(it.state == "party" and L.GROUPS_PARTY_MARK or L.GROUPS_INVITED_MARK)
+	end
+end
+
 local function RenderOwn(mine)
 	local group = mine.mode == "G"
 	own.title:SetText(group and L.GROUPS_MINE_GROUP or L.GROUPS_MINE_PLAYER)
@@ -714,34 +785,47 @@ local function RenderOwn(mine)
 	own.note:SetText(mine.note)
 	local left = Views.GroupLeft(mine)
 	if group then
-		local size = math.max(1, GetNumGroupMembers and GetNumGroupMembers() or 0)
-		own.info:SetText(L.GROUPS_MINE_SIZE:format(size, mine.cap, left))
+		own.info:SetText(L.GROUPS_MINE_SIZE:format(Groups.Size(), mine.cap, left))
 	else
 		own.info:SetText(L.GROUPS_TIP_ROLES:format(Groups.RoleText(mine.roles)) .. ". " .. L.GROUPS_MINE_LEFT:format(left))
 	end
-	own.needLabel:SetShown(group)
-	for _, s in ipairs(own.steppers) do
-		s:SetShown(group)
-		s.Render()
-	end
-	own.applicantsLabel:SetShown(group)
+	own.need:SetShown(group)
 	own.scroll:SetShown(group)
 	own.hint:SetShown(not group)
+	own.callAll:Hide()
 	if not group then return end
-	local items = Views.GroupApplicants()
-	own.applicantsLabel:SetText(L.GROUPS_APPLICANTS:format(#items))
+	own.need.text:SetText(Views.GroupNeed(mine.roles))
+	-- Разделы идут подряд: заголовок перед первой строкой каждого.
+	local items, counts = Views.GroupApplicants()
+	local y, section, headers = 0, nil, 0
 	for i, it in ipairs(items) do
+		if it.section ~= section then
+			if section then y = y + SECTION_GAP end
+			section = it.section
+			headers = headers + 1
+			local h = SectionRow(headers)
+			h.section = section
+			h.text:SetText(L["GROUPS_APPLICANTS_" .. section:upper()]:format(counts[section]))
+			h:ClearAllPoints()
+			h:SetPoint("TOPLEFT", own.child, "TOPLEFT", 0, -y)
+			h:Show()
+			if section == "signed" and counts.signed >= 2 then
+				own.callAll:ClearAllPoints()
+				own.callAll:SetPoint("BOTTOMRIGHT", h, "BOTTOMRIGHT", 0, 3)
+				own.callAll:Show()
+			end
+			y = y + SECTION_H + 2
+		end
 		local r = ApplicantRow(i)
-		r.key, r.who, r.tip = it.key, it.who, it.tip
-		r.name:SetText(it.name)
-		r.sub:SetText(it.sub)
-		r.take:SetShown(not it.invited)
-		r.refuse:SetShown(not it.invited)
-		r.mark:SetShown(it.invited)
+		RenderApplicant(r, it)
+		r:ClearAllPoints()
+		r:SetPoint("TOPLEFT", own.child, "TOPLEFT", 0, -y)
 		r:Show()
+		y = y + APPLICANT_H + 2
 	end
 	for i = #items + 1, #applicantRows do applicantRows[i]:Hide() end
-	own.child:SetHeight(math.max(#items * (APPLICANT_H + 2), 10))
+	for i = headers + 1, #sectionRows do sectionRows[i]:Hide() end
+	own.child:SetHeight(math.max(y, 10))
 	own.none:SetShown(#items == 0)
 end
 
@@ -774,16 +858,40 @@ function Pane.Build(parent)
 	BuildList()
 	side = CreateFrame("Frame", nil, pane)
 	side:SetPoint("TOPLEFT", SIDE_X, -8)
-	side:SetSize(SIDE_W, 324)
+	side:SetSize(SIDE_W, BASE_H - SIDE_V)
 	BuildIdle()
 	BuildForm()
 	BuildOwn()
 	BuildPicker()
 	Pane.frames.pane, Pane.frames.rows, Pane.frames.filters = pane, rows, filters
 	Pane.frames.idle, Pane.frames.form, Pane.frames.own, Pane.frames.picker = idle, form, own, picker
-	Pane.frames.applicants, Pane.frames.pickerRows = applicantRows, pickerRows
+	Pane.frames.applicants, Pane.frames.sections, Pane.frames.pickerRows = applicantRows, sectionRows, pickerRows
+	Pane.frames.list, Pane.frames.side = list, side
 	pane:Hide()
 	return pane
+end
+
+-- Раскладка под вставку width×height (UI.lua): доска шире, правая панель у правого края и выше.
+-- Её содержимое привязано к её краям: кнопки снизу, списки заявок и занятий тянутся вниз.
+function Pane.Layout(width, height)
+	if not pane then return end
+	local extra = math.max(0, math.floor(width - BASE_W))
+	listW, sideX = LIST_W + extra, SIDE_X + extra
+	list:SetWidth(listW)
+	listChild:SetWidth(listW)
+	empty:SetWidth(listW - 12)
+	local textWidth = TextW()
+	for _, r in ipairs(rows) do
+		r:SetWidth(listW)
+		r.name:SetWidth(textWidth)
+		r.sub:SetWidth(textWidth)
+	end
+	divider:ClearAllPoints()
+	divider:SetPoint("TOPLEFT", sideX - 8, -10)
+	divider:SetPoint("BOTTOMLEFT", sideX - 8, 10)
+	side:ClearAllPoints()
+	side:SetPoint("TOPLEFT", sideX, -8)
+	side:SetHeight(math.max(BASE_H, math.floor(height)) - SIDE_V)
 end
 
 function Pane.Render()

@@ -596,6 +596,7 @@ T.test("online: без отметки значок остаётся у тех, �
 	for _, p in ipairs(K.ns.Views.AllOnline().people) do people[p.name] = p end
 	local origin = Reporter(K, "Чиллзон Север")
 	T.eq(people[origin].addon, true, "прислал отчёт переписи")
+	T.eq(people[origin].version, K.ns.VERSION, "версия — из его отчёта")
 	T.eq(people[Other(c, "Чиллзон Север", origin):Name()].addon, nil, "про остальных отвечающий промолчал")
 end)
 
@@ -642,7 +643,8 @@ T.test("online: длинный список рисует только видим
 	local t = f.cardTable
 	Heads(t).name:Click()
 	T.eq(#t.people, 202, "в таблице все")
-	T.eq(#t.rows, 22, "строк создано на видимую часть")
+	-- Наименьшее окно 860×490: вставка 850×404, строк (404 - 340) / 16 = 4 больше, чем в исходном.
+	T.eq(#t.rows, 26, "строк создано на видимую часть")
 	local head = t.y
 	local stuck
 	t.head.SetPoint = function(_, _, _, _, _, y) stuck = y end
@@ -650,7 +652,7 @@ T.test("online: длинный список рисует только видим
 	f.card:SetVerticalScroll(offset)
 	local rows = VisibleRows(t)
 	T.eq(rows[1].person.name, t.people[101].name, "прокрутка показывает нужных людей")
-	T.eq(#rows, 22, "окно заполнено")
+	T.eq(#rows, 26, "окно заполнено")
 	T.eq(stuck, -offset, "заголовок прилип к верху видимой части")
 	-- Меню работает и на переставленной строке.
 	local opened
@@ -661,4 +663,80 @@ T.test("online: длинный список рисует только видим
 	Heads(t).name:Click()
 	T.eq(t.scroll:GetVerticalScroll(), head, "начало таблицы")
 	T.eq(VisibleRows(t)[1].person.name, t.people[1].name, "первая строка на месте")
+end)
+
+T.test("online: в высоком окне строк таблицы больше, в широком колонки шире", function()
+	local w, c = Build()
+	local K = c.K
+	local P = K.ns.CensusPane
+	for i = 1, 60 do
+		w:AddOnline("Чиллзон", ("Боец%03d Длинный-CAMWOWUS2Realm7PvE"):format(i), 3, 60, "ROGUE")
+	end
+	K.ns.Roster.Scan()
+	K.ns.UI.Toggle("census")
+	P.Select(K.ns.Util.GuildKey("Чиллзон"))
+	local t = P.frames.cardTable
+	T.eq(#VisibleRows(t), 26, "наименьшее окно")
+	local name, widths = Heads(t).name, {}
+	name.SetWidth = function(_, width) widths[#widths + 1] = width end
+	-- Вставка 1104×500: карточка 1104 - 288 - 30 = 786 вместо 486, строк (500 - 18) / 16 + 2.
+	K.ns.UI.Resize(814 + 300, 426 + 160)
+	T.eq(#t.rows, 32, "строк на всю высоту")
+	T.eq(#VisibleRows(t), 32, "и все заняты")
+	local at
+	for i, col in ipairs(t.columns) do
+		if col.key == "name" then at = i end
+	end
+	local wide = P.Widths(t.columns, 786)[at]
+	T.eq(widths[#widths], wide, "имя получило свою долю прибавки")
+	-- У наименьшего окна (вставка 850) карточка 850 - 288 - 30 = 532.
+	T.ok(wide > P.Widths(t.columns, 532)[at], "и стало шире")
+	-- Прокрутка в высоком окне показывает людей подряд, без пропусков.
+	t.scroll:SetVerticalScroll(t.y + 18 + 10 * 16)
+	local rows = VisibleRows(t)
+	T.eq(rows[1].person.name, t.people[11].name)
+	T.eq(rows[32].person.name, t.people[42].name)
+	-- Обратно к наименьшему: созданные строки остаются, но таблица в прежних колонках.
+	K.ns.UI.Resize(860, 490)
+	T.eq(widths[#widths], P.Widths(t.columns, 532)[at])
+	T.eq(#(K.ns.db.errors or {}), 0)
+end)
+
+T.test("online: пока окно тянут, таблица людей не сортируется и не перекладывается", function()
+	local w, c = Build()
+	local K = c.K
+	local P, UI = K.ns.CensusPane, K.ns.UI
+	for i = 1, 60 do
+		w:AddOnline("Чиллзон", ("Боец%03d Длинный-CAMWOWUS2Realm7PvE"):format(i), 3, 60, "ROGUE")
+	end
+	K.ns.Roster.Scan()
+	UI.Toggle("census")
+	P.Select(K.ns.Util.GuildKey("Чиллзон"))
+	local t = P.frames.cardTable
+	local name, widths = Heads(t).name, {}
+	name.SetWidth = function(_, width) widths[#widths + 1] = width end
+	local sorts, groups = 0, 0
+	local sort, layout = K.ns.Views.SortOnline, K.ns.GroupsPane.Layout
+	K.ns.Views.SortOnline = function(...) sorts = sorts + 1; return sort(...) end
+	K.ns.GroupsPane.Layout = function(...) groups = groups + 1; return layout(...) end
+	local grip, frame = UI.grip, UI.frame
+	grip.scripts.OnMouseDown(grip, "LeftButton")
+	-- Игра шлёт размер каждый кадр, пока игрок тянет.
+	for step = 1, 10 do frame.scripts.OnSizeChanged(frame, 814 + 30 * step, 426 + 16 * step) end
+	T.eq(sorts, 0, "без сортировки")
+	T.eq(#widths, 0, "колонки на месте")
+	T.eq(#t.rows, 26, "новые строки — по отпусканию")
+	T.eq(groups, 0, "закрытые вкладки ждут отпускания")
+	T.same({ UI.Size() }, { 1114, 586 })
+	grip.scripts.OnMouseUp(grip)
+	T.ok(sorts > 0, "по отпусканию — полная отрисовка")
+	T.eq(groups, 1, "и раскладка всех вкладок")
+	T.eq(#t.rows, 32)
+	T.eq(#VisibleRows(t), 32)
+	local at
+	for i, col in ipairs(t.columns) do
+		if col.key == "name" then at = i end
+	end
+	T.eq(widths[#widths], P.Widths(t.columns, 786)[at])
+	T.eq(#(K.ns.db.errors or {}), 0)
 end)

@@ -47,9 +47,12 @@ read_globals = {
 	"Enum",
 
 	-- функции
+	"ChannelUnban",
 	"ChatFrame_AddMessageEventFilter",
 	"ChatFrame_OpenChat",
+	"ClearCursor",
 	"CreateFrame",
+	"DisplayChannelOwner",
 	"FCFDock_GetSelectedWindow",
 	"FCFDock_SelectWindow",
 	"FCF_CanOpenNewWindow",
@@ -61,6 +64,7 @@ read_globals = {
 	"GetChannelList",
 	"GetChannelName",
 	"GetChatWindowInfo",
+	"GetCursorInfo",
 	"GetCursorPosition",
 	"GetGuildInfo",
 	"GetGuildRosterInfo",
@@ -78,6 +82,7 @@ read_globals = {
 	"CanGuildInvite",
 	"CanGuildRemove",
 	"SetGuildRosterShowOffline",
+	"SetChannelPassword",
 	"InviteUnit",
 	"IsMouseButtonDown",
 	"JoinChannelByName",

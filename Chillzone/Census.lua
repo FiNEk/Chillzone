@@ -250,11 +250,42 @@ function Census.SendHello()
 	end
 end
 
+-- Вне планового привета (HELLO_EVERY) гильдии отвечает только тот, кто ей пересылает:
+-- репортёр или передающий дела. Вошедшему он нужен сразу, чтобы принимать RG (MayForward), а
+-- остальных тот услышит в их плановых приветах до конца LOGIN_QUIET: HELLO_EVERY короче.
+-- Раньше на каждый вход отвечали все клиенты гильдии, и одних H1 было по три-четыре в минуту
+-- на клиента. Когда вошедший сам становится репортёром, прежний отвечает как передающий дела:
+-- его выбрал бы вошедший без себя (Census.Reporter(true)).
+local function Answers()
+	return Census.Forwarding()
+end
+
 -- Привет в ответ на запрос каталога доверия (Security.ShareTrust): не чаще раза в gap
--- секунд. Сменилась готовность — сразу, как в Track. Плановый привет (HELLO_EVERY) и
--- ответ новому соседу (H1) идут как прежде.
+-- секунд и только от пересылающего (Answers). Сменилась готовность — сразу, как в Track.
 function Census.Hello(gap)
+	if not Answers() then return end
 	if helloReady ~= (ns.Security.MyCertificate() ~= nil) or ns.Now() - helloAt >= gap then Census.SendHello() end
+end
+
+-- Ответ вошедшему — один на вход, на его первое объявление ключа (K1, Census.Entered из
+-- Security). K1 уходит, только когда у вошедшего свежий ростер, а без него он не принимает
+-- ничего по GUILD: H1 он может прислать раньше (в главной гильдии участник сразу), и ответ на
+-- такой H1 пропал бы. А в гильдии объединения H1 — лишь после каталога доверия, когда строки
+-- гильдии от репортёра уже идут: без ответа на K1 вошедший их отбросил бы (MayForward).
+-- Ответ на H1 нового соседа — запасной: если K1 уже был, а я тогда не пересылал гильдии.
+-- Ждущий в очереди привет один на всех вошедших: Comm.Send заменяет его по ключу.
+local entered = {} -- [Key] = когда согильдиец объявил новый ключ: с тех пор он слышит гильдию
+local greeted = {} -- [Key] = когда я ответил ему приветом
+local function Greet(key)
+	local now = ns.Now()
+	if not Answers() or (greeted[key] and now - greeted[key] < C.PEER_WINDOW) then return end
+	greeted[key] = now
+	Census.SendHello()
+end
+
+function Census.Entered(key)
+	entered[key] = ns.Now()
+	Greet(key)
 end
 
 ns.Comm.On("H1", function(msg, sender, dist)
@@ -266,10 +297,15 @@ ns.Comm.On("H1", function(msg, sender, dist)
 	local since = known and now - known.t <= C.PEER_WINDOW and known.since or now
 	peers[key] = { t = now, since = since, z = h.zones, r = h.relay, name = sender, version = h.version, unready = h.unready }
 	ns.Update.Heard(key, h.version)
-	-- Новый согильдиец с аддоном: ответить своим приветом, чтобы выборы сошлись быстрее,
-	-- и отметить его в списке людей окна.
+	-- Новый согильдиец с аддоном: отметить его в списке людей окна, а репортёру — ответить, если
+	-- на его K1 ещё не отвечал (Greet). Задержка выбирается сразу: случайная задержка не зависит
+	-- от того, ответит ли клиент, и порядок случайных чисел у всех клиентов прежний.
 	if not known or known.version ~= h.version then ns.Fire("PEERS") end
-	if not known then ns.After(math.random(2, 6), "hello back", Census.SendHello) end
+	if not known then
+		ns.After(math.random(2, 6), "hello back", function()
+			if entered[key] then Greet(key) end
+		end)
+	end
 end)
 
 ---------------------------------------------------------------------------
@@ -529,6 +565,8 @@ end)
 
 ns.On("GUILD_CHANGED", function()
 	wipe(peers)
+	wipe(entered)
+	wipe(greeted)
 	helloReady, helloAt = nil, -1e9
 	listenSince = ns.Now()
 	elected, previous, acting, handingUntil = nil, nil, false, nil

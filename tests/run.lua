@@ -14,6 +14,7 @@ local SUITES = {
 	"test_codec",
 	"test_comm",
 	"test_diagnostics",
+	"test_net",
 	"test_perf",
 	"test_data",
 	"test_relay",
@@ -22,6 +23,7 @@ local SUITES = {
 	"test_transfer",
 	"test_chat",
 	"test_channel",
+	"test_channel_guard",
 	"test_chat_config",
 	"test_chat_tab",
 	"test_guildmirror",
@@ -40,7 +42,7 @@ local SUITES = {
 	"test_minimap",
 	"test_online",
 	"test_groups",
-	"test_trust_catalog", "test_crafters", "test_wishes",
+	"test_trust_catalog", "test_crafters", "test_window", "test_wishes",
 }
 
 for _, name in ipairs(SUITES) do

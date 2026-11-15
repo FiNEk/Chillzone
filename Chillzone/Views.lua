@@ -1,5 +1,4 @@
--- Chillzone: содержимое вкладок окна — список гильдий и карточка гильдии «Переписи», дерево
--- «Королевства» (строки { text, right, indent, tip(tooltip) }, их рисует UI.lua), шапка окна,
+-- Chillzone: содержимое вкладок окна — список гильдий и карточка гильдии «Переписи», шапка окна,
 -- строки и люди чата, подсказки.
 local ADDON, ns = ...
 
@@ -46,6 +45,49 @@ local function GuildLabel(s)
 	if s.mine then name = name .. " " .. GREY .. L.MINE_MARK .. "|r" end
 	if s.conflict then name = name .. " " .. RED .. "!|r" end
 	return name
+end
+
+---------------------------------------------------------------------------
+-- Аддон у людей из списков: чат, «Руководство» и «кто в игре» на «Переписи»
+---------------------------------------------------------------------------
+-- Аддон у согильдийца по приветам H1 (Census.Addon). «Нет» — только про того, кто в игре:
+-- от вышедшего привета и не должно быть.
+local function GuildAddon(key, online)
+	local has, version = ns.Census.Addon(key)
+	if has == false and not online then has = nil end
+	return has, version
+end
+
+-- Кто из других гильдий точно с аддоном: писал в общие каналы подписанной строкой или прислал
+-- отчёт переписи. Строку из канала игры (e.ch) может написать и игрок без аддона.
+-- Остальных не знаем: приветы H1 ходят только внутри гильдии. Значение — версия аддона или
+-- true, если версии не знаем: строка чата её не несёт, а отчёт R1 называет версию своего автора.
+local function AddonKnown(summary)
+	local known = {}
+	for tier in pairs(ns.Chat.TIER_LEVEL) do
+		for _, e in ipairs(ns.Chat.History(tier)) do
+			local k = not e.ch and U.Key(e.s)
+			if k then known[k] = true end
+		end
+	end
+	for _, s in ipairs(summary) do
+		local k = U.Key(s.origin)
+		if k then known[k] = s.r and s.r.version or known[k] or true end
+	end
+	return known
+end
+
+-- Аддон у человека с ключом k: согильдиец (own) — по приветам H1, остальные и согильдиец,
+-- о котором приветы пока молчат, — по known (AddonKnown). true и версия, если знаем, — есть;
+-- false — нет; nil — неизвестно.
+local function PersonAddon(k, own, inGame, known)
+	if own then
+		local has, version = GuildAddon(k, inGame)
+		if has ~= nil then return has, version end
+	end
+	local v = k and known[k]
+	if not v then return nil end
+	return true, v ~= true and v or nil
 end
 
 ---------------------------------------------------------------------------
@@ -99,10 +141,13 @@ function Views.GuildCard(s)
 	}
 	card.extra = L.CARD_EXTRA:format(r.users or 0, r.inactive7 or 0, r.inactive30 or 0)
 	card.people = {}
+	local known = AddonKnown(ns.Data.Summary())
 	local function person(p, role)
+		local on = (s.fresh and p.online) and true or false
+		local has, version = PersonAddon(U.Key(p.name), s.mine, on, known)
 		card.people[#card.people + 1] = {
 			name = p.name, class = p.class, level = p.level, days = p.days, role = role,
-			online = (s.fresh and p.online) and true or false, guild = s.guild, main = s.main,
+			online = on, guild = s.guild, main = s.main, addon = has, version = version,
 		}
 	end
 	if r.leader then
@@ -131,7 +176,7 @@ function Views.GuildCard(s)
 	else
 		card.staleNote = L.CARD_STALE
 	end
-	card.onlineGroup = Views.OnlineGroup(s, L.ONLINE_HEAD)
+	card.onlineGroup = Views.OnlineGroup(s, L.ONLINE_HEAD, known)
 	return card
 end
 
@@ -281,64 +326,6 @@ function Views.CensusRows(now)
 end
 
 ---------------------------------------------------------------------------
--- Вкладка «Королевство»
----------------------------------------------------------------------------
-local function PersonTip(p, role, guild)
-	return function(tt)
-		tt:AddLine(Views.Name(p.name, p.class))
-		tt:AddLine(role .. ", " .. Codec.Plain(guild), 0.8, 0.8, 0.8)
-		if p.level and p.level > 0 then tt:AddLine(L.TIP_LEVEL:format(p.level), 0.8, 0.8, 0.8) end
-		tt:AddLine(Views.State(p.online, p.days), 0.6, 0.6, 0.6)
-	end
-end
-
-local function Captains(lines, node, indent)
-	for _, c in ipairs(node.captains) do
-		lines[#lines + 1] = {
-			text = ICON_OFFICER .. " " .. Dot(c.online) .. Views.Name(c.name, c.class),
-			right = GREY .. L.ROLE_CAPTAIN .. "|r", indent = indent,
-			tip = PersonTip(c, L.ROLE_CAPTAIN, node.guild),
-		}
-	end
-end
-
-function Views.Kingdom()
-	local lines = {}
-	local tree = ns.Data.Kingdom()
-	lines[#lines + 1] = { text = GOLD .. L.KINGDOM_KING .. "|r", header = true }
-	local king = tree.king
-	if king then
-		lines[#lines + 1] = {
-			text = ICON_KING .. " " .. Dot(king.leaderOnline) .. Views.Name(king.leader, king.leaderClass) .. "  " .. GREY .. "<" .. Codec.Plain(king.guild) .. ">|r" .. (king.conflict and (" " .. RED .. "!|r") or ""),
-			right = GOLD .. L.ROLE_KING .. "|r",
-			tip = PersonTip({ name = king.leader, class = king.leaderClass, level = king.leaderLevel, online = king.leaderOnline, days = king.leaderDays }, L.ROLE_KING, king.guild),
-		}
-		Captains(lines, king, 1)
-	else
-		lines[#lines + 1] = { text = GREY .. L.KINGDOM_NO_KING:format(C.MAIN_GUILD) .. "|r", wrap = true }
-	end
-	local lords = 0
-	for _, node in ipairs(tree.guilds) do
-		if not node.main then
-			if lords == 0 then lines[#lines + 1] = { text = GOLD .. L.KINGDOM_LORDS .. "|r", header = true, gap = true } end
-			lords = lords + 1
-			local lord = node.leader and (Dot(node.leaderOnline) .. Views.Name(node.leader, node.leaderClass)) or (GREY .. "—|r")
-			lines[#lines + 1] = {
-				text = lord .. "  " .. GREY .. "<" .. Codec.Plain(node.guild) .. ">|r" .. (node.conflict and (" " .. RED .. "!|r") or ""),
-				right = GREY .. L.ROLE_LORD .. "|r",
-				tip = node.leader and PersonTip({ name = node.leader, class = node.leaderClass, level = node.leaderLevel, online = node.leaderOnline, days = node.leaderDays }, L.ROLE_LORD, node.guild) or nil,
-			}
-			Captains(lines, node, 1)
-		end
-	end
-	if lords == 0 then
-		lines[#lines + 1] = { text = GOLD .. L.KINGDOM_LORDS .. "|r", header = true, gap = true }
-		lines[#lines + 1] = { text = GREY .. L.KINGDOM_NO_LORDS .. "|r", wrap = true }
-	end
-	return lines
-end
-
----------------------------------------------------------------------------
 -- Окно чата: строки сообщений и список людей справа
 ---------------------------------------------------------------------------
 local ACTIVE_WINDOW = 3600 -- «писал за последний час»
@@ -360,32 +347,6 @@ local function ByRole(a, b)
 	if (a.online and 1 or 0) ~= (b.online and 1 or 0) then return a.online and true or false end
 	if (a.rank or 9) ~= (b.rank or 9) then return (a.rank or 9) < (b.rank or 9) end
 	return a.name < b.name
-end
-
--- Аддон у согильдийца по приветам H1 (Census.Addon). «Нет» — только про того, кто в игре:
--- от вышедшего привета и не должно быть.
-local function GuildAddon(key, online)
-	local has, version = ns.Census.Addon(key)
-	if has == false and not online then has = nil end
-	return has, version
-end
-
--- Кто из других гильдий точно с аддоном: писал в общие каналы подписанной строкой или прислал
--- отчёт переписи. Строку из канала игры (e.ch) может написать и игрок без аддона.
--- Остальных не знаем: приветы H1 ходят только внутри гильдии.
-local function AddonKnown(summary)
-	local known = {}
-	for tier in pairs(ns.Chat.TIER_LEVEL) do
-		for _, e in ipairs(ns.Chat.History(tier)) do
-			local k = not e.ch and U.Key(e.s)
-			if k then known[k] = true end
-		end
-	end
-	for _, s in ipairs(summary) do
-		local k = U.Key(s.origin)
-		if k then known[k] = true end
-	end
-	return known
 end
 
 -- Своя гильдия по ростеру: в G — кто в игре, в O — офицеры (в игре первыми).
@@ -448,11 +409,7 @@ function Views.People(channel, now)
 	local summary = ns.Data.Summary(now)
 	local known, mine = AddonKnown(summary), U.GuildKey(ns.MyGuild())
 	local function addon(k, guild, inGame)
-		if mine and U.GuildKey(guild) == mine then
-			local has, version = GuildAddon(k, inGame)
-			if has ~= nil then return has, version end
-		end
-		return known[k] or nil
+		return PersonAddon(k, mine ~= nil and U.GuildKey(guild) == mine, inGame, known)
 	end
 	for _, s in ipairs(summary) do
 		if s.recent then
@@ -527,10 +484,11 @@ function Views.OnlineGroup(s, label, known)
 		known = known or AddonKnown(ns.Data.Summary())
 		for _, p in ipairs(state.people) do
 			local k = U.Key(p.name)
+			local has, version = PersonAddon(k, false, true, known)
 			people[#people + 1] = {
 				name = p.name, class = p.class, level = p.level, online = true, days = 0,
 				role = roles[k] or "member", guild = s.guild, main = s.main,
-				addon = (p.addon or known[k]) and true or nil,
+				addon = (p.addon or has) and true or nil, version = version,
 			}
 		end
 	end
@@ -661,10 +619,18 @@ function Views.MinimapTip(tt)
 	tt:AddLine("Chillzone", 0.5, 0.83, 0.76)
 	tt:AddLine(status.big, 1, 0.82, 0)
 	tt:AddLine(status.small, 0.7, 0.7, 0.7)
-	local tree = ns.Data.Kingdom()
-	if tree.king then tt:AddLine(L.ROLE_KING .. ": " .. Views.Name(tree.king.leader, tree.king.leaderClass), 1, 0.82, 0) end
+	-- Заявки к своему объявлению: щелчок по кнопке тогда открывает сразу «Группы».
+	local waiting = ns.Groups.Waiting()
+	if waiting > 0 then tt:AddLine(L.GROUPS_WAITING:format(waiting), 1, 0.5, 0.25) end
+	-- Король — глава главной гильдии по её отчёту.
+	for _, s in ipairs(ns.Data.Summary()) do
+		if s.main and s.recent and s.r.leader then
+			tt:AddLine(L.ROLE_KING .. ": " .. Views.Name(s.r.leader, s.r.leaderClass), 1, 0.82, 0)
+			break
+		end
+	end
 	tt:AddLine(" ")
-	tt:AddLine(L.MINIMAP_LEFT, 0.6, 0.6, 0.6)
+	tt:AddLine(waiting > 0 and L.MINIMAP_LEFT_GROUPS or L.MINIMAP_LEFT, 0.6, 0.6, 0.6)
 	tt:AddLine(L.MINIMAP_RIGHT, 0.6, 0.6, 0.6)
 	tt:AddLine(L.MINIMAP_DRAG, 0.6, 0.6, 0.6)
 end
@@ -766,12 +732,16 @@ local function GroupRow(e, own)
 		row.action, row.actionText = "withdraw", L.GROUPS_WITHDRAW
 		-- Пока заявка ждёт в очереди отправки, «отправлена» было бы неправдой.
 		row.status = e.sending and (GREY .. L.GROUPS_APPLYING .. "|r") or (GREEN .. L.GROUPS_APPLIED .. "|r")
-	elseif e.applied == "invited" then
-		row.status = GREEN .. L.GROUPS_YOU_INVITED .. "|r"
+	elseif e.applied == "signed" or e.applied == "invited" then
+		-- Записанный ждёт сбора где угодно; передумал — выписывается, и место освобождается.
+		row.action, row.actionText = "withdraw", L.GROUPS_LEAVE
+		row.status = GREEN .. (e.applied == "invited" and L.GROUPS_YOU_INVITED or L.GROUPS_YOU_SIGNED) .. "|r"
 	elseif e.applied == "declined" then
 		row.status = GREY .. L.GROUPS_YOU_DECLINED .. "|r"
 	elseif e.short then
 		row.status = ORANGE .. L.GROUPS_NEED_LEVEL:format(e.min) .. "|r"
+	elseif e.size >= e.cap then
+		row.status = GREY .. L.GROUPS_NO_ROOM_ROW .. "|r"
 	else
 		row.action, row.actionText = "apply", L.GROUPS_APPLY
 	end
@@ -783,7 +753,7 @@ local function OwnEntry()
 	local mine = ns.Groups.Mine()
 	if not mine then return nil end
 	local _, class = UnitClass("player")
-	local size = mine.mode == "G" and math.max(1, GetNumGroupMembers and GetNumGroupMembers() or 0) or 1
+	local size = mine.mode == "G" and ns.Groups.Size() or 1
 	return {
 		key = ns.myKey, name = U.Display(ns.me), guild = ns.MyGuild() or "", class = class, level = UnitLevel("player") or 0,
 		mode = mine.mode, id = mine.id, raised = mine.id, kind = mine.kind, title = mine.title, note = mine.note,
@@ -810,15 +780,27 @@ function Views.GroupRows(kind)
 	return rows, ns.Groups.Count()
 end
 
--- Заявки ко мне: { key, who, name, sub, tip, invited }; who — имя для шёпота, name — с цветом класса.
+-- Заявки ко мне по разделам Views.APPLICANT_SECTIONS: сначала новые (их число горит кружком у
+-- миникарты), затем записанные, которых можно звать, затем позванные и уже вошедшие в группу; в
+-- разделе — как пришли. Запись: { key, who, name, sub, tip, state, section }; who — имя для шёпота,
+-- name — с цветом класса, state — "new" (заявка), "signed" (записан, можно звать), "invited"
+-- (позван) или "party" (уже в группе), section — "new", "signed" или "called". Второе значение —
+-- { [раздел] = сколько в нём строк }.
+Views.APPLICANT_SECTIONS = { "new", "signed", "called" }
+
 function Views.GroupApplicants()
-	local out = {}
-	for _, a in ipairs(ns.Groups.Applicants()) do
+	local out, counts, by = {}, {}, {}
+	for _, section in ipairs(Views.APPLICANT_SECTIONS) do by[section] = {} end
+	local function Add(a)
 		local who = Codec.Plain(a.guild or "")
 		if a.level and a.level > 0 then who = who .. ", " .. a.level end
 		local roles = Views.GroupRoles(a.roles)
-		out[#out + 1] = {
-			key = a.key, who = a.name, name = Views.Name(a.name, a.class), invited = a.state == "invited",
+		local state = a.state
+		if state ~= "new" and a.party then state = "party" end
+		local section = (state == "new" or state == "signed") and state or "called"
+		local into = by[section]
+		into[#into + 1] = {
+			key = a.key, who = a.name, name = Views.Name(a.name, a.class), state = state, section = section,
 			sub = (roles ~= "" and (roles .. " ") or "") .. GREY .. who .. "|r",
 			tip = function(tt)
 				tt:AddLine(Views.Name(a.name, a.class))
@@ -833,7 +815,21 @@ function Views.GroupApplicants()
 			end,
 		}
 	end
-	return out
+	for _, a in ipairs(ns.Groups.Applicants()) do Add(a) end
+	for _, section in ipairs(Views.APPLICANT_SECTIONS) do
+		counts[section] = #by[section]
+		for _, it in ipairs(by[section]) do out[#out + 1] = it end
+	end
+	return out, counts
+end
+
+-- «Кого ещё ищем» одной строкой: значок и число каждой роли, нули тоже — как было в счётчиках.
+function Views.GroupNeed(roles)
+	local out = {}
+	for _, k in ipairs(ns.Groups.ROLES) do
+		out[#out + 1] = Views.RoleIcon(k) .. " " .. WHITE .. (type(roles) == "table" and roles[k] or 0) .. "|r"
+	end
+	return L.GROUPS_NEED_LINE:format(table.concat(out, "   "))
 end
 
 -- Ключ для поиска по названию: нижний регистр с кириллицей, «ё» как «е» (в названиях игры
@@ -1406,15 +1402,36 @@ end
 
 -- Название предмета или «Предмет №…», пока игра его догружает.
 function Views.WishItemName(id)
-	return ns.Crafters.ItemName(id) or L.WISH_ITEM_LOADING:format(id)
+	return ns.Wishes.ItemName(id) or L.WISH_ITEM_LOADING:format(id)
+end
+
+-- Ключ названия предмета для сортировки и поиска: на сессию, названия предметов не меняются.
+local wishKeys = {}
+local function WishKey(id, name)
+	local k = wishKeys[id]
+	if not k then
+		k = SearchKey(name)
+		wishKeys[id] = k
+	end
+	return k
+end
+
+-- Присутствие автора списка: считается один раз на сборку, а не на каждый его предмет.
+local function WishPresence(card, memo)
+	local p = memo[card]
+	if not p then
+		p = card.own and "own" or ns.Crafters.Presence(card)
+		memo[card] = p
+	end
+	return p
 end
 
 -- Кто хочет предмет, по присутствию: { card, presence, rank }, сначала свой, затем в игре.
-local function Wishers(id)
+local function Wishers(id, memo)
 	local out = {}
-	for _, card in ipairs(ns.Wishes.Who(id)) do
-		local presence = card.own and "own" or ns.Crafters.Presence(card)
-		out[#out + 1] = { card = card, presence = presence, rank = CRAFT_RANK[presence] or 3 }
+	for i, card in ipairs(ns.Wishes.Who(id)) do
+		local presence = WishPresence(card, memo)
+		out[i] = { card = card, presence = presence, rank = CRAFT_RANK[presence] or 3 }
 	end
 	table.sort(out, function(a, b)
 		if a.rank ~= b.rank then return a.rank < b.rank end
@@ -1428,63 +1445,83 @@ local function WishPerson(w)
 	return Views.CraftDot(w.presence) .. " " .. Views.Name(card.name, card.class) .. " " .. GREY .. Codec.Plain(card.guild) .. "|r"
 end
 
--- Строки вкладки: по предмету на строку — { id, name, icon, sub, count, mine, tip }. query —
--- поиск по названию предмета, имени или гильдии (Views.CraftWords: от трёх знаков). Второе
--- значение — сколько предметов всего, третье — сколько строк не показано (WISH_ROWS).
+-- Строки вкладки: по предмету на строку — { id, name, known, count, mine }. Имена под названием
+-- (Views.WishSub) панель собирает только для видимых строк. query — поиск по
+-- названию предмета, имени или гильдии (Views.CraftWords: от трёх знаков). Второе значение —
+-- сколько предметов всего, третье — сколько строк не показано (WISH_ROWS). Значок и подсказку
+-- строки панель берёт сама и только для видимых строк.
 function Views.WishRows(query)
 	local words = Views.CraftWords(query)
-	local items, order = {}, {}
-	local cards = ns.Wishes.Cards()
+	local index, order = ns.Wishes.Index()
 	local own = ns.Wishes.Own()
-	if own then table.insert(cards, 1, own) end
-	for _, card in ipairs(cards) do
-		for _, id in ipairs(card.items) do
-			if not items[id] then
-				items[id] = true
-				order[#order + 1] = id
-			end
-		end
-	end
 	local mine = {}
 	for _, id in ipairs(own and own.items or {}) do mine[id] = true end
+	local people = {} -- ключ поиска автора — по разу на автора
 	local out = {}
 	for _, id in ipairs(order) do
-		local name = ns.Crafters.ItemName(id)
-		local wishers = Wishers(id)
+		local cards = index[id]
+		local name = ns.Wishes.ItemName(id)
 		local fit = true
 		if words then
-			local text = name or ""
-			for _, w in ipairs(wishers) do text = text .. w.card.name .. w.card.guild end
-			fit = Fits(SearchKey(text), words)
+			local text = name and WishKey(id, name) or ""
+			for _, card in ipairs(cards) do
+				local key = people[card]
+				if not key then
+					key = SearchKey(card.name .. card.guild)
+					people[card] = key
+				end
+				text = text .. key
+			end
+			fit = Fits(text, words)
 		end
 		if fit then
-			local names = {}
-			for i = 1, math.min(#wishers, 3) do
-				local card = wishers[i].card
-				names[i] = Views.CraftDot(wishers[i].presence) .. " " .. Views.Name(card.name, card.class)
-			end
-			local sub = table.concat(names, "  ")
-			if #wishers > 3 then sub = sub .. "  " .. GREY .. L.WISH_TIP_MORE:format(#wishers - 3) .. "|r" end
+			local label = name or L.WISH_ITEM_LOADING:format(id)
 			out[#out + 1] = {
-				id = id, name = name or L.WISH_ITEM_LOADING:format(id), known = name ~= nil, icon = ns.Crafters.ItemIcon(id),
-				sub = sub, count = #wishers, mine = mine[id] == true,
+				id = id, name = label, known = name ~= nil, count = #cards, mine = mine[id] == true,
+				sort = name and WishKey(id, name) or "",
 			}
 		end
 	end
 	table.sort(out, function(a, b)
 		if a.known ~= b.known then return a.known end
 		if a.count ~= b.count then return a.count > b.count end
-		return SearchKey(a.name) < SearchKey(b.name)
+		return a.sort < b.sort
 	end)
 	local hidden = math.max(0, #out - C.WISH_ROWS)
 	for i = #out, C.WISH_ROWS + 1, -1 do out[i] = nil end
 	return out, #order, hidden
 end
 
--- Карточка предмета для правой панели: { id, name, icon, people = { { text, name, person, own, whisper, tip } } }.
+-- Под названием предмета — до трёх имён: свой, затем в игре. Полный порядок — в карточке предмета.
+function Views.WishSub(id)
+	local best = Wishers(id, {})
+	local shown = {}
+	for i = 1, math.min(#best, 3) do
+		local card = best[i].card
+		shown[i] = Views.CraftDot(best[i].presence) .. " " .. Views.Name(card.name, card.class)
+	end
+	local sub = table.concat(shown, "  ")
+	if #best > 3 then sub = sub .. "  " .. GREY .. L.WISH_TIP_MORE:format(#best - 3) .. "|r" end
+	return sub
+end
+
+-- Гильдии авторов списков, где нужен предмет: для запроса онлайна (Online.Want).
+function Views.WishGuilds(id)
+	local seen, out = {}, {}
+	for _, card in ipairs(ns.Wishes.Who(id)) do
+		local gk = not card.own and U.GuildKey(card.guild)
+		if gk and not seen[gk] then
+			seen[gk] = true
+			out[#out + 1] = card.guild
+		end
+	end
+	return out
+end
+
+-- Карточка предмета для правой панели: { id, name, people = { { text, name, person, own, whisper, right, tip } } }.
 function Views.WishItem(id)
 	local people = {}
-	for _, w in ipairs(Wishers(id)) do
+	for _, w in ipairs(Wishers(id, {})) do
 		local card = w.card
 		local state = not card.own and CRAFT_TIP[w.presence]
 		people[#people + 1] = {
@@ -1510,14 +1547,20 @@ function Views.WishItem(id)
 	return { id = id, name = Views.WishItemName(id), icon = ns.Crafters.ItemIcon(id), people = people }
 end
 
--- Своя панель: подсказка, состояние списка.
+-- Своя панель: состояние списка. Правка размещённого списка уходит таймером: сказано, когда.
 function Views.WishMine()
 	local Wishes = ns.Wishes
 	local status
 	if Wishes.Posted() then
 		local n = #Wishes.Items()
 		local count = n .. " " .. U.Plural(n, L.WISH_ITEMS_1, L.WISH_ITEMS_2, L.WISH_ITEMS_5)
-		status = Wishes.Dirty() and (ORANGE .. L.WISH_CHANGED:format(count) .. "|r") or (GREEN .. L.WISH_POSTED:format(count) .. "|r")
+		if Wishes.Dirty() then
+			local wait = Wishes.UpdateWait()
+			local when = wait > 60 and L.WISH_IN_MIN:format(math.ceil(wait / 60)) or L.WISH_SOON
+			status = ORANGE .. L.WISH_CHANGED:format(count, when) .. "|r"
+		else
+			status = GREEN .. L.WISH_POSTED:format(count) .. "|r"
+		end
 	else
 		status = L.WISH_NOT_POSTED
 	end

@@ -117,6 +117,7 @@ end
 function D.Clear()
 	ns.db.log, ns.db.errors, recent = {}, {}, {}
 	ns.Perf.Clear()
+	ns.Net.Clear()
 	ns.Log(L.JOURNAL_CLEARED)
 end
 
@@ -145,6 +146,7 @@ function D.Report(limit)
 	lines[#lines + 1] = L.JOURNAL_HOOKS .. table.concat(coverage, "; ")
 	local s = ns.Comm.stats
 	lines[#lines + 1] = L.STATUS_COMM:format(s.sent, s.recv, ns.Comm.QueueSize(), s.fails, s.dropped)
+	lines[#lines + 1] = ns.Net.Report()
 	lines[#lines + 1] = ns.Perf.Report()
 	lines[#lines + 1] = L.JOURNAL_EVENTS
 	local log = ns.db and ns.db.log or {}

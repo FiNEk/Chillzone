@@ -242,10 +242,20 @@ end
 ---------------------------------------------------------------------------
 local Out, FlushHold -- вперёд
 
+-- Запись в журнал — при смене состояния: реле отвечало, причина другая или прошёл час. Кандидаты
+-- в реле — все с сертификатом главной гильдии за неделю, и вышедшие из игры пробуются снова раз
+-- в RELAY_DOWN: без этого их повторы вытесняют из журнала всё остальное за несколько часов.
+local MARKDOWN_LOG_GAP = 3600
 local function MarkDown(e, why, retryAfter)
 	local now = Now()
+	-- «Не в игре» и «адресат недоступен» — одно состояние: ответ сервера или память о нём в Comm.
+	local kind = retryAfter and why or "offline"
+	local changed = e.verified ~= nil or e.downWhy ~= kind or now - (e.downLogged or -1e9) >= MARKDOWN_LOG_GAP
 	e.down, e.asked, e.probe, e.verified = now + (retryAfter or C.RELAY_DOWN), nil, nil, nil
-	ns.Log("реле %s недоступно: %s", e.name or e.key, why)
+	if changed then
+		e.downWhy, e.downLogged = kind, now
+		ns.Log("реле %s недоступно: %s", e.name or e.key, why)
+	end
 	-- Что ему недавно ушло, уходит через другое реле.
 	local list = recent[e.key]
 	recent[e.key] = nil
@@ -761,9 +771,28 @@ ns.Comm.On("RU", function(msg, sender, dist)
 	Pass(U.GuildKey(guild), U.Key(sender), successor, Now())
 end)
 
-ns.Comm.On("RY", function(msg, sender, dist)
+-- Реле представляется (KP) и сразу шлёт RY или RM, а сертификат проверяется не сразу (Job):
+-- такое сообщение ждёт проверки, а не выбрасывается — иначе отчёт другой гильдии терялся до
+-- следующей публикации. Не больше 4 сообщений от реле и не дольше UNVERIFIED_TTL.
+local UNVERIFIED_TTL = 30
+local unverified = {} -- [Key] = { at, list = { fn, ... } }
+local function AwaitTrust(sender, fn)
+	local now = Now()
+	for key, h in pairs(unverified) do
+		if now - h.at > UNVERIFIED_TTL then unverified[key] = nil end
+	end
+	if not ns.Security.Checking(sender) then return false end
+	local key = U.Key(sender)
+	local h = unverified[key] or { list = {} }
+	unverified[key], h.at = h, now
+	if #h.list < 4 then h.list[#h.list + 1] = fn end
+	return true
+end
+
+local function OnRY(msg, sender, dist)
 	if dist ~= "WHISPER" then return end
 	if not Relay.TrustOf(sender) then
+		if AwaitTrust(sender, function() OnRY(msg, sender, dist) end) then return end
 		Relay.stats.untrusted = Relay.stats.untrusted + 1
 		return
 	end
@@ -787,7 +816,8 @@ ns.Comm.On("RY", function(msg, sender, dist)
 	end
 	FlushHold()
 	ns.Fire("RELAYS")
-end)
+end
+ns.Comm.On("RY", OnRY)
 
 -- Роль в сертификате действует AUTH_ROLE_TTL, а реле опрашивает только тот, кто пишет. Без этой
 -- рассылки у молчавшего автора офицеры тройки становятся рядовыми, его тройка расходится с тройкой
@@ -808,6 +838,9 @@ ns.On("AUTH_PEER", function(c, sender)
 	e.verified, e.asked, e.probe, e.down = Now(), nil, nil, nil
 	ShareRelayCertificate(e, c)
 	FlushHold()
+	local h = unverified[e.key]
+	unverified[e.key] = nil
+	for _, fn in ipairs(h and h.list or {}) do fn() end
 end)
 
 ns.Comm.On("RL", function(msg, sender, dist)
@@ -819,9 +852,10 @@ end)
 
 -- RM принимает репортёр, а после смены репортёра — и прежний, пока передаёт дела: реле ещё
 -- шлют ему по старой аренде.
-ns.Comm.On("RM", function(msg, sender, dist)
+local function OnRM(msg, sender, dist)
 	if dist ~= "WHISPER" or not ns.Census.Forwarding() then return end
 	if not Relay.TrustOf(sender) then
+		if AwaitTrust(sender, function() OnRM(msg, sender, dist) end) then return end
 		Relay.stats.untrusted = Relay.stats.untrusted + 1
 		return
 	end
@@ -830,7 +864,8 @@ ns.Comm.On("RM", function(msg, sender, dist)
 	local e = Entry(U.Key(sender), sender)
 	e.verified, e.down = Now(), nil
 	Deliver(mode, origin, inner, { via = "RM", relay = sender }, true)
-end)
+end
+ns.Comm.On("RM", OnRM)
 
 -- Подписанный отчёт чужой гильдии в конверте: "new" — новее сохранённого у меня, "old" — нет;
 -- nil — это не такой отчёт. Подпись здесь не проверяется: название и время читаются из открытого

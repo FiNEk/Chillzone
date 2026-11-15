@@ -259,27 +259,37 @@ T.test("wishes: порядок пакетов автора, чужие гиль�
 	NoErrors(c.K, "Карл")
 end)
 
-T.test("wishes: список повторяется раз в Every() минут, правка уходит после паузы", function()
+T.test("wishes: первое размещение сразу, правка — таймером, повтор раз в Every() минут", function()
 	local w, c = Build()
 	local C = c.A.ns.Config
+	local Wi = c.A.ns.Wishes
 	local wires = Capture(c.A)
-	T.ok(c.A.ns.Wishes.Save("2862"))
+	T.ok(Wi.Save("2862"))
 	w:Run(60)
-	T.eq(#wires, 1)
-	local ok, why, wait = c.A.ns.Wishes.Save("2862, 2852")
-	if not ok then
-		T.eq(why, "wait")
-		w:Run(wait + 1)
-		ok = c.A.ns.Wishes.Save("2862, 2852")
-	end
-	T.ok(ok, "правка сохранена")
-	w:Run(5) -- подпись
-	T.eq(#wires, 2, "кнопка отправляет сразу")
-	w:Run(c.A.ns.Wishes.Every() * 60 - 125)
+	T.eq(#wires, 1, "первое размещение — сразу")
+	-- Правки кнопкой не уходят сразу: одна карточка после паузы, сколько бы раз ни нажимали.
+	T.ok(Wi.Save("2862, 2852"))
+	T.ok(Wi.Save("2862, 2852, 12640"))
+	w:Run(5)
+	T.eq(#wires, 1, "правка ждёт")
+	T.ok(Wi.Dirty())
+	local wait = Wi.UpdateWait()
+	T.ok(wait > 0 and wait <= C.WISH_UPDATE_GAP, "ждать: " .. wait)
+	T.no(c.V.ns.Wishes.Get(Key(c.A)).items[3], "у остальных прежний список")
+	w:Run(wait + 10)
+	T.eq(#wires, 2, "правка ушла одной карточкой")
+	T.no(Wi.Dirty())
+	w:Run(30)
+	T.same(c.V.ns.Wishes.Get(Key(c.A)).items, { 2852, 2862, 12640 })
+	w:Run(Wi.Every() * 60 - 120)
 	T.eq(#wires, 2, "до срока не повторяется")
 	w:Run(300)
 	T.eq(#wires, 3, "повтор по сроку")
-	T.ok(c.A.ns.Wishes.Every() >= C.WISH_EVERY_MIN)
+	T.ok(Wi.Every() >= C.WISH_EVERY_MIN)
+	-- Снятие — сразу.
+	T.ok(Wi.Save(""))
+	w:Run(5)
+	T.eq(#wires, 4, "снятие сразу")
 	NoErrors(c.A, "Арагорн")
 end)
 
@@ -404,5 +414,77 @@ T.test("wishes pane: свой список, строки предметов и �
 	f.mine.clear:Click()
 	T.no(c.V.ns.Wishes.Posted())
 	T.eq(f.mine.status:GetText(), L.WISH_CLEARED)
+	NoErrors(c.V, "Вера")
+end)
+
+T.test("wishes pane: большое окно, строки только видимые, «Очистить» без списка, онлайн открытого предмета", function()
+	local w, c = Build()
+	local L = c.V.ns.L
+	-- Сто предметов в своём списке не поместятся (30), поэтому — у трёх авторов по тридцать.
+	local lists = {}
+	for i, cl in ipairs({ c.A, c.K, c.B }) do
+		local ids = {}
+		for j = 1, 30 do ids[j] = tostring(1000 + i * 100 + j) end
+		lists[i] = table.concat(ids, ",")
+		T.ok(cl.ns.Wishes.Save(lists[i]))
+	end
+	w:Run(40)
+	c.V.ns.UI.Toggle("wishes")
+	w:Run(2)
+	local f = c.V.ns.WishesPane.frames
+	local shown = 0
+	for _, r in ipairs(f.rows) do if r:IsShown() then shown = shown + 1 end end
+	T.ok(shown > 0 and shown < 20, "кнопки только у видимых строк: " .. shown)
+	T.ok(#f.rows < 20, "строк-кнопок не больше видимых: " .. #f.rows)
+	-- Прокрутка: те же кнопки показывают другие предметы.
+	local top = f.rows[1].it.id
+	f.list:SetVerticalScroll(40 * 50)
+	T.ok(f.rows[1].it and f.rows[1].it.id ~= top, "после прокрутки — другие предметы")
+	-- Большое окно: список шире, правая панель у правого края и выше.
+	c.V.env.UIParent.GetWidth = function() return 1920 end
+	c.V.env.UIParent.GetHeight = function() return 1080 end
+	local got = {}
+	f.list.SetWidth = function(_, v) got.list = v end
+	f.side.SetHeight = function(_, v) got.side = v end
+	f.mine.scroll.SetHeight = function(_, v) got.edit = v end
+	c.V.ns.UI.Resize(1260, 790)
+	local iw, ih = c.V.ns.UI.InsetSize()
+	T.ok(iw > 850 and ih > 340, "окно больше наименьшего")
+	T.eq(got.list, 468 + (iw - 850), "список шире на лишнюю ширину")
+	T.eq(got.side, 340 + (ih - 340) - 16, "панель выше")
+	T.eq(got.edit, 176 + (ih - 340), "поле своего списка выше")
+	c.V.ns.UI.Resize(860, 490)
+	-- «Очистить» без размещённого списка — очищено только поле.
+	f.mine.edit:SetText("2852")
+	f.mine.clear:Click()
+	T.eq(f.mine.status:GetText(), L.WISH_CLEARED_DRAFT)
+	-- Открытый предмет спрашивает онлайн гильдии его авторов, своя гильдия не спрашивается.
+	local asked = {}
+	local want = c.V.ns.Online.Want
+	c.V.ns.Online.Want = function(guild) asked[#asked + 1] = guild; return want(guild) end
+	c.V.ns.WishesPane.Open(1101)
+	T.same(asked, { "Чиллзон" }, "только чужая гильдия автора")
+	NoErrors(c.V, "Вера")
+end)
+
+T.test("wishes pane: предмет, брошенный курсором в поле, встаёт ссылкой с новой строки", function()
+	local w, c = Build()
+	c.V.ns.UI.Toggle("wishes")
+	w:Run(1)
+	local f = c.V.ns.WishesPane.frames
+	local cursor, cleared = nil, 0
+	c.V.stubs.GetCursorInfo, c.V.stubs.ClearCursor = true, true
+	c.V.env.GetCursorInfo = function() if cursor then return "item", cursor.id, cursor.link end end
+	c.V.env.ClearCursor = function() cursor, cleared = nil, cleared + 1 end
+	f.mine.edit:SetText("2852")
+	cursor = { id = 2862, link = LINK }
+	f.mine.edit.scripts.OnReceiveDrag(f.mine.edit)
+	T.eq(cleared, 1, "курсор очищен")
+	T.eq(f.mine.edit:GetText(), "2852\n" .. LINK .. "\n")
+	-- Без предмета на курсоре щелчок по полю ничего не вставляет.
+	f.mine.edit.scripts.OnMouseDown(f.mine.edit)
+	T.eq(cleared, 1)
+	f.mine.save:Click()
+	T.same(c.V.ns.Wishes.Items(), { 2852, 2862 })
 	NoErrors(c.V, "Вера")
 end)

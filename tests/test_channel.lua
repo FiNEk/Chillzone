@@ -375,7 +375,7 @@ T.test("channel: сырые строки и уведомления канала 
 	local logged = table.concat(B.ns.db.log, "\n")
 	T.ok(logged:find("OWNER_CHANGED Злой Чужак", 1, true), "смена владельца в журнале")
 	T.ok(logged:find("PASSWORD_CHANGED", 1, true), "пароль в журнале")
-	T.ok(logged:find("YOU_JOINED", 1, true), "вход в журнале")
+	T.ok(logged:find("YOU_CHANGED", 1, true), "вход в журнале")
 	B.ns.Channel.SetEnabled(false)
 	hidden = false
 	for _, fn in ipairs(B.filters.CHAT_MSG_CHANNEL or {}) do
@@ -524,16 +524,41 @@ T.test("channel: канал-призрак — без эха подсказка 
 	Clean(c)
 end)
 
-T.test("channel: NOT_ALLOWED_IN_CHANNEL и пометка выключен — сломан, повторов нет", function()
+-- Forever 2026-11-14: после отказа во входе канал остаётся в списке игры с номером и пометкой
+-- «выключен», а вход и выход до перезахода ничего не отправляют.
+T.test("channel: NOT_ALLOWED_IN_CHANNEL — снова вход только при входе в игру; пометка выключен без отказа — сломан", function()
 	local w, c = Build()
 	local B = c.B
 	B.channelNotAllowed = true
 	B.joinedById[B.joined[CHAN]], B.joined[CHAN] = nil, nil
 	w:Run(65)
-	T.eq(B.ns.Channel.State(), "broken", "вход отклонён — сломан")
-	T.eq(B:Saw("перезайдите персонажем"), 1)
-	w:Run(180)
-	T.eq(Logged(B, CHAN .. ": NOT_ALLOWED_IN_CHANNEL"), 1, "вход пробовали один раз")
+	T.eq(B.ns.Channel.State(), "locked", "вход отклонён — канал не пускает")
+	T.eq(B.refusedJoins, 1)
+	T.eq(B.channelDisabled, CHAN, "игра держит канал выключенным")
+	T.eq(B.ns.Channel.Index(), 0, "выключенный канал — не вход")
+	T.eq(B:Saw("не пускает вас"), 1, "подсказка")
+	T.eq(B:Saw("перезайдите персонажем"), 0, "не «сломан»")
+	T.eq(Logged(B, "NOT_ALLOWED_IN_CHANNEL, попытка 1), следующая — при входе в игру"), 1)
+	B:Slash("/chillzone", "status")
+	T.eq(B:Saw("не пускает (NOT_ALLOWED_IN_CHANNEL), снова при следующем входе в игру"), 1, "status")
+	B:Slash("/cz1", "из закрытого")
+	T.eq(ChannelSent(w, "Борис Быстрый", "из закрытого"), 0, "в выключенный канал не пишем")
+	w:Run(30)
+	T.eq(c.G:Saw("из закрытого"), 1, "строка дошла через реле")
+	w:Run(3600)
+	T.eq(B.refusedJoins, 1, "сам больше не пробует: игра вход не отправит")
+	T.eq(B:Saw("не пускает вас"), 1, "подсказка один раз")
+	local R = w:Reload(B)
+	c.B = R
+	w:Run(120)
+	T.eq(R.ns.Channel.State(), "locked", "/reload не лечит")
+	T.eq(R.joins, nil, "после /reload не пробует")
+	T.eq(R.refusedJoins, nil)
+	B = Reenter(w, c, false)
+	T.ok(B.joined[CHAN] and B.channelDisabled == nil, "после перезахода в канале")
+	T.eq(B.ns.Channel.State(), "ok")
+	B:Slash("/cz1", "вернулся")
+	T.eq(ChannelSent(w, "Борис Быстрый", "вернулся"), 1)
 	local V = c.V
 	V.channelDisabled = CHAN
 	w:Run(65)
@@ -542,6 +567,30 @@ T.test("channel: NOT_ALLOWED_IN_CHANNEL и пометка выключен — �
 	T.eq(ChannelSent(w, "Вера Верная", "из выключенного"), 0)
 	w:Run(30)
 	T.eq(c.G:Saw("из выключенного"), 1, "строка дошла через реле")
+	Clean(c)
+end)
+
+-- Forever 2026-11-14: на /owner с «Имя Фамилия» сервер ответил INVALID_NAME, игра потеряла канал,
+-- а сервер держал игрока в нём (повторный вход — NOT_ALLOWED_IN_CHANNEL).
+T.test("channel: INVALID_NAME — игра теряет канал, сервер держит игрока: сломан до перезахода, без входа", function()
+	local w, c = Build()
+	local B = c.B
+	w:InvalidName(B, CHAN) -- игрок сам набрал команду канала с именем, которого сервер не принял
+	w:Run(2)
+	T.eq(B.ns.Channel.State(), "broken")
+	T.eq(Logged(B, CHAN .. ": INVALID_NAME"), 1)
+	T.eq(Logged(B, "игра потеряла канал"), 1)
+	T.eq(Logged(B, "на вызов стража"), 0, "команда не стража — страж работает")
+	T.eq(B:Saw("перезайдите персонажем"), 1)
+	T.eq(B:Saw("не пускает вас"), 0)
+	w:Run(300)
+	T.eq(B.refusedJoins, nil, "в канал заново не входит: сервер его не пустит")
+	B:Slash("/cz1", "через реле")
+	w:Run(30)
+	T.eq(c.G:Saw("через реле"), 1)
+	B = Reenter(w, c, false)
+	T.ok(B.joined[CHAN] and B.channelDisabled == nil, "после перезахода в канале")
+	T.eq(B.ns.Channel.State(), "ok")
 	Clean(c)
 end)
 

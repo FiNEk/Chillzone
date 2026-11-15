@@ -164,6 +164,7 @@ local STORE_DEFAULTS = {
 	guilds = {}, relays = {}, manual = {}, ignore = {}, chat = { A = {}, C = {}, L = {} },
 	crafters = { cards = {}, lists = {} }, -- каталог мастеров (Crafters.lua)
 	wishes = { cards = {} }, -- списки желаний объединения (Wishes.lua)
+	channelGuard = { banned = {} }, -- страж канала игры (Channel.lua): баны к снятию
 }
 
 ns.RegisterEvent("ADDON_LOADED", function(name)

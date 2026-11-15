@@ -613,7 +613,7 @@ T.test("окно: копии строк — во вкладке чата игр�
 	T.no(p.items[1].check:IsShown(), "резервный вывод не меняет выбор")
 	T.ok(p.items[2].check:IsShown(), "закрытую выбранную вкладку можно снять")
 	T.eq(p.items[2].text:GetText(), "|cffff6060«Чиллзон» закрыта|r")
-	B.ns.UI.Toggle("kingdom")
+	B.ns.UI.Toggle("census")
 	T.no(p.list:IsShown(), "список закрыт вместе с настройками")
 
 	-- Команда: регистр не важен, опечатка перечисляет открытые вкладки, пусто — основное окно.
@@ -912,8 +912,25 @@ T.test("окно: отметка аддона в списке людей", funct
 	T.eq(find(all, "Мира Тихая").addon, true, "писала в общий канал")
 	local origin = c.G.ns.Data.Row("Чиллзон").origin
 	T.eq(find(all, origin).addon, true, "прислал отчёт переписи")
+	T.eq(find(all, origin).version, c.K.ns.VERSION, "версия — из его отчёта переписи")
+	if origin ~= "Мира Тихая" then
+		T.eq(find(all, "Мира Тихая").version, nil, "строка чата версии не несёт")
+	end
 	local other = origin == "Карл Великий" and "Арагорн Светлый" or "Карл Великий"
 	T.eq(find(all, other).addon, nil, "чужой без следов аддона — неизвестно")
+	-- «Руководство» в карточке «Переписи» — так же, как список людей в чате.
+	local function leader(client, guildName, name)
+		for _, s in ipairs(client.ns.Data.Summary()) do
+			if s.guild == guildName then return find(client.ns.Views.GuildCard(s).people, name) end
+		end
+	end
+	local cardVera = leader(c.B, "Чиллзон Север", "Вера Верная")
+	T.eq(cardVera.addon, true, "карточка своей гильдии: по приветам")
+	T.eq(cardVera.version, c.V.ns.VERSION, "карточка своей гильдии: версия из привета")
+	local cardOrigin = leader(c.G, "Чиллзон", origin)
+	T.eq(cardOrigin.addon, true, "карточка чужой гильдии: автор отчёта")
+	T.eq(cardOrigin.version, c.K.ns.VERSION, "карточка чужой гильдии: версия из отчёта")
+	T.eq(leader(c.G, "Чиллзон", other).addon, nil, "карточка: без следов аддона — неизвестно")
 	-- Подсказка.
 	local lines = {}
 	local tt = setmetatable({ AddLine = function(_, t) lines[#lines + 1] = t end }, { __index = function() return function() end end })
@@ -925,6 +942,7 @@ T.test("окно: отметка аддона в списке людей", funct
 	T.ok(tip(vera):find("Аддон Chillzone: есть, версия " .. c.V.ns.VERSION, 1, true), "есть, с версией")
 	T.ok(tip(find(guild, "Без Аддона")):find("Аддон Chillzone: нет", 1, true), "нет")
 	T.ok(tip(find(all, other)):find("Аддон Chillzone: неизвестно", 1, true), "неизвестно")
+	T.ok(tip(cardOrigin):find("Аддон Chillzone: есть, версия " .. c.K.ns.VERSION, 1, true), "карточка: есть, с версией")
 	T.eq(c.B.ns.Views.AddonText({ addon = true, version = "|cffff0000x|r" }), "Аддон Chillzone: есть, версия cffff0000xr", "версия — простой текст")
 	-- Значок в строке окна только у тех, у кого аддон есть.
 	c.B.ns.UI.OpenChat("G")
@@ -987,7 +1005,7 @@ T.test("окно: вкладки, каналы, ссылки и шёпот бе�
 	local A = c.A
 	c.G:Slash("/cz1", "ссылка " .. LINK)
 	w:Run(30)
-	for _, tab in ipairs({ "census", "kingdom", "settings", "chat" }) do A.ns.UI.Toggle(tab) end
+	for _, tab in ipairs({ "census", "settings", "chat" }) do A.ns.UI.Toggle(tab) end
 	for _, ch in ipairs({ "G", "O", "A", "C", "L" }) do A.ns.ChatPane.Select(ch) end
 	local box = A.ns.ChatPane.frames.box
 	box.scripts.OnTabPressed(box)
@@ -1128,10 +1146,11 @@ T.test("окно: служебные значки под повседневны�
 	local L = K.ns.L
 	for _, cl in ipairs({ K, A, M }) do cl.ns.UI.Toggle("chat") end
 	local column, bottom = TabColumn(K)
-	T.same(column, { "chat", "groups", "crafters", "wishes", "census", "requests", "kingdom", "|", "settings", "manage" }, "глава: 7 и 2")
+	T.same(column, { "chat", "groups", "crafters", "wishes", "census", "requests", "|", "settings", "manage" }, "глава: 6 и 2")
 	T.ok(bottom <= 426, "столбец главы не ниже окна высотой 426: " .. bottom)
-	T.same(TabColumn(A), { "chat", "groups", "crafters", "wishes", "census", "requests", "kingdom", "|", "settings", "manage" }, "офицер: 7 и 2")
-	T.same(TabColumn(M), { "chat", "groups", "crafters", "wishes", "census", "kingdom", "|", "settings" }, "рядовой: без «Заявок» и «Управления»")
+	T.same(TabColumn(A), { "chat", "groups", "crafters", "wishes", "census", "requests", "|", "settings", "manage" }, "офицер: 6 и 2")
+	T.same(TabColumn(M), { "chat", "groups", "crafters", "wishes", "census", "|", "settings" }, "рядовой: без «Заявок» и «Управления»")
+	T.no(rawget(UI.tabs, "kingdom"), "«Королевства» нет")
 	for _, key in ipairs({ "union", "roster", "transfer", "debug", "journal" }) do T.no(rawget(UI.tabs, key), "нет отдельного значка " .. key) end
 
 	-- Главе объединения доступны все пять разделов; значок открывает первый, потом — последний открытый.

@@ -5,7 +5,7 @@
 --
 -- Карточка V1 — номера предметов по порядку важности, не больше WISH_ITEMS. Она подписывается
 -- и расходится только в конверте строки чата (Codec.WrapWish): S1 по GUILD своей гильдии и через
--- реле остальным (режим P). Реле, репортёры и чат 0.15.0 и старше пересылают конверт как строку
+-- реле остальным (режим P). Реле, репортёры и чат 0.16.0 и старше пересылают конверт как строку
 -- чата и молча его отбрасывают, поэтому Security.lua новый вид не нужен. Автор повторяет
 -- карточку раз в Every() минут; время прошлой отправки хранится у персонажа и переживает /reload.
 -- Порядок пакетов автора — по времени и номеру подписи S1: снятый список (X) старым пакетом не
@@ -63,19 +63,17 @@ function Wishes.Parse(text)
 		end
 	end
 	text = tostring(text or "")
-	-- Сначала ссылки целиком: в названиях бывают запятые.
+	-- Сначала ссылки целиком: в названиях бывают запятые. Ссылка становится отдельной частью с
+	-- номером, чтобы порядок предметов остался как в поле: при переполнении отбрасываются последние.
 	text = text:gsub("|c%x%x%x%x%x%x%x%x(|Hitem:[^|]*|h%[.-%]|h)|r", "%1")
-	text = text:gsub("|Hitem:(%d+)[^|]*|h%[.-%]|h", function(id)
-		Add(tonumber(id))
-		return "\n"
-	end)
+	text = text:gsub("|Hitem:(%d+)[^|]*|h%[.-%]|h", "\n\1%1\n")
 	-- Прочие ссылки (рецепты, заклинания) — их текстом.
 	text = text:gsub("|H[^|]*|h%[(.-)%]|h", "%1")
 	text = text:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "")
 	for part in text:gmatch("[^\n,;]+") do
 		local name = U.Trim((part:gsub("[%[%]]", "")))
 		if name ~= "" then
-			local id = name:match("^%d+$") and tonumber(name) or ItemByName(name)
+			local id = tonumber(name:match("^\1(%d+)$") or name:match("^%d+$")) or ItemByName(name)
 			if id then Add(id) else unknown[#unknown + 1] = name end
 		end
 	end
@@ -233,26 +231,84 @@ function Wishes.Own()
 	}
 end
 
--- Кому нужен предмет: карточки (своя первой), остальные — сначала те, кто в игре, затем по имени.
-function Wishes.Who(item)
-	if not item then return {} end
+local NONE = {}
+
+-- Индекс { [номер предмета] = { карточки } } по видимым спискам, своя карточка — первой, и номера
+-- в порядке первого появления. Пересобирается один раз после изменения каталога (Changed).
+local itemOrder
+function Wishes.Index()
 	if not byItem then
-		byItem = {}
+		byItem, itemOrder = {}, {}
 		local all = Wishes.Cards()
 		local own = Wishes.Own()
 		if own then table.insert(all, 1, own) end
 		for _, card in ipairs(all) do
 			for _, id in ipairs(card.items) do
-				byItem[id] = byItem[id] or {}
-				table.insert(byItem[id], card)
+				local list = byItem[id]
+				if not list then
+					list = {}
+					byItem[id] = list
+					itemOrder[#itemOrder + 1] = id
+				end
+				list[#list + 1] = card
 			end
 		end
 	end
-	local list = byItem[item]
-	if not list then return {} end
-	local out = {}
-	for i, card in ipairs(list) do out[i] = card end
-	return out
+	return byItem, itemOrder
+end
+
+-- Кому нужен предмет: карточки, своя первой. Таблица общая с индексом — её не меняют.
+function Wishes.Who(item)
+	if not item then return NONE end
+	return Wishes.Index()[item] or NONE
+end
+
+---------------------------------------------------------------------------
+-- Названия предметов: у игры спрашиваются порциями, как названия рецептов у мастеров
+---------------------------------------------------------------------------
+local NAMES_PER_STEP = 20
+local itemNames = {} -- [номер] = название на сессию
+local queue, queued, pumping = {}, {}, false
+
+local function Known(id)
+	local get = type(C_Item) == "table" and C_Item.GetItemNameByID
+	if type(get) ~= "function" then return nil end
+	local ok, n = pcall(get, id)
+	return ok and type(n) == "string" and n ~= "" and n or nil
+end
+
+local function Pump()
+	if pumping then return end
+	pumping = true
+	ns.After(0.1, "wishes names", function()
+		pumping = false
+		local done = 0
+		while #queue > 0 and done < NAMES_PER_STEP do
+			-- queued остаётся: второй раз тот же предмет не спрашивается, название берёт Known.
+			local id = table.remove(queue)
+			-- Crafters.ItemName просит догрузку и, когда игра ответит, шлёт CRAFTERS_NAMES.
+			if not itemNames[id] then itemNames[id] = ns.Crafters.ItemName(id) end
+			done = done + 1
+		end
+		if #queue > 0 then Pump() end
+	end)
+end
+
+-- Название предмета или nil: тогда он встаёт в очередь догрузки, и вкладка перерисуется.
+function Wishes.ItemName(id)
+	local n = itemNames[id]
+	if n then return n end
+	n = Known(id)
+	if n then
+		itemNames[id] = n
+		return n
+	end
+	if not queued[id] then
+		queued[id] = true
+		queue[#queue + 1] = id
+		Pump()
+	end
+	return nil
 end
 
 ---------------------------------------------------------------------------
@@ -340,6 +396,13 @@ function Wishes.PostWait()
 	return math.max(0, math.ceil(lastPost + C.WISH_POST_GAP - ns.Now()))
 end
 
+-- Через сколько секунд уйдёт сохранённая правка размещённого списка (0 — правки нет или уйдёт
+-- с ближайшей проверкой).
+function Wishes.UpdateWait()
+	if not Wishes.Dirty() then return 0 end
+	return math.max(0, math.ceil((saved.sentAt or 0) + C.WISH_UPDATE_GAP - ns.ServerTime()))
+end
+
 -- Снять свой список: он пропадает у остальных сразу.
 local function Withdraw()
 	saved.posted, saved.sentSig = false, nil
@@ -349,7 +412,8 @@ local function Withdraw()
 	ns.Log("желания: свой список снят")
 end
 
--- «Сохранить»: текст поля разбирается, список уходит сразу; пустой список снимается.
+-- «Сохранить»: текст поля разбирается. Первое размещение уходит сразу, правка размещённого списка —
+-- таймером (Tick) не чаще WISH_UPDATE_GAP после прошлой отправки, пустой список снимается сразу.
 -- true, сколько предметов, неузнанные названия, сколько не уместилось — или false, причина[, секунды
 -- или названия]: unknown (ни одного предмета не узнано), notmember, nocert, wait, busy, failed.
 function Wishes.Save(text)
@@ -357,19 +421,30 @@ function Wishes.Save(text)
 	local ids, unknown, extra = Wishes.Parse(text)
 	-- Ни одного узнанного предмета, но что-то написано: список не снимается молча.
 	if #ids == 0 and #unknown > 0 then return false, "unknown", unknown end
-	if #ids > 0 then
+	local was = Wishes.Posted()
+	if #ids > 0 and not was then
 		if not ns.IsMember() then return false, "notmember" end
 		if not ns.Security.MyCertificate() then return false, "nocert" end
 		if sealing then return false, "busy" end
 		local wait = Wishes.PostWait()
 		if wait > 0 then return false, "wait", wait end
 	end
-	local was, st, oldText, oldItems = saved.posted, saved.st, saved.text, saved.items
+	local st, oldText, oldItems = saved.st, saved.text, saved.items
 	saved.text, saved.items = U.Trim(tostring(text or "")), ids
 	if #ids == 0 then
-		if was then Withdraw() end
+		if saved.posted then Withdraw() end
+		saved.posted = false
 		Changed()
 		return true, 0, unknown, extra
+	end
+	if was then
+		-- Правка: время карточки новое, а уйдёт она с проверкой расписания.
+		if Signature() ~= saved.sentSig then
+			saved.st = ns.ServerTime()
+			ns.Log("желания: свой список изменён, предметов %d: уйдёт после паузы", #ids)
+		end
+		Changed()
+		return true, #ids, unknown, extra
 	end
 	saved.posted = true
 	if not was or Signature() ~= saved.sentSig then saved.st = ns.ServerTime() end
@@ -534,9 +609,6 @@ ns.On("LOGIN", function()
 	ns.Every(5, "wishes tick", Tick)
 	HookTooltips()
 end)
-
--- Имена в подсказке красятся по присутствию: оно меняется с ростером и списками Online.
-ns.On("ROSTER", function() byItem = nil end)
 
 ns.Status(function()
 	local own = Wishes.Posted() and L.WISH_STATUS_POSTED:format(#saved.items) or L.WISH_STATUS_NONE

@@ -519,14 +519,16 @@ local function Merged(key, text, path, now)
 	return nil
 end
 
--- Копия пути path показана: ждёт копию другого пути. deaf — считать, если та не придёт.
-local function Credit(key, text, path, now, e, deaf)
+-- Копия пути path показана: ждёт копию другого пути. deaf — считать, если та не придёт;
+-- knock — автор подписанной строки: если копии из канала не будет, его, видимо, нет в канале
+-- (стук стражу канала, Channel.Knock).
+local function Credit(key, text, path, now, e, deaf, knock)
 	local list = credits[key]
 	if not list then
 		list = {}
 		credits[key] = list
 	end
-	list[#list + 1] = { t = now, text = text, path = path, e = e, deaf = deaf or nil }
+	list[#list + 1] = { t = now, text = text, path = path, e = e, deaf = deaf or nil, knock = knock }
 end
 
 -- Подписанной копии ждать копию из канала, только если автора канал уже слышал, а я в канале.
@@ -630,7 +632,8 @@ function Chat.Receive(msg, sender, dist, ctx)
 		return
 	end
 	local e = Chat.Show(d.tier, d.guild, sender, d.class, d.text)
-	if ck then Credit(key, ck, "signed", now, e, WaitsChannel(key)) end
+	local inChannel = ns.Channel ~= nil and ns.Channel.Index() > 0
+	if ck then Credit(key, ck, "signed", now, e, WaitsChannel(key), inChannel and sender or nil) end
 end
 
 ns.Comm.On("M1", Chat.Receive)
@@ -754,6 +757,8 @@ function Chat.Send(tier, text)
 			end
 		end
 	end
+	-- То же нажатие: страж канала, если игра пускает его вызовы только оттуда (после строки).
+	if ns.Channel then ns.Channel.Pressed() end
 	if not mine then
 		local reason = ns.Security.NotReadyReason()
 		if viaChannel == 0 then
@@ -1041,6 +1046,7 @@ ns.Every(60, "chat gc", function()
 					Chat.paths.deaf = Chat.paths.deaf + 1
 					ns.Log("строка %s пришла подписью, а из канала игры нет, хотя канал этого автора слышал", (c.e and c.e.s) or k)
 				end
+				if c.knock and ns.Channel then ns.Channel.Knock(c.knock) end
 			end
 		end
 		if #list == 0 then credits[k] = nil end

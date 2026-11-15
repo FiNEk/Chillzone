@@ -103,6 +103,12 @@ T.test("кадры: системные строки гильдии, формат
 	T.eq((R.GuildEvent("Борис Быстрый has left the guild.")), "left", "ушёл сам")
 	T.eq(R.GuildEvent("Вера Верная has joined the guild."), nil, "строка о себе")
 	T.eq(R.GuildEvent("Что-то другое."), nil)
+	-- Защищённая строка системы: тип string, но читать её нельзя (в игре — ошибка Lua).
+	local hidden = "Борис Быстрый has left the guild."
+	cl.env.issecretvalue = function(v) return v == hidden end
+	T.eq(R.GuildEvent(hidden), nil, "защищённую строку не разбираем")
+	T.eq(R.MatchFormat(hidden, "%s has left the guild."), nil)
+	cl.env.issecretvalue = function() return false end
 	-- В переводе игры порядок аргументов бывает другим.
 	cl.env.ERR_GUILD_REMOVE_SS = "%2$s исключает из гильдии: %1$s."
 	what, name = R.GuildEvent("Вера Верная исключает из гильдии: Борис Быстрый.")
@@ -460,5 +466,42 @@ T.test("кадры: неполный ростер — исключение за�
 	rf.tools.showAll:Click()
 	T.ok(Until(w, function() return V.Roster.complete end), "ростер снова полный")
 	T.no(rf.tools.showAll:IsShown())
+	Errors(c)
+end)
+
+T.test("кадры: «Состав» в большом окне — больше строк, шире имя и звание", function()
+	local w, c = Build()
+	for i = 1, 40 do
+		w:AddOffline(NORTH, ("Боец%02d Запасной"):format(i) .. REALM, 3, 30, "ROGUE", 10 + i)
+	end
+	local V = c.V.ns
+	V.Roster.Scan()
+	V.UI.Toggle("roster")
+	local f = V.RosterPane.frames
+	local function Shown()
+		local n = 0
+		for _, r in ipairs(f.rows) do
+			if r:IsShown() then n = n + 1 end
+		end
+		return n
+	end
+	-- Наименьшее окно 860×490: вставка 850×404, видимых строк (404 - 56 - 8) / 18 = 18.
+	T.eq(Shown(), 20, "наименьшее окно: 18 видимых строк и запас")
+	local x = {}
+	for col = 1, 4 do
+		f.head.cells[col].SetPoint = function(_, _, _, _, at) x[col] = at end
+	end
+	-- Вставка 1014×520: таблица 970 в ширину, прибавка 210 — имени 126, званию 84;
+	-- видимых строк (520 - 56 - 8) / 18 = 25.
+	V.UI.Resize(814 + 210, 426 + 180)
+	T.same(x, { 4, 424, 478, 776 }, "уровень, звание и давность сдвинулись вправо")
+	T.eq(Shown(), 27, "25 видимых строк и запас")
+	f.scroll:SetVerticalScroll(18 * 5)
+	T.eq(f.rows[1].index, 6, "прокрутка в высоком окне")
+	T.eq(f.rows[27].index, 32, "строки подряд")
+	-- Таблица 806 вместо исходных 760: прибавка 46 — имени 28, званию 18.
+	V.UI.Resize(860, 490)
+	T.same(x, { 4, 326, 380, 612 }, "колонки наименьшего окна")
+	T.eq(Shown(), 20, "лишние строки спрятаны")
 	Errors(c)
 end)

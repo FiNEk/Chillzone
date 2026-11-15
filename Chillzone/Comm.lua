@@ -1,5 +1,6 @@
 -- Chillzone: аддон-сообщения. Очередь отправки с двумя полосами, GUILD и WHISPER (раз в 1.2 с
--- каждая полоса отправляет кусок, у реле — 4 куска), повтор при «не сейчас» от игры, блокировка
+-- каждая полоса отправляет кусок, GUILD после тишины — до 8 из запаса, у реле шёпот — 4 куска),
+-- повтор при «не сейчас» от игры, блокировка
 -- чата в подземельях, сборка кусков и разбор входящих по типам. Правила очереди — из Olympus Comm.lua.
 --
 -- Полосы. Сервер Forever режет аддон-сообщения GUILD: около 10 сразу, затем 1 в секунду на
@@ -18,12 +19,18 @@ local ADDON, ns = ...
 
 local U = ns.Util
 local Codec = ns.Codec
+local Net = ns.Net
 
 local Comm = {}
 ns.Comm = Comm
 
 Comm.SEND_INTERVAL = 1.2
-Comm.PARTS_RELAY = 4
+Comm.PARTS_RELAY = 4 -- кусков шёпота за тик у реле
+-- Запас GUILD (Comm.Quota): сервер пропускает около 10 сообщений сразу и затем 1 в секунду,
+-- запас полосы — до GUILD_BURST и копится по куску за SEND_INTERVAL, то есть всегда меньше
+-- серверного. После тишины пачка (ответ на Q1, выдача сертификатов) уходит сразу, в потоке —
+-- кусок за тик у всех, и у реле тоже.
+Comm.GUILD_BURST = 8
 Comm.MAX_QUEUE = 200
 Comm.HOLD_MAX = 600 -- не начатое и ждавшее столько, пока его полоса стояла, — выбрасывается
 -- Управление связью (опрос корня, отзыв, соединение, приветствия) идёт первым, объявления
@@ -49,12 +56,14 @@ local watchers = {} -- Comm.Watch: целые сообщения GUILD, услы
 local assemblers = {}
 local nextId = math.random(0, 1000)
 -- Полосы по dist: refused — отказов подряд, waitUntil — пауза после отказа, held — полоса
--- стояла (пауза или блокировка): когда она пойдёт, её давние задания выбрасываются.
+-- стояла (пауза или блокировка): когда она пойдёт, её давние задания выбрасываются; size —
+-- заданий полосы в очереди; tokens и filled — запас GUILD и когда он пополнен (Comm.Quota).
 local lanes, laneOrder = {}, {}
 local function Lane(dist)
 	local lane = lanes[dist]
 	if not lane then
-		lane = { dist = dist, refused = 0, waitUntil = 0 }
+		lane = { dist = dist, refused = 0, waitUntil = 0, size = 0 }
+		if dist == "GUILD" then lane.tokens, lane.filled = Comm.GUILD_BURST, 0 end
 		lanes[dist] = lane
 		laneOrder[#laneOrder + 1] = lane
 	end
@@ -111,7 +120,8 @@ local function Tracing()
 	return ns.db and ns.db.settings and ns.db.settings.debug
 end
 
--- Одно сообщение прямо сейчас: true или false, код.
+-- Одно сообщение прямо сейчас: true или false, код. kind — метка для журнала и счётчиков сети
+-- (Net.Label целого сообщения: у куска её не узнать).
 function Comm.SendNow(dist, msg, target, logged, prefix, kind, source)
 	if Comm.InLockdown() then return false, LOCKDOWN end
 	local to = nil
@@ -122,8 +132,10 @@ function Comm.SendNow(dist, msg, target, logged, prefix, kind, source)
 	end
 	local send = (logged and C_ChatInfo.SendAddonMessageLogged) or C_ChatInfo.SendAddonMessage
 	local ok, res = ns.Diagnostics.SendAddon(send, prefix or ns.PREFIX, msg, dist, to, logged, source)
+	kind = kind or Net.Label(msg)
+	if ok and IsSuccess(res) then Net.Sent(dist, kind) else Net.Refused(dist, ok and res or "error") end
 	if dist == "WHISPER" and Tracing() then
-		ns.Log("шёпот %s, тип %s, logged=%s: результат %s", to, kind or msg:sub(1, 2), tostring(logged == true), ok and tostring(res) or "ошибка Lua")
+		ns.Log("шёпот %s, тип %s, logged=%s: результат %s", to, kind, tostring(logged == true), ok and tostring(res) or "ошибка Lua")
 	end
 	if dist == "WHISPER" and ((ok and res == TARGET_OFFLINE) or Unavailable(target)) then
 		Comm.stats.fails = Comm.stats.fails + 1
@@ -132,14 +144,21 @@ function Comm.SendNow(dist, msg, target, logged, prefix, kind, source)
 	end
 	if ok and IsSuccess(res) then
 		Comm.stats.sent = Comm.stats.sent + 1
-		Lane(dist).refused = 0
+		local lane = Lane(dist)
+		lane.refused = 0
+		if lane.tokens then lane.tokens = math.max(0, lane.tokens - 1) end
 		return true
 	end
 	if ok and RETRYABLE[res] then
 		-- Пауза — только полосе этого сообщения: лимит GUILD шёпот не задерживает.
 		for _, lane in ipairs(res == LOCKDOWN and laneOrder or { Lane(dist) }) do
+			-- Сервер отказал раньше, чем кончился запас: копить его заново.
+			if lane.tokens then lane.tokens = 0 end
 			lane.refused = lane.refused + 1
-			lane.waitUntil = ns.Now() + RETRY_WAIT[math.min(lane.refused, #RETRY_WAIT)]
+			local now = ns.Now()
+			local untilAt = now + RETRY_WAIT[math.min(lane.refused, #RETRY_WAIT)]
+			Net.Paused(lane.dist, untilAt - math.max(now, lane.waitUntil))
+			lane.waitUntil = untilAt
 		end
 	end
 	Comm.stats.fails = Comm.stats.fails + 1
@@ -155,10 +174,13 @@ local function Finish(job, ok, why, quiet)
 	for i, j in ipairs(queue) do
 		if j == job then
 			table.remove(queue, i)
+			local lane = lanes[job.dist]
+			if lane then lane.size = lane.size - 1 end
 			break
 		end
 	end
 	if not ok and not quiet then Comm.stats.dropped = Comm.stats.dropped + 1 end
+	Net.Finished(job.dist, job.label, ok, why, quiet)
 	if ok and job.dist == "GUILD" then Notify(job.payload, nil, job.prefix, job.started) end
 	if job.done then ns.SafeCall("send done", job.done, ok, why) end
 end
@@ -265,7 +287,7 @@ function Comm.Send(dist, payload, opts)
 			if job.key == opts.key and job.prefix == prefix and job.dist == dist and job.i == 1 then
 				job.parts, job.at, job.target, job.done = Codec.Pack(payload, NewId()), now, opts.target, opts.done
 				job.payload, job.guard, job.skip = payload, opts.guard, opts.skip
-				job.kind, job.source = kind, source
+				job.kind, job.label, job.source = kind, Net.Label(payload), source
 				AddBefore(job, opts.before)
 				-- Ответ на срочный запрос мог заменить ещё не отправленное объявление.
 				local promoted = Priority(opts.prio) > Priority(job.prio)
@@ -280,7 +302,7 @@ function Comm.Send(dist, payload, opts)
 		end
 	end
 	local job = {
-		kind = kind, source = source,
+		kind = kind, label = Net.Label(payload), source = source,
 		prefix = prefix,
 		dist = dist, target = opts.target, parts = Codec.Pack(payload, NewId()), i = 1, payload = payload,
 		key = opts.key, prio = opts.prio, logged = opts.logged, at = now, tries = 0, done = opts.done, guard = opts.guard,
@@ -288,6 +310,9 @@ function Comm.Send(dist, payload, opts)
 	}
 	AddBefore(job, opts.before)
 	Enqueue(job, opts.before)
+	local lane = lanes[dist]
+	lane.size = lane.size + 1
+	Net.Queued(dist, lane.size)
 	Comm.stats.queued = Comm.stats.queued + 1
 	-- Переполнение: выбрасывается самое старое обычное, ещё не начатое.
 	while #queue > Comm.MAX_QUEUE do
@@ -346,7 +371,7 @@ local function SendPart(job)
 		Finish(job, false, "no guild")
 		return true
 	end
-	local sent, why = Comm.SendNow(job.dist, job.parts[job.i], job.target, job.logged, job.prefix, job.kind, job.source)
+	local sent, why = Comm.SendNow(job.dist, job.parts[job.i], job.target, job.logged, job.prefix, job.label, job.source)
 	-- Синхронное событие или TargetOffline могли уже отменить и это задание.
 	if job.finished then return true end
 	if not sent then
@@ -360,7 +385,10 @@ local function SendPart(job)
 		Finish(job, false, why or "failed")
 		return false
 	end
-	if job.i == 1 then job.started = ns.Now() end
+	if job.i == 1 then
+		job.started = ns.Now()
+		Net.Waited(job.dist, job.label, job.started - job.at)
+	end
 	job.i = job.i + 1
 	if job.i > #job.parts then Finish(job, true) end
 	return true
@@ -394,38 +422,63 @@ local function Release(now)
 	return lockdown
 end
 
--- Тик насоса: каждая полоса отправляет до своей квоты кусков (у реле — PARTS_RELAY), беря
--- первое по порядку очереди своё задание. Квота своя у каждой полосы: иначе поток GUILD с
--- приоритетом выше, который сервер принимает, навсегда обгонял бы шёпот.
+-- Сколько кусков полоса может отправить сейчас. Шёпот — кусок за тик, у реле PARTS_RELAY.
+-- GUILD — целые куски запаса (GUILD_BURST), одинаково у всех: лишнее сервер отвечает кодом 3,
+-- и полоса встаёт на паузу.
+function Comm.Quota(dist, now)
+	local lane = Lane(dist)
+	if lane.tokens then
+		now = now or ns.Now()
+		lane.tokens = math.min(Comm.GUILD_BURST, lane.tokens + math.max(0, now - lane.filled) / Comm.SEND_INTERVAL)
+		lane.filled = now
+		return math.floor(lane.tokens + 1e-9)
+	end
+	local R = ns.Relay
+	if R and R.IAmRelay and R.IAmRelay() then return Comm.PARTS_RELAY end
+	return 1
+end
+
+-- Тик насоса: каждая полоса отправляет до своей квоты кусков (Comm.Quota), беря первое по
+-- порядку очереди своё задание. Квота своя у каждой полосы: иначе поток GUILD с приоритетом
+-- выше, который сервер принимает, навсегда обгонял бы шёпот.
 function Comm.Pump()
 	if not queue[1] then return end
 	local now = ns.Now()
 	if Release(now) then return end
-	local R = ns.Relay
-	local parts = (R and R.IAmRelay and R.IAmRelay()) and Comm.PARTS_RELAY or 1
-	local left = {}
-	for _, lane in ipairs(laneOrder) do left[lane] = parts end
+	local left, sent, quota = {}, {}, {}
+	for _, lane in ipairs(laneOrder) do
+		quota[lane] = Comm.Quota(lane.dist, now)
+		left[lane], sent[lane] = quota[lane], 0
+	end
 	local function Open(lane)
 		return (left[lane] or 0) > 0 and now >= lane.waitUntil
 	end
 	while true do
 		local job = Next(Open)
-		if not job then return end
+		if not job then break end
 		-- Снятое как ненужное квоту полосы не тратит.
 		if not Skipped(job) then
 			local lane = lanes[job.dist]
-			left[lane] = SendPart(job) and left[lane] - 1 or 0
+			if SendPart(job) then
+				left[lane], sent[lane] = left[lane] - 1, sent[lane] + 1
+			else
+				left[lane] = 0
+			end
 		end
+	end
+	-- Для счётчиков сети: полоса потратила всю квоту, а задания в ней остались — очередь не успевает.
+	for _, lane in ipairs(laneOrder) do
+		Net.Tick(lane.dist, sent[lane] or 0, (sent[lane] or 0) >= quota[lane] and lane.size > 0)
 	end
 end
 
 -- Срочное прямо сейчас, не дожидаясь насоса: до n кусков. Каждый раз — первое по порядку
--- задание с приоритетом, чья полоса не на паузе; обычное задание на очереди — конец.
+-- задание с приоритетом, чья полоса не на паузе и не без запаса; обычное задание на очереди — конец.
 function Comm.Flush(n)
 	local now = ns.Now()
 	if Release(now) then return end
 	local function Open(lane)
-		return now >= lane.waitUntil
+		return now >= lane.waitUntil and Comm.Quota(lane.dist, now) > 0
 	end
 	local parts = 0
 	while parts < (n or 1) do
@@ -485,10 +538,11 @@ local function OnAddon(prefix, msg, dist, sender)
 	local realm = sender:match("%-([^%-]+)$")
 	if realm and realm ~= ns.realm and U.GroupOf(realm) ~= ns.group then return end
 	if ns.IsMe(sender) then return end
-	if dist == "GUILD" and (not ns.Roster.Fresh() or ns.Roster.RankOf(sender) == nil) then return end
 	local senderKey = U.Key(sender)
+	Net.Heard(dist, senderKey, sender)
+	if dist == "GUILD" and (not ns.Roster.Fresh() or ns.Roster.RankOf(sender) == nil) then return end
 	if senderKey then unavailable[senderKey] = nil end
-	local started = ns.Now()
+	local started, chunks = ns.Now(), 1
 	if msg:byte(1) == 67 then -- "C": кусок
 		local key = prefix .. ":" .. dist
 		local a = assemblers[key]
@@ -498,7 +552,9 @@ local function OnAddon(prefix, msg, dist, sender)
 		end
 		msg, started = Codec.Feed(a, U.Key(sender), msg, ns.Now())
 		if not msg then return end
+		chunks = math.max(1, math.ceil(#msg / Codec.CHUNK))
 	end
+	Net.Assembled(dist, msg, chunks)
 	local kind = msg:sub(1, 2)
 	if control and kind ~= "KA" and kind ~= "UQ" and kind ~= "UO" then return end
 	if (kind == "UQ" or kind == "UO") and not control then return end

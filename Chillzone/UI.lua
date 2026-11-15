@@ -1,6 +1,6 @@
 -- Chillzone: окно — как «Гильдия и сообщества»: рамка ButtonFrameTemplate с портретом, вкладки-
--- значки на правом краю. Сверху повседневные: Чат, Группы, Мастера, Перепись, Заявки (главам и офицерам),
--- Королевство. Ниже, с отступом, служебные: Настройки и «Управление».
+-- значки на правом краю. Сверху повседневные: Чат, Группы, Мастера, Перепись, Заявки (главам и офицерам).
+-- Ниже, с отступом, служебные: Настройки и «Управление».
 -- «Управление» собирает пять разделов с переключателем на месте названия вкладки: «Объединение»
 -- (UnionPane.lua: глава главной гильдии управляет составом, офицер гильдии вне объединения запрашивает
 -- связь), «Состав» (RosterPane.lua: состав своей гильдии и исключение по очереди) и «Кадры»
@@ -8,8 +8,11 @@
 -- объединения, «Отладка» (Debug.lua, главы и офицеры) и «Журнал» (JournalPane.lua, любой игрок).
 -- Кому нет ни «Объединения», ни «Кадров», ни «Отладки», значка «Управления» не видит: журнал открывает
 -- кнопка в Настройках.
--- Чат рисует ChatPane.lua, Перепись — CensusPane.lua, Королевство и Отладку — список строк из Views.lua
--- и Debug.lua во вставке окна. Кнопка у миникарты — LibDBIcon, объект запуска — LibDataBroker.
+-- Чат рисует ChatPane.lua, Перепись — CensusPane.lua, Отладку — список строк из Debug.lua во вставке
+-- окна. Кнопка у миникарты — LibDBIcon, объект запуска — LibDataBroker.
+-- Размер окна игрок меняет уголком справа внизу. Меньше 860×490 окно не бывает. Вкладки свёрстаны
+-- под исходное окно 814×426 (вставка 804×340), а лишнее место каждая раздаёт своим спискам и колонкам
+-- (Layout вкладок): уже у наименьшего окна списки длиннее, чем в исходном.
 local ADDON, ns = ...
 
 local L = ns.L
@@ -19,7 +22,17 @@ local UI = {}
 ns.UI = UI
 
 local ROW_H = 18
-local WIDTH, HEIGHT = 814, 426
+local MIN_W, MIN_H = 860, 490
+local INSET_W, INSET_H = 10, 86 -- вставка уже и ниже окна: (4,-60) → (-6,26)
+local GRIP = 16 -- уголок растягивания
+local TABS_W = 40 -- столбец значков справа за окном: окно с ним не шире экрана
+-- Вкладки со своей раскладкой под размер вставки: Layout(ширина, высота, live). live — игрок ещё
+-- тянет уголок: раскладывается только открытая вкладка и только дешёвое, остальное — по отпусканию.
+local LAYOUTS = { "CensusPane", "GroupsPane", "CraftersPane", "WishesPane", "RosterPane", "TransferPane", "UnionPane", "RecruitPane" }
+local PANE_OF = {
+	census = "CensusPane", groups = "GroupsPane", crafters = "CraftersPane", wishes = "WishesPane", roster = "RosterPane",
+	transfer = "TransferPane", union = "UnionPane", join = "RecruitPane", requests = "RecruitPane",
+}
 -- Значок аддона: логотип «Chill Zone», обрезанный по золотому кольцу (media/icon.tga, 64×64 TGA
 -- с прозрачностью). Он уже круглый, маска не нужна. Логотип целиком — media/logo.tga, для списка аддонов (toc).
 local ICON = "Interface\\AddOns\\" .. ADDON .. "\\media\\icon"
@@ -31,7 +44,6 @@ local TABS = {
 	{ key = "wishes", text = "TAB_WISHES", icons = { "Interface\\Icons\\INV_Scroll_03", "Interface\\Icons\\INV_Misc_Note_01" } },
 	{ key = "census", text = "TAB_CENSUS", icons = { "Interface\\Icons\\achievement_guildperk_everybodysfriend", "Interface\\Icons\\INV_Misc_Book_09" } },
 	{ key = "requests", text = "TAB_REQUESTS", icons = { "Interface\\Icons\\INV_Letter_15" } },
-	{ key = "kingdom", text = "TAB_KINGDOM", icons = { "Interface\\Icons\\achievement_guildperk_honorablemention", "Interface\\Icons\\INV_Misc_Note_01" } },
 	{ key = "settings", text = "TAB_SETTINGS", icons = { "Interface\\Icons\\INV_Misc_Gear_01" }, service = true },
 	{ key = "manage", text = "TAB_MANAGE", icons = { "Interface\\Icons\\Trade_Engineering", "Interface\\Icons\\INV_Misc_Spyglass_03" }, service = true },
 }
@@ -49,9 +61,10 @@ for _, def in ipairs(SECTIONS) do IS_SECTION[def.key], TITLES[def.key] = true, d
 for _, def in ipairs(TABS) do TITLES[def.key] = def.text end
 -- Без членства в объединении открываются только эти страницы, остальные заменяет экран вступления.
 local OPEN_TO_ALL = { settings = true, union = true, journal = true }
--- Между значками и перед служебной группой. Девять значков у главы и офицера: 36 + 9 * 32 + 7 * 10 + 30 =
--- 424 из 426 по высоте окна; при 20 и 44 столбец уходил ниже нижнего края.
-local TAB_GAP, SERVICE_GAP = 10, 30
+-- Между значками и перед служебной группой. Восемь значков у главы и офицера: 36 + 8 * 32 + 6 * 14 + 30 =
+-- 406 из 490 по высоте окна; при восьми значках и отступах 20 и 44 столбец уходил на 30 ниже нижнего края
+-- окна высотой 426.
+local TAB_GAP, SERVICE_GAP = 14, 30
 local SECTION_H = 26 -- высота кнопки раздела: строка названия вкладки над вставкой
 local DEBUG_EVERY = 5 -- «Отладка» обновляется чаще остальных: там счётчики и состояние реле
 local ACTIVITY_EVERY = 0.25 -- строка «что идёт сейчас» и обратные отсчёты на кнопках
@@ -64,6 +77,8 @@ local DOTS = {
 	fail = "Interface\\FriendsFrame\\StatusIcon-DnD",
 }
 local frame, body, scroll, child, settings = nil, nil, nil, nil, nil
+local width, height = MIN_W, MIN_H -- размер окна, под который разложены вкладки
+local laidOut, sizing = false, false -- вкладки уже раскладывались; игрок тянет за уголок
 local status, heading -- шапка (крупно и мелко) и название вкладки слева вверху
 local activity, refreshButton -- что идёт сейчас и кнопка обновления
 local titleText -- свой текст заголовка, если у рамки нет SetTitle
@@ -71,7 +86,7 @@ local tabs, rows, checks = {}, {}, {}
 local switcher, sections = nil, {} -- переключатель разделов «Управления» и его кнопки
 local current = "chat"
 local lastSection = "union" -- куда ведёт значок «Управления»: последний открытый раздел, если он доступен
-local minimapLauncher
+local minimapLauncher, minimapBadge
 local SelectTab
 
 local function SetTip(owner, tip)
@@ -100,7 +115,7 @@ local function FirstIcon(paths)
 end
 
 ---------------------------------------------------------------------------
--- Строки «Королевства» и «Отладки»
+-- Строки «Отладки»
 ---------------------------------------------------------------------------
 local function Row(i)
 	local r = rows[i]
@@ -124,7 +139,7 @@ local function Row(i)
 end
 
 local function RenderRows(lines)
-	child:SetWidth(scroll:GetWidth() or (WIDTH - 50))
+	child:SetWidth(scroll:GetWidth() or (UI.InsetSize() - 40))
 	local y = 0
 	for i, line in ipairs(lines) do
 		local r = Row(i)
@@ -648,6 +663,7 @@ end
 function UI.Render()
 	if not frame or not frame:IsShown() then return end
 	SyncTabs()
+	UI.UpdateBadges()
 	if current ~= "union" then ns.UnionPane.Hide() end
 	if current ~= "transfer" then ns.TransferPane.Hide() end
 	if current ~= "roster" then ns.RosterPane.Hide() end
@@ -748,10 +764,11 @@ function UI.Render()
 	end
 	ns.CensusPane.Hide()
 	scroll:Show()
+	-- Сюда доходит только «Отладка»; незнакомая страница остаётся пустой.
 	if current == "debug" then
 		ns.SafeCall("debug tab", function() RenderRows(ns.Debug.Lines()) end)
 	else
-		RenderRows(ns.Views.Kingdom())
+		RenderRows({})
 	end
 end
 
@@ -760,6 +777,46 @@ SelectTab = function(key)
 	if scroll then scroll:SetVerticalScroll(0) end
 	UI.Render()
 end
+
+-- Кружок с числом заявок без ответа к своему объявлению: на значке «Группы» и на кнопке у миникарты.
+-- Строку о заявке в чате легко пропустить, а сбор идёт час-два. Кружок — свой кадр поверх родителя
+-- без мыши: щелчки, подсказка и перетаскивание остаются у самой кнопки. Красный диск с золотой каймой
+-- рисуется маской круглого портрета, окрашенной SetVertexColor, как круги на карте (Map.lua):
+-- у готовых красных точек игры внутри прочерк или крестик.
+local BADGE_TEXTURE = "Interface\\CHARACTERFRAME\\TempPortraitAlphaMask"
+local BADGE_RIM = 1.5
+
+local function Badge(parent, x, y)
+	local f = CreateFrame("Frame", nil, parent)
+	f:SetSize(16, 16)
+	f:SetPoint("CENTER", parent, "TOPRIGHT", x, y)
+	f.rim = f:CreateTexture(nil, "ARTWORK", nil, 0)
+	f.rim:SetTexture(BADGE_TEXTURE)
+	f.rim:SetVertexColor(0.9, 0.76, 0.36)
+	f.rim:SetAllPoints()
+	f.fill = f:CreateTexture(nil, "ARTWORK", nil, 1)
+	f.fill:SetTexture(BADGE_TEXTURE)
+	f.fill:SetVertexColor(0.78, 0.15, 0.12)
+	f.fill:SetPoint("TOPLEFT", BADGE_RIM, -BADGE_RIM)
+	f.fill:SetPoint("BOTTOMRIGHT", -BADGE_RIM, BADGE_RIM)
+	f.text = f:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	f.text:SetPoint("CENTER", 0, 0)
+	f:Hide()
+	return f
+end
+
+local function ShowBadge(f, n)
+	if not f then return end
+	f.text:SetText(tostring(n))
+	f:SetShown(n > 0)
+end
+
+function UI.UpdateBadges()
+	local n = ns.Groups.Waiting()
+	ShowBadge(minimapBadge, n)
+	ShowBadge(tabs.groups and tabs.groups.badge, n)
+end
+ns.On("GROUPS", function() UI.UpdateBadges() end)
 
 -- Вкладки-значки на правом краю, как у окна гильдии (32×32, фон вкладки книги заклинаний).
 -- Места вкладкам раздаёт SyncTabs.
@@ -776,6 +833,7 @@ local function SideTab(def)
 	icon:SetPoint("LEFT")
 	icon:SetTexture(FirstIcon(def.icons))
 	b.icon = icon
+	if def.key == "groups" then b.badge = Badge(b, -3, -3) end
 	b:SetHighlightTexture("Interface\\Buttons\\ButtonHilight-Square", "ADD")
 	-- SetCheckedTexture режим наложения не принимает: без ADD чёрная середина рамки закрывает значок.
 	b:SetCheckedTexture("Interface\\Buttons\\CheckButtonHilight")
@@ -795,8 +853,9 @@ local function SideTab(def)
 		end
 		-- Число заявок и объявлений — в подсказке: подпись рядом со значком растягивала вкладку.
 		if def.key == "groups" then
-			local count = ns.Groups.Count()
+			local count, waiting = ns.Groups.Count(), ns.Groups.Waiting()
 			tt:AddLine(count > 0 and L.TAB_GROUPS_COUNT:format(count) or L[def.text], 1, 1, 1)
+			if waiting > 0 then tt:AddLine(L.GROUPS_WAITING:format(waiting), 1, 0.5, 0.25) end
 			return
 		end
 		if def.key == "crafters" then
@@ -840,9 +899,143 @@ local function Portrait(f)
 	if tex then tex:SetTexture(ICON) end
 end
 
+-- Место и размер окна переживают /reload. Размер пишется, только если он не исходный.
 local function SavePosition(f)
+	local old, saved = ns.db.settings.frame or {}, {}
 	local point, _, rel, x, y = f:GetPoint(1)
-	if point then ns.db.settings.frame = { point = point, rel = rel or point, x = x or 0, y = y or 0 } end
+	if point then
+		saved.point, saved.rel, saved.x, saved.y = point, rel or point, x or 0, y or 0
+	else
+		saved.point, saved.rel, saved.x, saved.y = old.point, old.rel, old.x, old.y
+	end
+	if width ~= MIN_W or height ~= MIN_H then saved.w, saved.h = width, height end
+	ns.db.settings.frame = saved
+end
+
+-- Пределы размера окна: не меньше исходного и не больше экрана (справа за окном ещё значки).
+-- Экран меряется при каждом растягивании: игрок мог сменить разрешение или масштаб интерфейса.
+local function Bounds()
+	local sw, sh = UIParent:GetWidth(), UIParent:GetHeight()
+	local maxW = type(sw) == "number" and sw > 0 and math.max(MIN_W, math.floor(sw - TABS_W)) or 2 * MIN_W
+	local maxH = type(sh) == "number" and sh > 0 and math.max(MIN_H, math.floor(sh)) or 2 * MIN_H
+	return maxW, maxH
+end
+
+local function Fit(w, h)
+	local maxW, maxH = Bounds()
+	w = math.floor((tonumber(w) or MIN_W) + 0.5)
+	h = math.floor((tonumber(h) or MIN_H) + 0.5)
+	return math.max(MIN_W, math.min(w, maxW)), math.max(MIN_H, math.min(h, maxH))
+end
+
+-- SetResizeBounds — у новых клиентов, SetMinResize и SetMaxResize — у старых.
+local function ApplyBounds(f)
+	local maxW, maxH = Bounds()
+	if type(f.SetResizeBounds) == "function" then
+		f:SetResizeBounds(MIN_W, MIN_H, maxW, maxH)
+		return
+	end
+	if type(f.SetMinResize) == "function" then f:SetMinResize(MIN_W, MIN_H) end
+	if type(f.SetMaxResize) == "function" then f:SetMaxResize(maxW, maxH) end
+end
+
+-- Размер вставки окна, в которой живут вкладки: у наименьшего окна 850×404 (вкладки свёрстаны под 804×340).
+function UI.InsetSize()
+	return math.max(width, MIN_W) - INSET_W, math.max(height, MIN_H) - INSET_H
+end
+
+local function Round(v, fallback)
+	return math.floor((tonumber(v) or fallback) + 0.5)
+end
+
+-- Привязка окна для журнала: точка, к чему и смещение.
+local function Anchor(f)
+	local point, _, rel, x, y = f:GetPoint(1)
+	return ("%s %s %d %d"):format(tostring(point), tostring(rel), Round(x, 0), Round(y, 0))
+end
+
+-- Окно держится одной точкой TOPLEFT от верхнего левого угла экрана и явным размером. После
+-- StartMoving, StartSizing и StopMovingOrSizing игра сама перепривязывает окно к ближайшему углу
+-- экрана, а раз окно именованное — ещё и пишет его место и размер в свой кэш расположения
+-- (layout-local.txt) как поставленное игроком. Место и размер хранит аддон, кэш игры выключен.
+local function Pin(f)
+	local left, top, screenTop = f:GetLeft(), f:GetTop(), UIParent:GetTop()
+	if type(left) == "number" and type(top) == "number" and type(screenTop) == "number" then
+		f:ClearAllPoints()
+		f:SetPoint("TOPLEFT", UIParent, "TOPLEFT", left, top - screenTop)
+	end
+	f:SetSize(Round(f:GetWidth(), width), Round(f:GetHeight(), height))
+	if type(f.SetUserPlaced) == "function" then f:SetUserPlaced(false) end
+end
+
+-- Окно сменило размер: вкладки раскладывают свои списки под новую вставку. Пока игрок тянет за
+-- уголок, это бывает каждый кадр: тогда раскладывается только открытая вкладка и без нового сбора
+-- и сортировки (live), а все вкладки и полная отрисовка — по отпусканию. force — разложить все
+-- вкладки, даже если размер тот же: пока тянули, остальные не раскладывались.
+local function Resized(w, h, force)
+	w, h = Round(w, width), Round(h, height)
+	if not force and laidOut and w == width and h == height then return end
+	width, height, laidOut = w, h, true
+	local iw, ih = UI.InsetSize()
+	if child then child:SetWidth(iw - 40) end
+	if sizing then
+		local name = PANE_OF[current]
+		local pane = name and ns[name]
+		if pane and pane.Layout then ns.SafeCall("layout " .. name, pane.Layout, iw, ih, true) end
+		return
+	end
+	for _, name in ipairs(LAYOUTS) do
+		local pane = ns[name]
+		if pane and pane.Layout then ns.SafeCall("layout " .. name, pane.Layout, iw, ih) end
+	end
+	UI.Render()
+end
+
+-- OnSizeChanged. Размер окна меняют только уголок и сам аддон. Если он сменился без них (так
+-- было: после растягивания, закрытия и нового открытия окно само становилось больше), прежний
+-- размер возвращается, а в журнале остаётся запись.
+local function SizeChanged(w, h)
+	if not sizing and laidOut and (Round(w, width) ~= width or Round(h, height) ~= height) then
+		ns.Log("окно: размер %dx%d без уголка, возвращён %dx%d (%s)", Round(w, width), Round(h, height), width, height,
+			Anchor(frame))
+		frame:SetSize(width, height)
+		return
+	end
+	Resized(w, h)
+end
+
+local function StopSizing()
+	if not sizing then return end
+	sizing = false
+	frame:StopMovingOrSizing()
+	Resized(frame:GetWidth(), frame:GetHeight(), true)
+	Pin(frame)
+	SavePosition(frame)
+	ns.Log("окно: размер %dx%d (%s)", width, height, Anchor(frame))
+end
+
+-- Уголок справа внизу, как у окон чата игры.
+local function BuildGrip(f)
+	local grip = CreateFrame("Button", nil, f)
+	grip:SetSize(GRIP, GRIP)
+	grip:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -4, 4)
+	grip:SetFrameLevel((f:GetFrameLevel() or 1) + 20)
+	grip:SetNormalTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Up")
+	grip:SetPushedTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Down")
+	grip:SetHighlightTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Highlight")
+	local hl = grip.GetHighlightTexture and grip:GetHighlightTexture()
+	if hl and hl.SetBlendMode then hl:SetBlendMode("ADD") end
+	grip:SetScript("OnMouseDown", function(_, button)
+		if button ~= "LeftButton" then return end
+		ns.Log("окно: растягивание с %dx%d (%s)", Round(f:GetWidth(), width), Round(f:GetHeight(), height), Anchor(f))
+		ApplyBounds(f)
+		-- Тянется правый нижний угол, поэтому окно держится за левый верхний, а не за угол из кэша игры.
+		Pin(f)
+		sizing = true
+		f:StartSizing("BOTTOMRIGHT")
+	end)
+	grip:SetScript("OnMouseUp", function() ns.SafeCall("window size", StopSizing) end)
+	UI.grip = grip
 end
 
 local function Create()
@@ -850,22 +1043,29 @@ local function Create()
 	if not ok or not f then f = CreateFrame("Frame", "ChillzoneFrame", UIParent, "BasicFrameTemplateWithInset") end
 	frame = f
 	UI.frame = f
-	f:SetSize(WIDTH, HEIGHT)
 	local pos = ns.db.settings.frame
+	width, height = Fit(pos and pos.w, pos and pos.h)
+	f:SetSize(width, height)
+	f:ClearAllPoints()
 	if pos and pos.point then
 		f:SetPoint(pos.point, UIParent, pos.rel or pos.point, pos.x or 0, pos.y or 0)
 	else
 		f:SetPoint("CENTER", 0, 40)
 	end
+	f:SetResizable(true)
+	ApplyBounds(f)
 	f:SetFrameStrata("MEDIUM")
 	f:SetToplevel(true)
 	f:SetClampedToScreen(true)
 	f:SetMovable(true)
+	-- Прежние версии оставили окно в кэше расположения игры: без этого оно там и останется.
+	if type(f.SetUserPlaced) == "function" then f:SetUserPlaced(false) end
 	f:EnableMouse(true)
 	f:RegisterForDrag("LeftButton")
 	f:SetScript("OnDragStart", f.StartMoving)
 	f:SetScript("OnDragStop", function(self)
 		self:StopMovingOrSizing()
+		Pin(self)
 		SavePosition(self)
 	end)
 	f:Hide()
@@ -900,13 +1100,15 @@ local function Create()
 	status:SetScript("OnDragStart", function() f:StartMoving() end)
 	status:SetScript("OnDragStop", function()
 		f:StopMovingOrSizing()
+		Pin(f)
 		SavePosition(f)
 	end)
-	-- Нижняя полоса окна, под вставкой: кнопка в правом углу, строка растёт влево от неё.
-	-- Кнопка текстовая, чтобы не зависеть от наличия значка в разных клиентах.
+	-- Нижняя полоса окна, под вставкой: в правом углу уголок растягивания, левее кнопка, строка растёт
+	-- влево от неё. Кнопка текстовая, чтобы не зависеть от наличия значка в разных клиентах.
+	BuildGrip(f)
 	refreshButton = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
 	refreshButton:SetSize(96, 18)
-	refreshButton:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -8, 6)
+	refreshButton:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -8 - GRIP, 6)
 	refreshButton:SetNormalFontObject("GameFontNormalSmall")
 	refreshButton:SetHighlightFontObject("GameFontHighlightSmall")
 	refreshButton:SetDisabledFontObject("GameFontDisableSmall")
@@ -945,7 +1147,7 @@ local function Create()
 	switcher:Hide()
 	UI.status, UI.heading, UI.switcher, UI.sections = status, heading, switcher, sections
 
-	-- Перепись, Королевство и Настройки — во вставке, как Inset у ButtonFrameTemplate: (4,-60) → (-6,26).
+	-- Перепись, Отладка и Настройки — во вставке, как Inset у ButtonFrameTemplate: (4,-60) → (-6,26).
 	local okInset, inset = pcall(CreateFrame, "Frame", nil, f, "InsetFrameTemplate")
 	body = okInset and inset or CreateFrame("Frame", nil, f)
 	body:SetPoint("TOPLEFT", f, "TOPLEFT", 4, -60)
@@ -954,7 +1156,7 @@ local function Create()
 	scroll:SetPoint("TOPLEFT", 8, -8)
 	scroll:SetPoint("BOTTOMRIGHT", -30, 8)
 	child = CreateFrame("Frame", nil, scroll)
-	child:SetSize(WIDTH - 50, 10)
+	child:SetSize(MIN_W - INSET_W - 40, 10)
 	scroll:SetScrollChild(child)
 	BuildSettings(body)
 	ns.RecruitPane.Build(body)
@@ -973,8 +1175,17 @@ local function Create()
 	for _, def in ipairs(TABS) do SideTab(def) end
 	UI.tabs = tabs
 
+	-- Вкладки собраны под исходное окно: сохранённый размер раздаём им сразу.
+	Resized(width, height)
+	-- HookScript: рамка из шаблона игры может сама слушать свой размер.
+	f:HookScript("OnSizeChanged", function(_, w, h) ns.SafeCall("window resize", SizeChanged, w, h) end)
 	f:SetScript("OnShow", function() UI.Render() end)
-	f:SetScript("OnHide", function() ns.ChatPane.Hide(); ns.Recruit.Cancel(); ns.UnionPane.Hide(); ns.TransferPane.Hide(); ns.RosterPane.Hide(); ns.JournalPane.Hide(); ns.GroupsPane.Hide(); ns.CraftersPane.Hide(); ns.WishesPane.Hide() end)
+	f:SetScript("OnHide", function()
+		-- Окно закрыли, пока игрок тянул уголок (Esc): размер всё равно сохраняется.
+		if sizing then ns.SafeCall("window size", StopSizing) end
+		ns.ChatPane.Hide(); ns.Recruit.Cancel(); ns.UnionPane.Hide(); ns.TransferPane.Hide(); ns.RosterPane.Hide()
+		ns.JournalPane.Hide(); ns.GroupsPane.Hide(); ns.CraftersPane.Hide(); ns.WishesPane.Hide()
+	end)
 	local elapsed, debugElapsed, activityElapsed, pulse = 0, 0, 0, 0
 	f:SetScript("OnUpdate", ns.Perf.Wrap("window update", function(_, dt)
 		elapsed, debugElapsed = elapsed + (dt or 0), debugElapsed + (dt or 0)
@@ -994,7 +1205,7 @@ local function Create()
 			UI.Render()
 		elseif elapsed >= 30 then
 			elapsed, debugElapsed = 0, 0
-			if current == "census" or current == "kingdom" or current == "join" or current == "requests" or current == "union"
+			if current == "census" or current == "join" or current == "requests" or current == "union"
 				or current == "groups" or current == "crafters" or current == "wishes" or current == "transfer" or current == "roster" then
 				UI.Render()
 			else UI.RenderStatus() end
@@ -1013,6 +1224,21 @@ function UI.Toggle(tab)
 		frame:Show()
 		UI.Render()
 	end
+end
+
+-- Размер окна из кода (тесты): в тех же пределах, что у уголка, и сохраняется так же.
+function UI.Resize(w, h)
+	if not frame then Create() end
+	w, h = Fit(w, h)
+	frame:SetSize(w, h)
+	Resized(w, h, true)
+	SavePosition(frame)
+	return w, h
+end
+
+-- Размер окна сейчас: исходный, пока окно не открывали.
+function UI.Size()
+	return width, height
 end
 
 -- Окно на чате, на канале channel; focus — курсор в поле ввода.
@@ -1040,7 +1266,7 @@ end
 
 local function Refresh()
 	if not frame or not frame:IsShown() then return end
-	if current == "census" or current == "kingdom" or current == "debug" or current == "union" or current == "requests"
+	if current == "census" or current == "debug" or current == "union" or current == "requests"
 		or TabsChanged() then
 		UI.Render()
 	else
@@ -1075,7 +1301,11 @@ function UI.UpdateMinimapButton()
 			OnClick = function(_, button)
 				ns.SafeCall("minimap click", function()
 					if button == "RightButton" then ns.Map.SetEnabled(not ns.db.settings.showMap)
-					elseif button == "LeftButton" then UI.Toggle() end
+					elseif button == "LeftButton" then
+						-- Пока горит кружок заявок, окно открывается сразу на «Группах».
+						local groups = ns.Groups.Waiting() > 0 and UI.Current() ~= "groups"
+						UI.Toggle(groups and "groups" or nil)
+					end
 				end)
 			end,
 			OnTooltipShow = function(tt) ns.SafeCall("minimap tip", ns.Views.MinimapTip, tt) end,
@@ -1086,8 +1316,12 @@ function UI.UpdateMinimapButton()
 		icon:SetButtonBackground(ADDON, "Interface\\Minimap\\UI-Minimap-Background", 20, "TOPLEFT", 6, -6)
 		icon:SetButtonBorder(ADDON, "Interface\\Minimap\\MiniMap-TrackingBorder", 53, "TOPLEFT", 0, 0)
 		icon:SetButtonHighlightTexture(ADDON, "Interface\\Minimap\\UI-Minimap-ZoomButton-Highlight")
+		local button = icon:GetMinimapButton(ADDON)
+		if button then minimapBadge = Badge(button, -5, -5) end
+		UI.minimapBadge = minimapBadge
 	end
 	if db.hide then icon:Hide(ADDON) else icon:Show(ADDON) end
+	UI.UpdateBadges()
 end
 
 ns.On("LOGIN", function()
@@ -1100,7 +1334,6 @@ ns.Command("minimap", function()
 	ns.Print(ns.db.settings.minimap.hide and L.MINIMAP_HIDDEN or L.MINIMAP_SHOWN)
 end, L.HELP_MINIMAP)
 
-ns.Command("kingdom", function() UI.Toggle("kingdom") end, L.HELP_KINGDOM)
 ns.Command("census", function() UI.Toggle("census") end, L.HELP_CENSUS)
 ns.Command("groups", function() UI.Toggle("groups") end, L.HELP_GROUPS)
 ns.Command("crafters", function() UI.Toggle("crafters") end, L.HELP_CRAFTERS)
