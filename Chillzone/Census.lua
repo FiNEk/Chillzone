@@ -66,26 +66,34 @@ end
 -- ждала бы пересылки от того, кого нет. Ростер читают не одновременно, и выбор может
 -- разойтись, но лишь пока кто-то ещё выбирает ушедшего: он ничего не пересылает, а убрать
 -- невыбранного значит не изменить выбор, поэтому двух действующих репортёров не бывает.
+-- Выборы идут почти на каждое пересылаемое сообщение (Forwarding, MayForward), а в большой
+-- гильдии на связи сотни согильдийцев: поэтому без копии списка и каждый проверяется один раз.
 function Census.Reporter(withoutMe)
 	if not ns.myKey then return nil end
 	local now = ns.Now()
-	local live = Live(now)
 	local me = not withoutMe and helloReady ~= false and ns.Security.MyCertificate() and ns.myKey or nil
 	local officers = me and ns.Roster.Fresh() and ns.Roster.IsOfficerRank(ns.Roster.RankOf(ns.me))
-	for key, peer in pairs(live) do
-		if peer.unready or ns.Roster.LeftGame(key, peer.t) then
-			live[key] = nil
-		elseif ns.Roster.IsOfficerRank(ns.Roster.byKey[key]) then
-			officers = true
+	-- На связи и в выборах: свежий привет, готов, по ростеру не вышел из игры.
+	local function present(key, peer)
+		return now - peer.t <= C.PEER_WINDOW and not peer.unready and not ns.Roster.LeftGame(key, peer.t)
+	end
+	if not officers then
+		for key, peer in pairs(peers) do
+			if present(key, peer) and ns.Roster.IsOfficerRank(ns.Roster.byKey[key]) then
+				officers = true
+				break
+			end
 		end
 	end
 	local function eligible(key)
+		local peer = key ~= ns.myKey and peers[key]
+		if peer and not present(key, peer) then return false end
 		if not Trusted(key) then return false end
 		return not officers or ns.Roster.IsOfficerRank(ns.Roster.byKey[key])
 	end
 	-- Зонами я делюсь всегда; флаг зон из чужих приветов по-прежнему важен: старые клиенты с
 	-- выключенной настройкой выборы уступают.
-	return Codec.PickReporter(me, true, live, now, C.PEER_WINDOW, eligible)
+	return Codec.PickReporter(me, true, peers, now, C.PEER_WINDOW, eligible)
 end
 
 local acting, handingUntil = false, nil -- я репортёр; до каких пор я передаю аренду
@@ -96,13 +104,19 @@ local deafUntil = 0 -- до каких пор приветы могли до м�
 -- принимает. Поэтому новым репортёром можно стать только через LOGIN_QUIET после блокировки,
 -- когда приветы уже дошли. Действующий репортёр остаётся: короткий бой не должен стоить
 -- гильдии передачи дел и новой регистрации у реле.
-function Census.IsReporter()
+-- known — выборы уже посчитаны в этот момент (reporter — их итог, Track): не считать второй раз.
+local function Reporting(reporter, known)
 	if not ns.IsMember() or not ns.loginAt then return false end
 	local now = ns.Now()
 	if ns.Comm.InLockdown() then deafUntil = now + C.LOGIN_QUIET end
 	if now - ns.loginAt < C.LOGIN_QUIET then return false end
 	if now < deafUntil and not acting then return false end
-	return Census.Reporter() == ns.myKey
+	if not known then reporter = Census.Reporter() end
+	return reporter == ns.myKey
+end
+
+function Census.IsReporter()
+	return Reporting(nil, false)
 end
 
 ---------------------------------------------------------------------------
@@ -124,7 +138,7 @@ function Census.Track()
 		elected = key
 		inheritedUntil = nil
 	end
-	local me = Census.IsReporter()
+	local me = Reporting(key, true)
 	local changed = me ~= acting
 	if changed then
 		acting = me
@@ -149,9 +163,11 @@ function Census.Handing()
 	return handingUntil ~= nil and ns.Now() <= handingUntil
 end
 
--- Я пересылаю гильдии то, что приходит от реле: репортёр или передающий дела.
+-- Я пересылаю гильдии то, что приходит от реле: репортёр или передающий дела. Track считает
+-- то же, что IsReporter (acting), поэтому выборы здесь — один раз, а не три.
 function Census.Forwarding()
-	return Census.IsReporter() or Census.Handing()
+	Census.Track()
+	return acting or (handingUntil ~= nil and ns.Now() <= handingUntil)
 end
 
 -- Имя преемника, которому я передаю аренду, или nil.

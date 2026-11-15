@@ -16,6 +16,29 @@ T.test("util: Fold переводит все заглавные А–Я и Ё", 
 	T.eq(U.Fold("Чиллзон Север"), "чиллзон север", "смешанное")
 end)
 
+-- Fold и звание связного запоминают ответ: выборы репортёра спрашивают их о каждом согильдийце.
+T.test("util: запомненные Fold и звание связного не устаревают", function()
+	local ns, U = fresh()
+	-- Таблица Fold сбрасывается целиком, когда полна: ответы до и после сброса те же.
+	for i = 1, 5000 do T.eq(U.Fold("Имя Ё" .. i), "имя ё" .. i, "строка " .. i) end
+	T.eq(U.Fold("Чиллзон Север"), "чиллзон север", "после сброса")
+	T.eq(U.Fold(nil), "", "nil")
+	T.eq(U.Fold(12), "12", "число")
+	local C = ns.Config
+	C.RELAY_RANK = "Ветеран"
+	T.ok(U.IsRelayRankName(" ВЕТЕРАН "), "регистр и пробелы по краям")
+	T.no(U.IsRelayRankName("Рядовой"), "другое звание")
+	T.no(U.IsRelayRankName(nil), "нет звания")
+	C.RELAY_RANK = "Рядовой"
+	T.ok(U.IsRelayRankName("Рядовой"), "сменилось звание связного")
+	T.no(U.IsRelayRankName(" ВЕТЕРАН "), "прежнее больше не связное")
+	C.RELAY_RANK = " "
+	T.no(U.IsRelayRankName("Рядовой"), "пустое звание — связных нет")
+	C.RELAY_RANK = "Ветеран"
+	for i = 1, 100 do T.no(U.IsRelayRankName("Звание " .. i), "чужие звания " .. i) end
+	T.ok(U.IsRelayRankName("ветеран"), "после сброса таблицы званий")
+end)
+
 T.test("util: разбор и сравнение версий аддона", function()
 	local _, U = fresh()
 	T.same(U.ParseVersion("0.8.0"), { 0, 8, 0 }, "три числа")
