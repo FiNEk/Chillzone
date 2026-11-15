@@ -780,20 +780,27 @@ function Views.GroupRows(kind)
 	return rows, ns.Groups.Count()
 end
 
--- Заявки ко мне: сначала записанные, потом новые заявки, каждые — как пришли. Запись:
--- { key, who, name, sub, tip, state }; who — имя для шёпота, name — с цветом класса, state —
--- "new" (заявка), "signed" (записан, можно звать), "invited" (позван) или "party" (уже в группе).
--- Второе значение — сколько записано.
+-- Заявки ко мне по разделам Views.APPLICANT_SECTIONS: сначала новые (их число горит кружком у
+-- миникарты), затем записанные, которых можно звать, затем позванные и уже вошедшие в группу; в
+-- разделе — как пришли. Запись: { key, who, name, sub, tip, state, section }; who — имя для шёпота,
+-- name — с цветом класса, state — "new" (заявка), "signed" (записан, можно звать), "invited"
+-- (позван) или "party" (уже в группе), section — "new", "signed" или "called". Второе значение —
+-- { [раздел] = сколько в нём строк }.
+Views.APPLICANT_SECTIONS = { "new", "signed", "called" }
+
 function Views.GroupApplicants()
-	local out, list, signed = {}, ns.Groups.Applicants(), 0
+	local out, counts, by = {}, {}, {}
+	for _, section in ipairs(Views.APPLICANT_SECTIONS) do by[section] = {} end
 	local function Add(a)
 		local who = Codec.Plain(a.guild or "")
 		if a.level and a.level > 0 then who = who .. ", " .. a.level end
 		local roles = Views.GroupRoles(a.roles)
 		local state = a.state
 		if state ~= "new" and a.party then state = "party" end
-		out[#out + 1] = {
-			key = a.key, who = a.name, name = Views.Name(a.name, a.class), state = state,
+		local section = (state == "new" or state == "signed") and state or "called"
+		local into = by[section]
+		into[#into + 1] = {
+			key = a.key, who = a.name, name = Views.Name(a.name, a.class), state = state, section = section,
 			sub = (roles ~= "" and (roles .. " ") or "") .. GREY .. who .. "|r",
 			tip = function(tt)
 				tt:AddLine(Views.Name(a.name, a.class))
@@ -808,16 +815,21 @@ function Views.GroupApplicants()
 			end,
 		}
 	end
-	for _, a in ipairs(list) do
-		if a.state ~= "new" then
-			Add(a)
-			signed = signed + 1
-		end
+	for _, a in ipairs(ns.Groups.Applicants()) do Add(a) end
+	for _, section in ipairs(Views.APPLICANT_SECTIONS) do
+		counts[section] = #by[section]
+		for _, it in ipairs(by[section]) do out[#out + 1] = it end
 	end
-	for _, a in ipairs(list) do
-		if a.state == "new" then Add(a) end
+	return out, counts
+end
+
+-- «Кого ещё ищем» одной строкой: значок и число каждой роли, нули тоже — как было в счётчиках.
+function Views.GroupNeed(roles)
+	local out = {}
+	for _, k in ipairs(ns.Groups.ROLES) do
+		out[#out + 1] = Views.RoleIcon(k) .. " " .. WHITE .. (type(roles) == "table" and roles[k] or 0) .. "|r"
 	end
-	return out, signed
+	return L.GROUPS_NEED_LINE:format(table.concat(out, "   "))
 end
 
 -- Ключ для поиска по названию: нижний регистр с кириллицей, «ё» как «е» (в названиях игры
