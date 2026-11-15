@@ -288,8 +288,7 @@ end
 TC.DIGEST = 6
 local DIGITS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
 local digests, digestCount = {}, 0
-function TC.Digest(r)
-	local id = r.base or r.id
+local function DigestOf(id)
 	local d = digests[id]
 	if d then return d end
 	local v = Hash(id) * 1024 + Hash(id .. "|") % 1024 -- меньше 2^36: точно и в Lua 5.1
@@ -303,6 +302,14 @@ function TC.Digest(r)
 	if digestCount >= 1024 then digests, digestCount = {}, 0 end
 	digests[id], digestCount = d, digestCount + 1
 	return d
+end
+function TC.Digest(r) return DigestOf(r.base or r.id) end
+-- Тот же хэш по самому сообщению kind (wire с префиксом prefix), без записи каталога: так реле
+-- сверяет то, что шлёт шёпотом (сверка RH в Security.lua), и сертификат KP, которого в
+-- каталоге нет.
+function TC.WireDigest(kind, wire, prefix)
+	local bare = Bare(kind, wire)
+	return DigestOf(Id(prefix, bare or wire))
 end
 
 local function Score(key, slot)
