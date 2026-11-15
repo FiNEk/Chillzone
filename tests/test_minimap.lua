@@ -161,6 +161,9 @@ T.test("minimap: кружок заявок без ответа горит на �
 	local badge = h.ns.UI.minimapBadge
 	T.ok(badge, "кружок создан вместе с кнопкой")
 	T.eq(badge.parent, h.button, "кружок на самой кнопке")
+	-- Сплошной диск без прочерка: маска круглого портрета, как круги на карте.
+	T.eq(badge.rim.texture, "Interface\\CHARACTERFRAME\\TempPortraitAlphaMask", "кайма")
+	T.eq(badge.fill.texture, "Interface\\CHARACTERFRAME\\TempPortraitAlphaMask", "заливка")
 	T.no(badge:IsShown(), "заявок нет — кружка нет")
 	local opened = {}
 	h.ns.UI.Toggle = function(tab) opened[#opened + 1] = tab or "окно" end

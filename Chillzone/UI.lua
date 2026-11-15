@@ -756,15 +756,25 @@ end
 
 -- Кружок с числом заявок без ответа к своему объявлению: на значке «Группы» и на кнопке у миникарты.
 -- Строку о заявке в чате легко пропустить, а сбор идёт час-два. Кружок — свой кадр поверх родителя
--- без мыши: щелчки, подсказка и перетаскивание остаются у самой кнопки. Красная точка — значок
--- «Не беспокоить» из списка друзей, как точки в строке «что идёт сейчас».
+-- без мыши: щелчки, подсказка и перетаскивание остаются у самой кнопки. Красный диск с золотой каймой
+-- рисуется маской круглого портрета, окрашенной SetVertexColor, как круги на карте (Map.lua):
+-- у готовых красных точек игры внутри прочерк или крестик.
+local BADGE_TEXTURE = "Interface\\CHARACTERFRAME\\TempPortraitAlphaMask"
+local BADGE_RIM = 1.5
+
 local function Badge(parent, x, y)
 	local f = CreateFrame("Frame", nil, parent)
 	f:SetSize(16, 16)
 	f:SetPoint("CENTER", parent, "TOPRIGHT", x, y)
-	local dot = f:CreateTexture(nil, "ARTWORK")
-	dot:SetAllPoints()
-	dot:SetTexture("Interface\\FriendsFrame\\StatusIcon-DnD")
+	f.rim = f:CreateTexture(nil, "ARTWORK", nil, 0)
+	f.rim:SetTexture(BADGE_TEXTURE)
+	f.rim:SetVertexColor(0.9, 0.76, 0.36)
+	f.rim:SetAllPoints()
+	f.fill = f:CreateTexture(nil, "ARTWORK", nil, 1)
+	f.fill:SetTexture(BADGE_TEXTURE)
+	f.fill:SetVertexColor(0.78, 0.15, 0.12)
+	f.fill:SetPoint("TOPLEFT", BADGE_RIM, -BADGE_RIM)
+	f.fill:SetPoint("BOTTOMRIGHT", -BADGE_RIM, BADGE_RIM)
 	f.text = f:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
 	f.text:SetPoint("CENTER", 0, 0)
 	f:Hide()
