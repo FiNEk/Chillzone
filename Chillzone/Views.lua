@@ -619,6 +619,9 @@ function Views.MinimapTip(tt)
 	tt:AddLine("Chillzone", 0.5, 0.83, 0.76)
 	tt:AddLine(status.big, 1, 0.82, 0)
 	tt:AddLine(status.small, 0.7, 0.7, 0.7)
+	-- Заявки к своему объявлению: щелчок по кнопке тогда открывает сразу «Группы».
+	local waiting = ns.Groups.Waiting()
+	if waiting > 0 then tt:AddLine(L.GROUPS_WAITING:format(waiting), 1, 0.5, 0.25) end
 	-- Король — глава главной гильдии по её отчёту.
 	for _, s in ipairs(ns.Data.Summary()) do
 		if s.main and s.recent and s.r.leader then
@@ -627,7 +630,7 @@ function Views.MinimapTip(tt)
 		end
 	end
 	tt:AddLine(" ")
-	tt:AddLine(L.MINIMAP_LEFT, 0.6, 0.6, 0.6)
+	tt:AddLine(waiting > 0 and L.MINIMAP_LEFT_GROUPS or L.MINIMAP_LEFT, 0.6, 0.6, 0.6)
 	tt:AddLine(L.MINIMAP_RIGHT, 0.6, 0.6, 0.6)
 	tt:AddLine(L.MINIMAP_DRAG, 0.6, 0.6, 0.6)
 end
@@ -729,12 +732,16 @@ local function GroupRow(e, own)
 		row.action, row.actionText = "withdraw", L.GROUPS_WITHDRAW
 		-- Пока заявка ждёт в очереди отправки, «отправлена» было бы неправдой.
 		row.status = e.sending and (GREY .. L.GROUPS_APPLYING .. "|r") or (GREEN .. L.GROUPS_APPLIED .. "|r")
-	elseif e.applied == "invited" then
-		row.status = GREEN .. L.GROUPS_YOU_INVITED .. "|r"
+	elseif e.applied == "signed" or e.applied == "invited" then
+		-- Записанный ждёт сбора где угодно; передумал — выписывается, и место освобождается.
+		row.action, row.actionText = "withdraw", L.GROUPS_LEAVE
+		row.status = GREEN .. (e.applied == "invited" and L.GROUPS_YOU_INVITED or L.GROUPS_YOU_SIGNED) .. "|r"
 	elseif e.applied == "declined" then
 		row.status = GREY .. L.GROUPS_YOU_DECLINED .. "|r"
 	elseif e.short then
 		row.status = ORANGE .. L.GROUPS_NEED_LEVEL:format(e.min) .. "|r"
+	elseif e.size >= e.cap then
+		row.status = GREY .. L.GROUPS_NO_ROOM_ROW .. "|r"
 	else
 		row.action, row.actionText = "apply", L.GROUPS_APPLY
 	end
@@ -746,7 +753,7 @@ local function OwnEntry()
 	local mine = ns.Groups.Mine()
 	if not mine then return nil end
 	local _, class = UnitClass("player")
-	local size = mine.mode == "G" and math.max(1, GetNumGroupMembers and GetNumGroupMembers() or 0) or 1
+	local size = mine.mode == "G" and ns.Groups.Size() or 1
 	return {
 		key = ns.myKey, name = U.Display(ns.me), guild = ns.MyGuild() or "", class = class, level = UnitLevel("player") or 0,
 		mode = mine.mode, id = mine.id, raised = mine.id, kind = mine.kind, title = mine.title, note = mine.note,
@@ -773,15 +780,27 @@ function Views.GroupRows(kind)
 	return rows, ns.Groups.Count()
 end
 
--- Заявки ко мне: { key, who, name, sub, tip, invited }; who — имя для шёпота, name — с цветом класса.
+-- Заявки ко мне по разделам Views.APPLICANT_SECTIONS: сначала новые (их число горит кружком у
+-- миникарты), затем записанные, которых можно звать, затем позванные и уже вошедшие в группу; в
+-- разделе — как пришли. Запись: { key, who, name, sub, tip, state, section }; who — имя для шёпота,
+-- name — с цветом класса, state — "new" (заявка), "signed" (записан, можно звать), "invited"
+-- (позван) или "party" (уже в группе), section — "new", "signed" или "called". Второе значение —
+-- { [раздел] = сколько в нём строк }.
+Views.APPLICANT_SECTIONS = { "new", "signed", "called" }
+
 function Views.GroupApplicants()
-	local out = {}
-	for _, a in ipairs(ns.Groups.Applicants()) do
+	local out, counts, by = {}, {}, {}
+	for _, section in ipairs(Views.APPLICANT_SECTIONS) do by[section] = {} end
+	local function Add(a)
 		local who = Codec.Plain(a.guild or "")
 		if a.level and a.level > 0 then who = who .. ", " .. a.level end
 		local roles = Views.GroupRoles(a.roles)
-		out[#out + 1] = {
-			key = a.key, who = a.name, name = Views.Name(a.name, a.class), invited = a.state == "invited",
+		local state = a.state
+		if state ~= "new" and a.party then state = "party" end
+		local section = (state == "new" or state == "signed") and state or "called"
+		local into = by[section]
+		into[#into + 1] = {
+			key = a.key, who = a.name, name = Views.Name(a.name, a.class), state = state, section = section,
 			sub = (roles ~= "" and (roles .. " ") or "") .. GREY .. who .. "|r",
 			tip = function(tt)
 				tt:AddLine(Views.Name(a.name, a.class))
@@ -796,7 +815,21 @@ function Views.GroupApplicants()
 			end,
 		}
 	end
-	return out
+	for _, a in ipairs(ns.Groups.Applicants()) do Add(a) end
+	for _, section in ipairs(Views.APPLICANT_SECTIONS) do
+		counts[section] = #by[section]
+		for _, it in ipairs(by[section]) do out[#out + 1] = it end
+	end
+	return out, counts
+end
+
+-- «Кого ещё ищем» одной строкой: значок и число каждой роли, нули тоже — как было в счётчиках.
+function Views.GroupNeed(roles)
+	local out = {}
+	for _, k in ipairs(ns.Groups.ROLES) do
+		out[#out + 1] = Views.RoleIcon(k) .. " " .. WHITE .. (type(roles) == "table" and roles[k] or 0) .. "|r"
+	end
+	return L.GROUPS_NEED_LINE:format(table.concat(out, "   "))
 end
 
 -- Ключ для поиска по названию: нижний регистр с кириллицей, «ё» как «е» (в названиях игры

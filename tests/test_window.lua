@@ -25,16 +25,17 @@ end
 T.test("window: размер не меньше исходного и не больше экрана, исходный не записывается", function()
 	local _, c = Build()
 	local UI, db = c.ns.UI, c.ns.db
-	T.same({ UI.Size() }, { 814, 426 }, "исходный размер")
-	T.same({ UI.InsetSize() }, { 804, 340 }, "вставка исходного окна")
-	T.same({ UI.Resize(500, 300) }, { 814, 426 }, "меньше исходного не бывает")
+	T.same({ UI.Size() }, { 860, 490 }, "исходный размер — наименьший")
+	T.same({ UI.InsetSize() }, { 850, 404 }, "вставка наименьшего окна")
+	T.same({ UI.Resize(500, 300) }, { 860, 490 }, "меньше наименьшего не бывает")
+	T.same({ UI.Resize(814, 426) }, { 860, 490 }, "прежний наименьший размер тоже поднят")
 	T.no(db.settings.frame.w, "исходный размер не записывается")
 	T.same({ UI.Resize(1000.4, 600.6) }, { 1000, 601 }, "размер в целых точках")
 	T.same({ UI.InsetSize() }, { 990, 515 })
 	T.eq(db.settings.frame.w, 1000)
 	T.eq(db.settings.frame.h, 601)
 	T.same({ UI.Resize(5000, 5000) }, { 1880, 1080 }, "не шире экрана без столбца значков и не выше экрана")
-	UI.Resize(814, 426)
+	UI.Resize(860, 490)
 	T.no(db.settings.frame.w, "вернули исходный — запись убрана")
 	T.no(db.settings.frame.h)
 	Errors(c)
@@ -78,7 +79,7 @@ end)
 -- Окно с геометрией: игра после StartSizing и StopMovingOrSizing сама перепривязывает его к
 -- ближайшему углу экрана и отмечает поставленным игроком (кэш расположения).
 local function Geometry(c, frame)
-	local g = { points = {}, size = { 814, 426 }, placed = nil, left = 100, top = 900 }
+	local g = { points = {}, size = { 860, 490 }, placed = nil, left = 100, top = 900 }
 	c.env.UIParent.GetTop = function() return 1080 end
 	frame.GetLeft = function() return g.left end
 	frame.GetTop = function() return g.top end
@@ -121,7 +122,7 @@ T.test("window: окно держится за левый верхний уго�
 	local grip, frame = UI.grip, UI.frame
 	local g = Geometry(c, frame)
 	grip.scripts.OnMouseDown(grip, "LeftButton")
-	T.same(g.start, { 1, "TOPLEFT", "TOPLEFT", 100, -180, 814, 426, "BOTTOMRIGHT" },
+	T.same(g.start, { 1, "TOPLEFT", "TOPLEFT", 100, -180, 860, 490, "BOTTOMRIGHT" },
 		"тянется правый нижний угол окна, привязанного одной точкой за левый верхний")
 	g.size = { 1000, 600 }
 	frame.scripts.OnSizeChanged(frame, 1000, 600)

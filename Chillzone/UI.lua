@@ -10,8 +10,9 @@
 -- кнопка в Настройках.
 -- Чат рисует ChatPane.lua, Перепись — CensusPane.lua, Отладку — список строк из Debug.lua во вставке
 -- окна. Кнопка у миникарты — LibDBIcon, объект запуска — LibDataBroker.
--- Размер окна игрок меняет уголком справа внизу. Меньше исходного 814×426 окно не бывает: под него
--- свёрстаны все вкладки, а лишнее место каждая раздаёт своим спискам и колонкам (Layout вкладок).
+-- Размер окна игрок меняет уголком справа внизу. Меньше 860×490 окно не бывает. Вкладки свёрстаны
+-- под исходное окно 814×426 (вставка 804×340), а лишнее место каждая раздаёт своим спискам и колонкам
+-- (Layout вкладок): уже у наименьшего окна списки длиннее, чем в исходном.
 local ADDON, ns = ...
 
 local L = ns.L
@@ -21,7 +22,7 @@ local UI = {}
 ns.UI = UI
 
 local ROW_H = 18
-local MIN_W, MIN_H = 814, 426
+local MIN_W, MIN_H = 860, 490
 local INSET_W, INSET_H = 10, 86 -- вставка уже и ниже окна: (4,-60) → (-6,26)
 local GRIP = 16 -- уголок растягивания
 local TABS_W = 40 -- столбец значков справа за окном: окно с ним не шире экрана
@@ -60,7 +61,8 @@ for _, def in ipairs(TABS) do TITLES[def.key] = def.text end
 -- Без членства в объединении открываются только эти страницы, остальные заменяет экран вступления.
 local OPEN_TO_ALL = { settings = true, union = true, journal = true }
 -- Между значками и перед служебной группой. Семь значков у главы и офицера: 36 + 7 * 32 + 5 * 14 + 30 =
--- 360 из 426 по высоте окна; при восьми значках и отступах 20 и 44 столбец уходил на 30 ниже нижнего края.
+-- 360 из 490 по высоте окна; при восьми значках и отступах 20 и 44 столбец уходил на 30 ниже нижнего края
+-- окна высотой 426.
 local TAB_GAP, SERVICE_GAP = 14, 30
 local SECTION_H = 26 -- высота кнопки раздела: строка названия вкладки над вставкой
 local DEBUG_EVERY = 5 -- «Отладка» обновляется чаще остальных: там счётчики и состояние реле
@@ -83,7 +85,7 @@ local tabs, rows, checks = {}, {}, {}
 local switcher, sections = nil, {} -- переключатель разделов «Управления» и его кнопки
 local current = "chat"
 local lastSection = "union" -- куда ведёт значок «Управления»: последний открытый раздел, если он доступен
-local minimapLauncher
+local minimapLauncher, minimapBadge
 local SelectTab
 
 local function SetTip(owner, tip)
@@ -660,6 +662,7 @@ end
 function UI.Render()
 	if not frame or not frame:IsShown() then return end
 	SyncTabs()
+	UI.UpdateBadges()
 	if current ~= "union" then ns.UnionPane.Hide() end
 	if current ~= "transfer" then ns.TransferPane.Hide() end
 	if current ~= "roster" then ns.RosterPane.Hide() end
@@ -767,6 +770,46 @@ SelectTab = function(key)
 	UI.Render()
 end
 
+-- Кружок с числом заявок без ответа к своему объявлению: на значке «Группы» и на кнопке у миникарты.
+-- Строку о заявке в чате легко пропустить, а сбор идёт час-два. Кружок — свой кадр поверх родителя
+-- без мыши: щелчки, подсказка и перетаскивание остаются у самой кнопки. Красный диск с золотой каймой
+-- рисуется маской круглого портрета, окрашенной SetVertexColor, как круги на карте (Map.lua):
+-- у готовых красных точек игры внутри прочерк или крестик.
+local BADGE_TEXTURE = "Interface\\CHARACTERFRAME\\TempPortraitAlphaMask"
+local BADGE_RIM = 1.5
+
+local function Badge(parent, x, y)
+	local f = CreateFrame("Frame", nil, parent)
+	f:SetSize(16, 16)
+	f:SetPoint("CENTER", parent, "TOPRIGHT", x, y)
+	f.rim = f:CreateTexture(nil, "ARTWORK", nil, 0)
+	f.rim:SetTexture(BADGE_TEXTURE)
+	f.rim:SetVertexColor(0.9, 0.76, 0.36)
+	f.rim:SetAllPoints()
+	f.fill = f:CreateTexture(nil, "ARTWORK", nil, 1)
+	f.fill:SetTexture(BADGE_TEXTURE)
+	f.fill:SetVertexColor(0.78, 0.15, 0.12)
+	f.fill:SetPoint("TOPLEFT", BADGE_RIM, -BADGE_RIM)
+	f.fill:SetPoint("BOTTOMRIGHT", -BADGE_RIM, BADGE_RIM)
+	f.text = f:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	f.text:SetPoint("CENTER", 0, 0)
+	f:Hide()
+	return f
+end
+
+local function ShowBadge(f, n)
+	if not f then return end
+	f.text:SetText(tostring(n))
+	f:SetShown(n > 0)
+end
+
+function UI.UpdateBadges()
+	local n = ns.Groups.Waiting()
+	ShowBadge(minimapBadge, n)
+	ShowBadge(tabs.groups and tabs.groups.badge, n)
+end
+ns.On("GROUPS", function() UI.UpdateBadges() end)
+
 -- Вкладки-значки на правом краю, как у окна гильдии (32×32, фон вкладки книги заклинаний).
 -- Места вкладкам раздаёт SyncTabs.
 local function SideTab(def)
@@ -782,6 +825,7 @@ local function SideTab(def)
 	icon:SetPoint("LEFT")
 	icon:SetTexture(FirstIcon(def.icons))
 	b.icon = icon
+	if def.key == "groups" then b.badge = Badge(b, -3, -3) end
 	b:SetHighlightTexture("Interface\\Buttons\\ButtonHilight-Square", "ADD")
 	-- SetCheckedTexture режим наложения не принимает: без ADD чёрная середина рамки закрывает значок.
 	b:SetCheckedTexture("Interface\\Buttons\\CheckButtonHilight")
@@ -801,8 +845,9 @@ local function SideTab(def)
 		end
 		-- Число заявок и объявлений — в подсказке: подпись рядом со значком растягивала вкладку.
 		if def.key == "groups" then
-			local count = ns.Groups.Count()
+			local count, waiting = ns.Groups.Count(), ns.Groups.Waiting()
 			tt:AddLine(count > 0 and L.TAB_GROUPS_COUNT:format(count) or L[def.text], 1, 1, 1)
+			if waiting > 0 then tt:AddLine(L.GROUPS_WAITING:format(waiting), 1, 0.5, 0.25) end
 			return
 		end
 		if def.key == "crafters" then
@@ -881,7 +926,7 @@ local function ApplyBounds(f)
 	if type(f.SetMaxResize) == "function" then f:SetMaxResize(maxW, maxH) end
 end
 
--- Размер вставки окна, в которой живут вкладки: у исходного окна 804×340.
+-- Размер вставки окна, в которой живут вкладки: у наименьшего окна 850×404 (вкладки свёрстаны под 804×340).
 function UI.InsetSize()
 	return math.max(width, MIN_W) - INSET_W, math.max(height, MIN_H) - INSET_H
 end
@@ -1242,7 +1287,11 @@ function UI.UpdateMinimapButton()
 			OnClick = function(_, button)
 				ns.SafeCall("minimap click", function()
 					if button == "RightButton" then ns.Map.SetEnabled(not ns.db.settings.showMap)
-					elseif button == "LeftButton" then UI.Toggle() end
+					elseif button == "LeftButton" then
+						-- Пока горит кружок заявок, окно открывается сразу на «Группах».
+						local groups = ns.Groups.Waiting() > 0 and UI.Current() ~= "groups"
+						UI.Toggle(groups and "groups" or nil)
+					end
 				end)
 			end,
 			OnTooltipShow = function(tt) ns.SafeCall("minimap tip", ns.Views.MinimapTip, tt) end,
@@ -1253,8 +1302,12 @@ function UI.UpdateMinimapButton()
 		icon:SetButtonBackground(ADDON, "Interface\\Minimap\\UI-Minimap-Background", 20, "TOPLEFT", 6, -6)
 		icon:SetButtonBorder(ADDON, "Interface\\Minimap\\MiniMap-TrackingBorder", 53, "TOPLEFT", 0, 0)
 		icon:SetButtonHighlightTexture(ADDON, "Interface\\Minimap\\UI-Minimap-ZoomButton-Highlight")
+		local button = icon:GetMinimapButton(ADDON)
+		if button then minimapBadge = Badge(button, -5, -5) end
+		UI.minimapBadge = minimapBadge
 	end
 	if db.hide then icon:Hide(ADDON) else icon:Show(ADDON) end
+	UI.UpdateBadges()
 end
 
 ns.On("LOGIN", function()

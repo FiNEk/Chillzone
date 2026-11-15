@@ -929,12 +929,12 @@ T.test("crafters: длинный список приходит страница�
 	V.UI.Toggle("crafters")
 	V.CraftersPane.Open(key)
 	local f = V.CraftersPane.frames
-	T.ok(#f.recipes <= 10, "строк в карточке: " .. #f.recipes)
+	T.ok(#f.recipes <= 12, "строк в карточке: " .. #f.recipes)
 	local shown = 0
 	for _, r in ipairs(f.recipes) do
 		if r:IsShown() then shown = shown + 1 end
 	end
-	T.eq(shown, 8, "видно 166 / 22 строк")
+	T.eq(shown, 11, "видно 230 / 22 строк: у наименьшего окна список выше исходного на 64")
 	T.eq(f.recipes[1].it.id, 11000)
 	f.card.scroll:SetVerticalScroll(22 * 100)
 	T.eq(f.recipes[1].it.id, 10000 + 101 * 1000, "после прокрутки — сто первый")
@@ -979,15 +979,16 @@ T.test("crafters: в высоком окне в карточке видно бо
 		end
 		return n
 	end
-	T.eq(Shown(), 8, "исходное окно: 166 / 22")
+	-- Наименьшее окно 860×490: вставка выше исходной 804×340 на 64, список рецептов 166 + 64.
+	T.eq(Shown(), 11, "наименьшее окно: 230 / 22")
 	-- Вставка выше на 220: список рецептов 386 в высоту; карточка открыта, строки перекладываются сразу.
 	V.UI.Resize(814 + 200, 426 + 220)
 	T.eq(Shown(), 18, "386 / 22")
 	T.ok(#f.recipes <= 19, "строк создано на видимую часть: " .. #f.recipes)
 	f.card.scroll:SetVerticalScroll(22 * 30)
 	T.eq(f.recipes[1].it.id, 10000 + 31 * 1000, "прокрутка в высоком окне")
-	V.UI.Resize(814, 426)
-	T.eq(Shown(), 8, "обратно — как было")
+	V.UI.Resize(860, 490)
+	T.eq(Shown(), 11, "обратно — как было")
 	NoErrors(c.V, "Вера")
 end)
 
@@ -1440,7 +1441,8 @@ T.test("crafters pane: поиск в списке рецептов карточ�
 	f.card.state.GetStringHeight = function() return 26 end
 	P.Render()
 	T.eq(f.card.listH, oneLine - 12, "список короче на строку состояния")
-	T.ok(88 + 26 + 2 + 24 + f.card.listH <= 292, "низ списка выше кнопок")
+	-- 292 — низ списка у исходной вставки 804×340, у наименьшего окна он ниже на 64.
+	T.ok(88 + 26 + 2 + 24 + f.card.listH <= 292 + 64, "низ списка выше кнопок")
 	f.card.state.GetStringHeight = nil
 	P.Render()
 	T.eq(f.card.listH, oneLine)
@@ -1548,7 +1550,7 @@ T.test("crafters pane: рецепты персональных предмето�
 	T.eq(CardText(c.V), "Грубое точило\nМедная кольчуга", "персональный скрыт")
 	T.ok(f.card.bound:IsShown(), "переключатель есть")
 	T.eq(f.card.bound.label:GetText(), L.CRAFT_BOUND:format(1))
-	T.ok(width < 282 - 24, "поле поиска уступает место переключателю")
+	T.ok(width < 328 - 24, "поле поиска уступает место переключателю")
 	local tip = Tip(c.V, f.card.bound)
 	T.ok(tip:find(L.CRAFT_BOUND_TIP, 1, true))
 	T.ok(tip:find(L.CRAFT_BOUND_SHOW, 1, true))
@@ -1585,7 +1587,7 @@ T.test("crafters pane: рецепты персональных предмето�
 	PaneRow(c.V, c.B):Click()
 	w:Run(1)
 	T.no(f.card.bound:IsShown(), "переключателя нет")
-	T.eq(width, 282 - 24)
+	T.eq(width, 328 - 24, "правая панель 328: шире исходной на 46")
 	NoErrors(c.V, "Вера")
 end)
 
