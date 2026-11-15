@@ -32,6 +32,8 @@ local function Harness(saved, loginFirst)
 	function methods:RegisterEvent(event) self.event = event end
 	function methods:GetParent() return self.parent end
 	function methods:CreateTexture() return Frame(self) end
+	function methods:CreateFontString() return Frame(self) end
+	function methods:SetText(text) self.label = text end
 	function methods:CreateAnimationGroup() return Frame(self) end
 	function methods:CreateAnimation() return Frame(self) end
 	function methods:GetVertexColor() return 1, 1, 1 end
@@ -65,6 +67,7 @@ local function Harness(saved, loginFirst)
 			if not ok then h.errors[#h.errors + 1] = err end
 		end,
 		Views = { MinimapTip = function(tt) h.tip = tt end },
+		Groups = { Waiting = function() return h.waiting or 0 end },
 	}
 	ns.Map = { SetEnabled = function(on) ns.db.settings.showMap = on end }
 	T.load(LIBS, env, ns)
@@ -151,6 +154,32 @@ T.test("minimap: скрытие из настроек и команды сохр
 	h.commands.minimap()
 	T.ok(h.button:IsShown())
 	T.eq(saved.minimapPos, 123)
+end)
+
+T.test("minimap: кружок заявок без ответа горит на кнопке, щелчок ведёт на «Группы»", function()
+	local h = Harness()
+	local badge = h.ns.UI.minimapBadge
+	T.ok(badge, "кружок создан вместе с кнопкой")
+	T.eq(badge.parent, h.button, "кружок на самой кнопке")
+	T.no(badge:IsShown(), "заявок нет — кружка нет")
+	local opened = {}
+	h.ns.UI.Toggle = function(tab) opened[#opened + 1] = tab or "окно" end
+	h.button.scripts.OnClick(h.button, "LeftButton")
+	T.same(opened, { "окно" }, "без заявок щелчок открывает окно как раньше")
+	h.waiting = 3
+	h.events.GROUPS()
+	T.ok(badge:IsShown(), "заявки есть — кружок горит")
+	T.eq(badge.text.label, "3", "в кружке число заявок")
+	h.button.scripts.OnClick(h.button, "LeftButton")
+	T.same(opened, { "окно", "groups" }, "щелчок открывает сразу «Группы»")
+	h.waiting = 0
+	h.events.GROUPS()
+	T.no(badge:IsShown(), "ответили всем — кружок погас")
+	h.waiting = 2
+	h.ns.UI.UpdateMinimapButton()
+	T.ok(h.ns.UI.minimapBadge:IsShown(), "повторное обновление кнопки тоже зажигает кружок")
+	T.eq(h.ns.UI.minimapBadge.text.label, "2")
+	T.eq(#h.errors, 0)
 end)
 
 T.test("minimap: клики и подсказка работают через LibDBIcon и сам launcher", function()

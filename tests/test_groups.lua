@@ -1335,7 +1335,21 @@ T.test("groups pane: доска, заявка щелчком и приглаше
 	T.no(applicant.roster:IsShown())
 	T.no(fa.own.callAll:IsShown(), "звать пока некого")
 	T.eq(fa.own.applicantsLabel:GetText(), c.A.ns.L.GROUPS_ROSTER:format(0, 1))
+	-- Заявка без ответа: кружок с числом на значке «Группы», строка в подсказке значка и кнопки миникарты.
+	local badge = c.A.ns.UI.tabs.groups.badge
+	T.eq(c.A.ns.Groups.Waiting(), 1)
+	T.ok(badge:IsShown(), "кружок на значке «Группы»")
+	T.eq(badge.text:GetText(), "1")
+	T.ok(Tip(c.A, c.A.ns.UI.tabs.groups):find(c.A.ns.L.GROUPS_WAITING:format(1), 1, true), "число заявок в подсказке значка")
+	local minimapTip = {}
+	c.A.ns.Views.MinimapTip({ AddLine = function(_, text) minimapTip[#minimapTip + 1] = text end })
+	minimapTip = table.concat(minimapTip, "\n")
+	T.ok(minimapTip:find(c.A.ns.L.GROUPS_WAITING:format(1), 1, true), "число заявок в подсказке кнопки миникарты")
+	T.ok(minimapTip:find(c.A.ns.L.MINIMAP_LEFT_GROUPS, 1, true), "щелчок ведёт на «Группы»")
 	c.A:Hardware(function() applicant.take:Click() end)
+	T.eq(c.A.ns.Groups.Waiting(), 0, "записанная — уже не заявка без ответа")
+	T.no(badge:IsShown(), "кружок погас")
+	T.no(Tip(c.A, c.A.ns.UI.tabs.groups):find(c.A.ns.L.GROUPS_WAITING:format(1), 1, true))
 	T.eq(#c.A.partyInvites, 0, "записать — не приглашать")
 	T.eq(fa.applicants[1].take:GetText(), c.A.ns.L.GROUPS_CALL, "у записанной — «Позвать»")
 	T.ok(Tip(c.A, fa.applicants[1].take):find(c.A.ns.L.GROUPS_CALL_TIP, 1, true), "подсказка сменилась")

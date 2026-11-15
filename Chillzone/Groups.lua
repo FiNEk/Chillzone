@@ -127,6 +127,11 @@ local function Size()
 end
 Groups.Size = Size
 
+-- Заявки без ответа: их число горит кружком на кнопке у миникарты и на значке «Группы».
+function Groups.Waiting()
+	return #applicants - Signed()
+end
+
 -- Группа игры, где я лидер, заполнена: собирать больше некого.
 local function PartyFull(cap)
 	return InGroup() and Leading() and GroupSize() >= cap
@@ -1115,6 +1120,5 @@ end)
 
 ns.Status(function()
 	local own = mine and (mine.mode == "G" and L.GROUPS_STATUS_GROUP or L.GROUPS_STATUS_PLAYER) or L.GROUPS_STATUS_NONE
-	local signed = Signed()
-	return L.GROUPS_STATUS:format(Count(), own, #applicants - signed, signed)
+	return L.GROUPS_STATUS:format(Count(), own, Groups.Waiting(), Signed())
 end)

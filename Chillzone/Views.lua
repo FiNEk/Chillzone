@@ -619,6 +619,9 @@ function Views.MinimapTip(tt)
 	tt:AddLine("Chillzone", 0.5, 0.83, 0.76)
 	tt:AddLine(status.big, 1, 0.82, 0)
 	tt:AddLine(status.small, 0.7, 0.7, 0.7)
+	-- Заявки к своему объявлению: щелчок по кнопке тогда открывает сразу «Группы».
+	local waiting = ns.Groups.Waiting()
+	if waiting > 0 then tt:AddLine(L.GROUPS_WAITING:format(waiting), 1, 0.5, 0.25) end
 	-- Король — глава главной гильдии по её отчёту.
 	for _, s in ipairs(ns.Data.Summary()) do
 		if s.main and s.recent and s.r.leader then
@@ -627,7 +630,7 @@ function Views.MinimapTip(tt)
 		end
 	end
 	tt:AddLine(" ")
-	tt:AddLine(L.MINIMAP_LEFT, 0.6, 0.6, 0.6)
+	tt:AddLine(waiting > 0 and L.MINIMAP_LEFT_GROUPS or L.MINIMAP_LEFT, 0.6, 0.6, 0.6)
 	tt:AddLine(L.MINIMAP_RIGHT, 0.6, 0.6, 0.6)
 	tt:AddLine(L.MINIMAP_DRAG, 0.6, 0.6, 0.6)
 end
