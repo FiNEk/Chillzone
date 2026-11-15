@@ -2472,3 +2472,43 @@ T.test("relay: молчащее реле репортёр исключает з�
 	w:Run(5 * 60)
 	T.ok(e.down ~= nil, "и не вернул молчащее за пять минут")
 end)
+
+-- Реле представляется (KP) и сразу шлёт RM, а сертификат у получателя проверяется не сразу:
+-- RM ждёт конца проверки (AUTH_PEER), а не выбрасывается. Иначе отчёт другой гильдии терялся
+-- до следующей публикации, а репортёру нечем было ответить на Q1 (на CI это зависело от seed).
+T.test("relay: RM от реле, чей сертификат ещё проверяется, ждёт проверки, а не выбрасывается", function()
+	local _, c = Build()
+	local R = c.V.ns.Census.Forwarding() and c.V or c.B
+	local ns = R.ns
+	T.ok(ns.Census.Forwarding(), "репортёр Севера принимает RM")
+	local rep = ns.Data.Cached()[1]
+	T.ok(rep ~= nil, "у него есть чужой отчёт")
+	local sender = c.A.first .. " " .. c.A.surname .. "-" .. c.A.realm
+	local cert = ns.Security.Member(ns.Config.MAIN_GUILD, sender)
+	T.ok(cert ~= nil, "сертификат реле ему известен")
+	local msg = ns.Codec.EncodeRM("RM", "L", rep.origin, rep.raw)
+	local trust, checking, open = ns.Relay.TrustOf, ns.Security.Checking, ns.Security.Open
+	local opened = 0
+	ns.Security.Open = function(inner, ...)
+		if inner == rep.raw then opened = opened + 1 end
+		return open(inner, ...)
+	end
+	local untrusted = ns.Relay.stats.untrusted
+	ns.Relay.TrustOf = function() return nil end
+	ns.Security.Checking = function() return true end
+	ns.Comm.Dispatch(msg, sender, "WHISPER")
+	T.eq(opened, 0, "пока сертификат проверяется — ждёт")
+	T.eq(ns.Relay.stats.untrusted, untrusted, "и не выброшено")
+	ns.Relay.TrustOf, ns.Security.Checking = trust, checking
+	ns.Fire("AUTH_PEER", cert, sender)
+	T.eq(opened, 1, "проверка закончилась — разобрано")
+	-- Без проверки в пути — как прежде: недоверенное реле.
+	ns.Relay.TrustOf = function() return nil end
+	ns.Comm.Dispatch(msg, sender, "WHISPER")
+	ns.Relay.TrustOf = trust
+	T.eq(ns.Relay.stats.untrusted, untrusted + 1, "выброшено")
+	T.eq(opened, 1)
+	ns.Fire("AUTH_PEER", cert, sender)
+	T.eq(opened, 1, "выброшенное не возвращается")
+	T.eq(#ns.db.errors, 0, "без ошибок")
+end)

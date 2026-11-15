@@ -280,7 +280,7 @@ function S.CheckCertificate(raw, owner, done, from)
     -- сертификаты не должны вытеснять мой (повторно его не выдадут до продления).
     local own = c.key == ns.myKey and identity ~= nil and c.public == identity.public
     if not Budget(own and "own" or "n:" .. Peer(from or owner or c.name), C.AUTH_NEW_PER_MIN) then return false end
-    checking[raw], inflight[c.fp] = { done }, true
+    checking[raw], inflight[c.fp] = { done, key = c.key }, true
     local accepted = Job(function() return VerifyCertificate(raw) end, function(valid)
         local callbacks = checking[raw] or {}
         checking[raw], inflight[c.fp] = nil, nil
@@ -290,6 +290,14 @@ function S.CheckCertificate(raw, owner, done, from)
     end)
     if not accepted then checking[raw], inflight[c.fp] = nil, nil end
     return accepted
+end
+-- Проверяется ли сейчас сертификат игрока name (KP пришёл, подпись ещё считается).
+function S.Checking(name)
+    local key = U.Key(name)
+    for _, waiters in pairs(checking) do
+        if waiters.key == key then return true end
+    end
+    return false
 end
 -- fn(c) — когда известен проверенный действующий сертификат с этим отпечатком: сразу или
 -- после того, как sender ответит на KQ. owner — чей это должен быть сертификат.
