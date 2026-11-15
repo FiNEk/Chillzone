@@ -28,9 +28,9 @@ local GRIP = 16 -- уголок растягивания
 local TABS_W = 40 -- столбец значков справа за окном: окно с ним не шире экрана
 -- Вкладки со своей раскладкой под размер вставки: Layout(ширина, высота, live). live — игрок ещё
 -- тянет уголок: раскладывается только открытая вкладка и только дешёвое, остальное — по отпусканию.
-local LAYOUTS = { "CensusPane", "GroupsPane", "CraftersPane", "RosterPane", "TransferPane", "UnionPane", "RecruitPane" }
+local LAYOUTS = { "CensusPane", "GroupsPane", "CraftersPane", "WishesPane", "RosterPane", "TransferPane", "UnionPane", "RecruitPane" }
 local PANE_OF = {
-	census = "CensusPane", groups = "GroupsPane", crafters = "CraftersPane", roster = "RosterPane",
+	census = "CensusPane", groups = "GroupsPane", crafters = "CraftersPane", wishes = "WishesPane", roster = "RosterPane",
 	transfer = "TransferPane", union = "UnionPane", join = "RecruitPane", requests = "RecruitPane",
 }
 -- Значок аддона: логотип «Chill Zone», обрезанный по золотому кольцу (media/icon.tga, 64×64 TGA
@@ -41,6 +41,7 @@ local TABS = {
 	{ key = "chat", text = "TAB_CHAT", icons = { "Interface\\Icons\\UI_Chat", "Interface\\Icons\\INV_Letter_15" } },
 	{ key = "groups", text = "TAB_GROUPS", icons = { "Interface\\Icons\\INV_Misc_GroupNeedMore", "Interface\\Icons\\Ability_Warrior_BattleShout" } },
 	{ key = "crafters", text = "TAB_CRAFTERS", icons = { "Interface\\Icons\\Trade_BlackSmithing", "Interface\\Icons\\INV_Hammer_20" } },
+	{ key = "wishes", text = "TAB_WISHES", icons = { "Interface\\Icons\\INV_Scroll_03", "Interface\\Icons\\INV_Misc_Note_01" } },
 	{ key = "census", text = "TAB_CENSUS", icons = { "Interface\\Icons\\achievement_guildperk_everybodysfriend", "Interface\\Icons\\INV_Misc_Book_09" } },
 	{ key = "requests", text = "TAB_REQUESTS", icons = { "Interface\\Icons\\INV_Letter_15" } },
 	{ key = "settings", text = "TAB_SETTINGS", icons = { "Interface\\Icons\\INV_Misc_Gear_01" }, service = true },
@@ -60,8 +61,8 @@ for _, def in ipairs(SECTIONS) do IS_SECTION[def.key], TITLES[def.key] = true, d
 for _, def in ipairs(TABS) do TITLES[def.key] = def.text end
 -- Без членства в объединении открываются только эти страницы, остальные заменяет экран вступления.
 local OPEN_TO_ALL = { settings = true, union = true, journal = true }
--- Между значками и перед служебной группой. Семь значков у главы и офицера: 36 + 7 * 32 + 5 * 14 + 30 =
--- 360 из 490 по высоте окна; при восьми значках и отступах 20 и 44 столбец уходил на 30 ниже нижнего края
+-- Между значками и перед служебной группой. Восемь значков у главы и офицера: 36 + 8 * 32 + 6 * 14 + 30 =
+-- 406 из 490 по высоте окна; при восьми значках и отступах 20 и 44 столбец уходил на 30 ниже нижнего края
 -- окна высотой 426.
 local TAB_GAP, SERVICE_GAP = 14, 30
 local SECTION_H = 26 -- высота кнопки раздела: строка названия вкладки над вставкой
@@ -676,6 +677,7 @@ function UI.Render()
 	if current ~= "requests" then ns.RecruitPane.HideInbox() end
 	if current ~= "groups" then ns.GroupsPane.Hide() end
 	if current ~= "crafters" then ns.CraftersPane.Hide() end
+	if current ~= "wishes" then ns.WishesPane.Hide() end
 	UI.RenderStatus()
 	if current == "join" then
 		heading:SetText(L.RECRUIT_TITLE)
@@ -747,6 +749,12 @@ function UI.Render()
 		scroll:Hide()
 		ns.CensusPane.Hide()
 		ns.CraftersPane.Show()
+		return
+	end
+	if current == "wishes" then
+		scroll:Hide()
+		ns.CensusPane.Hide()
+		ns.WishesPane.Show()
 		return
 	end
 	if current == "census" then
@@ -853,6 +861,11 @@ local function SideTab(def)
 		if def.key == "crafters" then
 			local count = ns.Crafters.Count()
 			tt:AddLine(count > 0 and L.TAB_CRAFTERS_COUNT:format(count) or L[def.text], 1, 1, 1)
+			return
+		end
+		if def.key == "wishes" then
+			local count = ns.Wishes.Count()
+			tt:AddLine(count > 0 and L.TAB_WISHES_COUNT:format(count) or L[def.text], 1, 1, 1)
 			return
 		end
 		local count = def.key == "requests" and #ns.Recruit.Requests() or 0
@@ -1151,6 +1164,7 @@ local function Create()
 	ns.CensusPane.Build(body)
 	ns.GroupsPane.Build(body)
 	ns.CraftersPane.Build(body)
+	ns.WishesPane.Build(body)
 	ns.UnionPane.Build(body)
 	ns.TransferPane.Build(body)
 	ns.RosterPane.Build(body)
@@ -1170,7 +1184,7 @@ local function Create()
 		-- Окно закрыли, пока игрок тянул уголок (Esc): размер всё равно сохраняется.
 		if sizing then ns.SafeCall("window size", StopSizing) end
 		ns.ChatPane.Hide(); ns.Recruit.Cancel(); ns.UnionPane.Hide(); ns.TransferPane.Hide(); ns.RosterPane.Hide()
-		ns.JournalPane.Hide(); ns.GroupsPane.Hide(); ns.CraftersPane.Hide()
+		ns.JournalPane.Hide(); ns.GroupsPane.Hide(); ns.CraftersPane.Hide(); ns.WishesPane.Hide()
 	end)
 	local elapsed, debugElapsed, activityElapsed, pulse = 0, 0, 0, 0
 	f:SetScript("OnUpdate", ns.Perf.Wrap("window update", function(_, dt)
@@ -1192,7 +1206,7 @@ local function Create()
 		elseif elapsed >= 30 then
 			elapsed, debugElapsed = 0, 0
 			if current == "census" or current == "join" or current == "requests" or current == "union"
-				or current == "groups" or current == "crafters" or current == "transfer" or current == "roster" then
+				or current == "groups" or current == "crafters" or current == "wishes" or current == "transfer" or current == "roster" then
 				UI.Render()
 			else UI.RenderStatus() end
 		end
@@ -1323,6 +1337,7 @@ end, L.HELP_MINIMAP)
 ns.Command("census", function() UI.Toggle("census") end, L.HELP_CENSUS)
 ns.Command("groups", function() UI.Toggle("groups") end, L.HELP_GROUPS)
 ns.Command("crafters", function() UI.Toggle("crafters") end, L.HELP_CRAFTERS)
+ns.Command("wishes", function() UI.Toggle("wishes") end, L.HELP_WISHES)
 ns.Command("requests", function()
 	if not ns.RecruitSync.IsOfficer() then
 		ns.Print(L.REQUESTS_ONLY_OFFICERS)

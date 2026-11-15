@@ -1389,3 +1389,180 @@ function Views.CraftMine()
 		or L.CRAFT_NOT_POSTED
 	return { profs = profs, hint = hint, status = status, posted = posted }
 end
+
+---------------------------------------------------------------------------
+-- Желания (WishesPane.lua рисует, Wishes.lua хранит)
+---------------------------------------------------------------------------
+-- Почему не получилось сохранить свой список.
+function Views.WishWhy(why, arg)
+	if why == "nocert" then return ns.Security.NotReadyReason() end
+	if why == "wait" and arg then return L.WISH_WHY_WAIT:format(arg) end
+	return rawget(L, "WISH_WHY_" .. tostring(why):upper()) or L.WISH_WHY_FAILED
+end
+
+-- Название предмета или «Предмет №…», пока игра его догружает.
+function Views.WishItemName(id)
+	return ns.Wishes.ItemName(id) or L.WISH_ITEM_LOADING:format(id)
+end
+
+-- Ключ названия предмета для сортировки и поиска: на сессию, названия предметов не меняются.
+local wishKeys = {}
+local function WishKey(id, name)
+	local k = wishKeys[id]
+	if not k then
+		k = SearchKey(name)
+		wishKeys[id] = k
+	end
+	return k
+end
+
+-- Присутствие автора списка: считается один раз на сборку, а не на каждый его предмет.
+local function WishPresence(card, memo)
+	local p = memo[card]
+	if not p then
+		p = card.own and "own" or ns.Crafters.Presence(card)
+		memo[card] = p
+	end
+	return p
+end
+
+-- Кто хочет предмет, по присутствию: { card, presence, rank }, сначала свой, затем в игре.
+local function Wishers(id, memo)
+	local out = {}
+	for i, card in ipairs(ns.Wishes.Who(id)) do
+		local presence = WishPresence(card, memo)
+		out[i] = { card = card, presence = presence, rank = CRAFT_RANK[presence] or 3 }
+	end
+	table.sort(out, function(a, b)
+		if a.rank ~= b.rank then return a.rank < b.rank end
+		return a.card.name < b.card.name
+	end)
+	return out
+end
+
+local function WishPerson(w)
+	local card = w.card
+	return Views.CraftDot(w.presence) .. " " .. Views.Name(card.name, card.class) .. " " .. GREY .. Codec.Plain(card.guild) .. "|r"
+end
+
+-- Строки вкладки: по предмету на строку — { id, name, known, count, mine }. Имена под названием
+-- (Views.WishSub) панель собирает только для видимых строк. query — поиск по
+-- названию предмета, имени или гильдии (Views.CraftWords: от трёх знаков). Второе значение —
+-- сколько предметов всего, третье — сколько строк не показано (WISH_ROWS). Значок и подсказку
+-- строки панель берёт сама и только для видимых строк.
+function Views.WishRows(query)
+	local words = Views.CraftWords(query)
+	local index, order = ns.Wishes.Index()
+	local own = ns.Wishes.Own()
+	local mine = {}
+	for _, id in ipairs(own and own.items or {}) do mine[id] = true end
+	local people = {} -- ключ поиска автора — по разу на автора
+	local out = {}
+	for _, id in ipairs(order) do
+		local cards = index[id]
+		local name = ns.Wishes.ItemName(id)
+		local fit = true
+		if words then
+			local text = name and WishKey(id, name) or ""
+			for _, card in ipairs(cards) do
+				local key = people[card]
+				if not key then
+					key = SearchKey(card.name .. card.guild)
+					people[card] = key
+				end
+				text = text .. key
+			end
+			fit = Fits(text, words)
+		end
+		if fit then
+			local label = name or L.WISH_ITEM_LOADING:format(id)
+			out[#out + 1] = {
+				id = id, name = label, known = name ~= nil, count = #cards, mine = mine[id] == true,
+				sort = name and WishKey(id, name) or "",
+			}
+		end
+	end
+	table.sort(out, function(a, b)
+		if a.known ~= b.known then return a.known end
+		if a.count ~= b.count then return a.count > b.count end
+		return a.sort < b.sort
+	end)
+	local hidden = math.max(0, #out - C.WISH_ROWS)
+	for i = #out, C.WISH_ROWS + 1, -1 do out[i] = nil end
+	return out, #order, hidden
+end
+
+-- Под названием предмета — до трёх имён: свой, затем в игре. Полный порядок — в карточке предмета.
+function Views.WishSub(id)
+	local best = Wishers(id, {})
+	local shown = {}
+	for i = 1, math.min(#best, 3) do
+		local card = best[i].card
+		shown[i] = Views.CraftDot(best[i].presence) .. " " .. Views.Name(card.name, card.class)
+	end
+	local sub = table.concat(shown, "  ")
+	if #best > 3 then sub = sub .. "  " .. GREY .. L.WISH_TIP_MORE:format(#best - 3) .. "|r" end
+	return sub
+end
+
+-- Гильдии авторов списков, где нужен предмет: для запроса онлайна (Online.Want).
+function Views.WishGuilds(id)
+	local seen, out = {}, {}
+	for _, card in ipairs(ns.Wishes.Who(id)) do
+		local gk = not card.own and U.GuildKey(card.guild)
+		if gk and not seen[gk] then
+			seen[gk] = true
+			out[#out + 1] = card.guild
+		end
+	end
+	return out
+end
+
+-- Карточка предмета для правой панели: { id, name, people = { { text, name, person, own, whisper, right, tip } } }.
+function Views.WishItem(id)
+	local people = {}
+	for _, w in ipairs(Wishers(id, {})) do
+		local card = w.card
+		local state = not card.own and CRAFT_TIP[w.presence]
+		people[#people + 1] = {
+			text = WishPerson(w), name = card.name, own = card.own,
+			right = card.own and (GOLD .. L.CRAFT_YOU .. "|r") or (GREY .. Views.Ago(ns.ServerTime() - card.at) .. "|r"),
+			whisper = not card.own and (w.presence == "online" or w.presence == "recent"),
+			person = not card.own and { name = card.name, class = card.class, guild = card.guild, online = w.presence == "online" } or nil,
+			tip = function(tt)
+				tt:AddLine(Views.Name(card.name, card.class))
+				if state then tt:AddLine(L[state[1]], state[2], state[3], state[4]) end
+				local who = Codec.Plain(card.guild)
+				if card.level and card.level > 0 then who = who .. ", " .. L.TIP_LEVEL:format(card.level) end
+				if card.class and L.CLASS[card.class] then who = who .. ", " .. L.CLASS[card.class] end
+				tt:AddLine(who, 0.8, 0.8, 0.8)
+				tt:AddLine(L.WISH_TIP_LIST:format(#card.items), 1, 1, 1)
+				if not card.own then
+					tt:AddLine(L.CRAFT_TIP_AGE:format(Views.Ago(ns.ServerTime() - card.at)), 0.6, 0.6, 0.6)
+					tt:AddLine(L.TIP_MENU, 0.5, 0.83, 0.76)
+				end
+			end,
+		}
+	end
+	return { id = id, name = Views.WishItemName(id), icon = ns.Crafters.ItemIcon(id), people = people }
+end
+
+-- Своя панель: состояние списка. Правка размещённого списка уходит таймером: сказано, когда.
+function Views.WishMine()
+	local Wishes = ns.Wishes
+	local status
+	if Wishes.Posted() then
+		local n = #Wishes.Items()
+		local count = n .. " " .. U.Plural(n, L.WISH_ITEMS_1, L.WISH_ITEMS_2, L.WISH_ITEMS_5)
+		if Wishes.Dirty() then
+			local wait = Wishes.UpdateWait()
+			local when = wait > 60 and L.WISH_IN_MIN:format(math.ceil(wait / 60)) or L.WISH_SOON
+			status = ORANGE .. L.WISH_CHANGED:format(count, when) .. "|r"
+		else
+			status = GREEN .. L.WISH_POSTED:format(count) .. "|r"
+		end
+	else
+		status = L.WISH_NOT_POSTED
+	end
+	return { status = status, posted = Wishes.Posted() }
+end
