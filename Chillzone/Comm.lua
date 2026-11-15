@@ -74,7 +74,8 @@ Lane("WHISPER")
 local unavailable = {} -- [Key] = до какого времени не шептать недоступному адресату
 local MarkUnavailable -- вызывается и по результату отправки, и по системной строке
 local WHISPER_FRESH = 10 -- системная ошибка относится только к недавней отправке аддона
-Comm.stats = { sent = 0, recv = 0, fails = 0, retried = 0, dropped = 0, queued = 0 }
+-- guildHeard — кусков GUILD от согильдийцев, услышанных до проверки ростера.
+Comm.stats = { sent = 0, recv = 0, fails = 0, retried = 0, dropped = 0, queued = 0, guildHeard = 0 }
 Comm.lastWhisper = {} -- [Key] = когда шептали (для системного «нет такого игрока»)
 
 -- Типы, текст которых никогда не содержит "|": чистятся целиком до разбора.
@@ -525,6 +526,28 @@ function Comm.Inject(inner, origin, ctx)
 	Comm.Dispatch(inner, origin, "RELAY", ctx)
 end
 
+-- Отброшенное по GUILD — в журнал: отправителя нет в ростере или свой ростер не свежий. Так видно,
+-- на чьей стороне теряются сообщения вступившего посреди сессии: в игре сертификат ему приходил
+-- только после перезахода (журнал 2026-11-15). Запись — раз в DROP_TELL на отправителя, а без
+-- свежего ростера — раз на всех. Обычное не пишется: ростер этой гильдии ещё не прочитан (вход,
+-- вступление — это видно в сводке Security) или вступивший заговорил раньше, чем ростер
+-- перечитан после строки о вступлении.
+local DROP_TELL = 600
+local dropTold = {}
+local function Dropped(sender, key)
+	local R, now = ns.Roster, ns.Now()
+	local fresh = R.Fresh()
+	if (not fresh and R.guild ~= ns.MyGuild()) or (fresh and R.Joining(key)) then return end
+	local slot = fresh and (key or sender) or ""
+	if dropTold[slot] and now - dropTold[slot] < DROP_TELL then return end
+	dropTold[slot] = now
+	if fresh then
+		ns.Log("GUILD от %s отброшен: его нет в ростере своей гильдии", sender)
+	else
+		ns.Log("GUILD от %s отброшен: ростер своей гильдии не свежий", sender)
+	end
+end
+
 local function OnAddon(prefix, msg, dist, sender)
 	local control = ns.Config.UNION_PREFIX and prefix == ns.Config.UNION_PREFIX
 	if (prefix ~= ns.PREFIX and not control) or not ns.me or type(msg) ~= "string" or type(sender) ~= "string" then return end
@@ -535,7 +558,13 @@ local function OnAddon(prefix, msg, dist, sender)
 	if ns.IsMe(sender) then return end
 	local senderKey = U.Key(sender)
 	Net.Heard(dist, senderKey, sender)
-	if dist == "GUILD" and (not ns.Roster.Fresh() or ns.Roster.RankOf(sender) == nil) then return end
+	if dist == "GUILD" then
+		Comm.stats.guildHeard = Comm.stats.guildHeard + 1
+		if not ns.Roster.Fresh() or ns.Roster.RankOf(sender) == nil then
+			Dropped(sender, senderKey)
+			return
+		end
+	end
 	if senderKey then unavailable[senderKey] = nil end
 	local started, chunks = ns.Now(), 1
 	if msg:byte(1) == 67 then -- "C": кусок
@@ -575,6 +604,9 @@ ns.On("LOGIN", function()
 		end
 		for key, untilAt in pairs(unavailable) do
 			if now >= untilAt then unavailable[key] = nil end
+		end
+		for key, at in pairs(dropTold) do
+			if now - at >= DROP_TELL then dropTold[key] = nil end
 		end
 		for _, a in pairs(assemblers) do Codec.Gc(a, now) end
 	end)

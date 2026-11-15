@@ -1047,3 +1047,89 @@ T.test("security: повторные объявления корней не об
     T.ok(worst <= 6, "строка ждёт не дольше нескольких секунд: " .. worst)
     for _, cl in ipairs({ V, M }) do T.eq(#cl.ns.db.errors, 0, cl:Name() .. ": без ошибок") end
 end)
+
+-- Вступление посреди сессии: в игре сертификат вступившему приходил только после перезахода.
+-- Журнал обеих сторон должен показать, где застряло. Здесь — ростер выдавшего без вступившего.
+local function JoinWorld()
+    local w = Wow.World()
+    w:Guild("Чиллзон")
+    local K = w:Client({ first = "Глава", surname = "Гильдии", guild = "Чиллзон", rank = 0 })
+    local R = w:Client({ first = "Корень", surname = "Доверия", guild = "Чиллзон", rank = 1 })
+    w:Run(30)
+    w:Init(R)
+    w:Run(120)
+    local N = w:Client({ first = "Новый", surname = "Рядовой" })
+    w:Run(40)
+    return w, K, R, N
+end
+-- Сколько строк журнала клиента c содержат text; второе значение — первая из них.
+local function Lines(c, text)
+    local n, first = 0, nil
+    for _, line in ipairs(c.ns.db.log) do
+        if line:find(text, 1, true) then n, first = n + 1, first or line end
+    end
+    return n, first
+end
+
+T.test("security: join log - issuer roster without the newcomer", function()
+    local w, K, R, N = JoinWorld()
+    R.rosterHide = { [N:Name()] = true }
+    w:Join("Чиллзон", N)
+    w:Run(320)
+    T.no(N.ns.Security.MyCertificate(), "без строки в ростере выдавшего сертификата нет")
+    T.eq(Lines(R, "GUILD от " .. N:Name()), 1, "выдавший отбросил K1 вступившего, строка одна на 10 минут")
+    T.eq(Lines(R, "отброшен: его нет в ростере своей гильдии"), 1)
+    T.eq(Lines(R, "вступившего " .. N:Name() .. " нет в ростере через"), 1, "вступившего нет в ростере")
+    T.eq(Lines(K, "отброшен"), 0, "у главы вступивший в ростере")
+    local summary
+    for _, line in ipairs(N.ns.db.log) do
+        if line:find("после вступления в Чиллзон нет своего сертификата", 1, true) then summary = line end
+    end
+    T.ok(summary, "вступивший пишет сводку")
+    T.ok(summary:find("Ростер свежий", 1, true) and summary:find("я в нём со званием", 1, true), summary)
+    T.ok(summary:find("Ключ готов", 1, true) and not summary:find("K1 ушло 0", 1, true), summary)
+    T.ok(summary:find("приходил 0 раз", 1, true), summary)
+    T.eq(Lines(N, "нет своего сертификата"), 2, "сводки через 90 и через 300 секунд")
+    -- Сервер показал вступившего: следующее чтение ростера и K1 — и сертификат выдан без перезахода.
+    R.rosterHide = nil
+    w:Run(150)
+    T.ok(N.ns.Security.MyCertificate(), "сертификат после строки в ростере")
+    T.eq(Lines(N, "свой сертификат в гильдии Чиллзон пришёл через"), 1, "и сводка о том, когда пришёл")
+    for _, c in ipairs({ K, R, N }) do T.eq(#c.ns.db.errors, 0, c:Name() .. ": без ошибок") end
+end)
+
+T.test("security: join log - ordinary join and login stay silent", function()
+    local w, K, R, N = JoinWorld()
+    R.ns.db.settings.debug = true
+    w:Join("Чиллзон", N)
+    -- Плановый привет вступившего может уйти раньше, чем остальные перечитают ростер после строки
+    -- о вступлении: такой отброшенный GUILD — не ошибка, и в журнал он не пишется.
+    T.eq(K.ns.Roster.RankOf(N:Name()), nil, "ростер главы ещё не перечитан")
+    N.ns.Census.SendHello()
+    w:Run(300)
+    T.ok(N.ns.Security.MyCertificate(), "сертификат выдан")
+    T.eq(Lines(R, "вступивший " .. N:Name() .. " есть в ростере через"), 1, "с записью отладки — когда вступивший в ростере")
+    for _, c in ipairs({ K, R, N }) do
+        local dropped, line = Lines(c, "отброшен")
+        T.eq(dropped, 0, c:Name() .. ": ничего не отброшено: " .. tostring(line))
+        T.eq(Lines(c, "нет своего сертификата"), 0, c:Name() .. ": сводки нет")
+        T.eq(Lines(c, "свой сертификат в гильдии"), 0, c:Name() .. ": сертификат пришёл до сводки")
+        T.eq(#c.ns.db.errors, 0, c:Name() .. ": без ошибок")
+    end
+end)
+
+T.test("security: join log - newcomer names why its certificate was refused", function()
+    local w, K, R, N = JoinWorld()
+    N.rosterHide = { [N:Name()] = true }
+    w:Join("Чиллзон", N)
+    w:Run(120)
+    T.no(N.ns.Security.MyCertificate(), "своей строки в ростере нет — сертификат не принят")
+    local summary
+    for _, line in ipairs(N.ns.db.log) do
+        if line:find("нет своего сертификата", 1, true) then summary = line end
+    end
+    T.ok(summary and summary:find("я в нём не найден", 1, true), tostring(summary))
+    T.ok(summary:find("отброшен %d+: меня нет в своём ростере"), summary)
+    T.no(summary:find("приходил 0 раз", 1, true), summary)
+    for _, c in ipairs({ K, R, N }) do T.eq(#c.ns.db.errors, 0, c:Name() .. ": без ошибок") end
+end)

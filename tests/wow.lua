@@ -728,12 +728,13 @@ local function Env(c)
 	end
 	-- Строки ростера. c.hideOffline — в окне гильдии снят «Показать всех»: игра отдаёт только
 	-- тех, кто в игре, а GetNumGuildMembers по-прежнему считает всех. all — все строки.
+	-- c.rosterHide — { ["Имя Фамилия"] = true }: сервер ещё не показал этому клиенту вступивших.
 	local function Rows(all)
 		local g = c.guild and w.guilds[c.guild]
 		local rows = {}
 		if not g then return rows end
 		for _, o in ipairs(w.clients) do
-			if o.guild == c.guild then
+			if o.guild == c.guild and not (c.rosterHide and c.rosterHide[o:Name()]) then
 				rows[#rows + 1] = { full = Stamp(o), rank = o.rank, level = o.level, class = o.class, online = o.online, zone = o.zone, days = 0 }
 			end
 		end

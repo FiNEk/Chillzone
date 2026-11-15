@@ -36,6 +36,11 @@ local relayHaves = {} -- (я реле) [Key пингующего] = { at, set }:
 local haveSent = {} -- [Key реле] = { wire, at }: моя сверка этому реле (S.SayHave)
 local unionQueryAt, unionQueryDelay = -1e9, 0
 local MAX_CERT, MAX_WIRE, MAX_PENDING, FP_LEN = 1800, 7000, 32, 16
+-- Ожидание своего сертификата после вступления или входа (журнал, JoinWatch): в игре вступивший
+-- посреди сессии получал его только после перезахода, а в симуляторе — сразу (журнал 2026-11-15).
+-- { guild, at, joined, step, k1, kp, refused, why, heard }
+local JOIN_REPORT = { 90, 300 }
+local joinState, joinGuild
 
 local function Store()
     return ns.store and ns.store.security
@@ -266,10 +271,38 @@ local function Keep(c)
     end
     if old ~= c.raw then ns.Fire("AUTH_CHANGED", c.guild) end
 end
+-- Почему мой сертификат c не действует сейчас (журнал вступления, JoinWatch).
+local function Refusal(c)
+    local root, now = Root(c.guild), ns.ServerTime()
+    if not root then return "нет корня гильдии" end
+    if identity and c.public ~= identity.public then return "выдан на прежний ключ" end
+    if c.expires <= now then return "истёк" end
+    if c.issued > now + 30 then return ("выдан на %d с позже моих часов"):format(c.issued - now) end
+    if c.approvedRoot and c.approvedRoot ~= root.public then return "проверен против другого корня" end
+    if U.GuildKey(c.guild) == GuildKey() and ns.Roster.Fresh() then
+        local role, rank = NativeRole(c.name)
+        if rank == nil then return "меня нет в своём ростере" end
+        if role ~= c.role or rank ~= c.rank then
+            return ("в ростере %s %d, в сертификате %s %d"):format(role, rank, c.role, c.rank)
+        end
+    end
+    return "допуск выдавшего или подпись"
+end
+-- Мой сертификат пришёл (why nil) или отброшен по причине why: до получения своего — в JoinWatch.
+local function NoteOwn(c, why)
+    if not joinState or not c or c.key ~= ns.myKey then return end
+    if why then
+        joinState.refused, joinState.why = joinState.refused + 1, why
+    else
+        joinState.kp = joinState.kp + 1
+    end
+end
 -- owner — чей это должен быть сертификат; from — кто его прислал (с него и лимит проверок).
 function S.CheckCertificate(raw, owner, done, from)
     local c = Certificate(raw)
-    if not c or not Current(c) or (owner and c.key ~= U.Key(owner)) then return false end
+    NoteOwn(c)
+    if not c or (owner and c.key ~= U.Key(owner)) then return false end
+    if not Current(c) then NoteOwn(c, Refusal(c)); return false end
     if c.approvedRoot == Root(c.guild).public then Keep(c); done(c); return true end
     local waiters = checking[raw]
     if waiters then
@@ -277,20 +310,34 @@ function S.CheckCertificate(raw, owner, done, from)
         return true
     end
     local count = 0; for _ in pairs(checking) do count = count + 1 end
-    if count >= MAX_PENDING then S.stats.limited = S.stats.limited + 1; return false end
+    if count >= MAX_PENDING then
+        S.stats.limited = S.stats.limited + 1
+        NoteOwn(c, "очередь проверок полна")
+        return false
+    end
     -- Свой сертификат — отдельно: при первой выдаче все KP идут от одного офицера, и чужие
     -- сертификаты не должны вытеснять мой (повторно его не выдадут до продления).
     local own = c.key == ns.myKey and identity ~= nil and c.public == identity.public
-    if not Budget(own and "own" or "n:" .. Peer(from or owner or c.name), C.AUTH_NEW_PER_MIN) then return false end
+    if not Budget(own and "own" or "n:" .. Peer(from or owner or c.name), C.AUTH_NEW_PER_MIN) then
+        NoteOwn(c, "лимит проверок")
+        return false
+    end
     checking[raw], inflight[c.fp] = { done, key = c.key }, true
     local accepted = Job(function() return VerifyCertificate(raw) end, function(valid)
         local callbacks = checking[raw] or {}
         checking[raw], inflight[c.fp] = nil, nil
-        if not valid or not Current(valid) then S.stats.rejected = S.stats.rejected + 1; return end
+        if not valid or not Current(valid) then
+            S.stats.rejected = S.stats.rejected + 1
+            NoteOwn(c, Current(c) and "допуск выдавшего или подпись" or Refusal(c))
+            return
+        end
         Keep(valid)
         for _, fn in ipairs(callbacks) do fn(valid) end
     end)
-    if not accepted then checking[raw], inflight[c.fp] = nil, nil end
+    if not accepted then
+        checking[raw], inflight[c.fp] = nil, nil
+        NoteOwn(c, "очередь подписей полна")
+    end
     return accepted
 end
 -- Проверяется ли сейчас сертификат игрока name (KP пришёл, подпись ещё считается).
@@ -543,6 +590,7 @@ function S.Say()
     elseif not needUnion then unionQueryAt, unionQueryDelay = -1e9, 0 end
     ns.Comm.Send("GUILD", "K1~" .. identity.public .. (mine and "" or "~0"),
         { prio = ns.Comm.PRIO_BOOTSTRAP, key = "identity" })
+    if joinState then joinState.k1 = joinState.k1 + 1 end
     if mine and (not lastSaid or lastSaid.raw ~= mine.raw or lastHello - lastSaid.at >= C.AUTH_ANNOUNCE) then
         lastSaid = { raw = mine.raw, at = lastHello }
         ns.Comm.Send("GUILD", "KP~" .. Ed.ToB64(mine.raw), { key = "my-credential" })
@@ -1594,8 +1642,51 @@ local function Sweep(restore)
             or (type(p.revision) ~= "number" and (not p.legacy or s.governed)) then s.policies[gk] = nil end
     end
 end
+-- Своего сертификата нет через JOIN_REPORT секунд после вступления или входа, а корень гильдии
+-- известен — строка в журнал: на чьей стороне застряло. Свежий ли мой ростер и есть ли я в нём
+-- (без этого мои K1 не уходят, а чужие KP я отбрасываю), сколько ушло K1, слышу ли я гильдию,
+-- приходил ли мой сертификат и почему отброшен. Строка от выдавшего — в Comm и Roster.
+local function JoinWatch()
+    local guild, rank = ns.MyGuild()
+    local now = ns.Now()
+    if guild ~= joinGuild then
+        joinGuild = guild
+        joinState = guild and { guild = guild, at = now, joined = now - (ns.loginAt or now) > 30, step = 1,
+            k1 = 0, kp = 0, refused = 0, heard = ns.Comm.stats.guildHeard } or nil
+    end
+    local w = joinState
+    if not w then return end
+    if S.MyCertificate() then
+        joinState = nil
+        if w.step > 1 then
+            ns.Log("свой сертификат в гильдии %s пришёл через %d с после %s", w.guild, math.floor(now - w.at),
+                w.joined and "вступления" or "входа")
+        end
+        return
+    end
+    local due = JOIN_REPORT[w.step]
+    if not due or now - w.at < due or not Root(guild) then return end
+    w.step = w.step + 1
+    local R = ns.Roster
+    local roster
+    if R.Fresh() then
+        local mine = R.RankOf(ns.me)
+        roster = ("свежий, прочитан %d с назад, строк %d%s, я в нём %s (игра — %s)"):format(math.floor(now - R.scannedAt),
+            #R.members, R.complete and "" or " не целиком", mine and "со званием " .. mine or "не найден",
+            tostring(rank))
+    elseif R.scannedAt then
+        roster = ("не свежий: прочитан %d с назад, гильдия %s"):format(math.floor(now - R.scannedAt), tostring(R.guild))
+    else
+        roster = "не прочитан"
+    end
+    ns.Log("%d с после %s в %s нет своего сертификата. Ростер %s. Ключ %s, K1 ушло %d, кусков GUILD услышано %d. "
+        .. "Свой сертификат приходил %d раз, отброшен %d%s", math.floor(now - w.at), w.joined and "вступления" or "входа",
+        w.guild, roster, identity and "готов" or "не готов", w.k1, ns.Comm.stats.guildHeard - w.heard, w.kp,
+        w.refused, w.why and ": " .. w.why or "")
+end
 local function Tick()
     TickLinks()
+    JoinWatch()
     if not identity or not ns.MyGuild() or not ns.Roster.Fresh() then return end
     local now = ns.Now()
     -- Плановое объявление корней: запрос в окно каталога. Одна копия корня на всех офицеров не
