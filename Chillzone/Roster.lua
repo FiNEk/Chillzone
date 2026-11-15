@@ -18,6 +18,18 @@ Roster.guild = nil
 
 local MIN_GAP = 20
 local lastScan, pending = 0, false
+-- Вступившие по системной строке гильдии: [Key] = { name, at, scans }. Есть ли они в следующих
+-- чтениях ростера — в журнал (JOIN_SCANS чтений). Без строки ростера их сообщения GUILD никто не
+-- принимает (Comm), а сертификат им не выдают.
+local JOIN_SCANS = 3
+local joinWatch = {}
+
+-- Игрок вступил по системной строке, а ростер после неё ещё не читался: его GUILD отброшен
+-- не из-за ошибки (Comm не пишет это в журнал).
+function Roster.Joining(key)
+	local w = key and joinWatch[key]
+	return w ~= nil and w.scans == 0
+end
 
 local function RequestServerRoster()
 	if C_GuildInfo and C_GuildInfo.GuildRoster then
@@ -217,6 +229,21 @@ function Roster.Scan()
 	-- отсутствие имени ничего не доказывает (Transfer.lua: исключение не считается сделанным).
 	Roster.complete = #rows == numTotal
 	Roster.scannedAt = ns.Now()
+	for key, w in pairs(joinWatch) do
+		w.scans = w.scans + 1
+		local after = math.floor(Roster.scannedAt - w.at)
+		if byKey[key] ~= nil then
+			joinWatch[key] = nil
+			if ns.Diagnostics.Enabled() then
+				ns.Log("вступивший %s есть в ростере через %d с: звание %d%s", w.name, after, byKey[key],
+					rankKnown[key] and "" or ", игра его не сказала")
+			end
+		elseif w.scans >= JOIN_SCANS then
+			joinWatch[key] = nil
+			ns.Log("вступившего %s нет в ростере через %d с, чтений %d, строк %d из %d", w.name, after, w.scans,
+				#rows, numTotal)
+		end
+	end
 	local r = Roster.Build(guild, rows, numOnline, ns.faction, ns.ServerTime())
 	if ns.Census then r.users = ns.Census.Users() end
 	Roster.report = r
@@ -355,6 +382,12 @@ ns.RegisterEvent("CHAT_MSG_SYSTEM", function(text)
 	if not ns.MyGuild() then return end
 	local what, name = Roster.GuildEvent(text)
 	if not what then return end
+	local key = U.Key(name)
+	if what == "joined" and key then
+		joinWatch[key] = { name = name, at = ns.Now(), scans = 0 }
+	elseif key then
+		joinWatch[key] = nil
+	end
 	ns.Fire("GUILD_MEMBER", what, name)
 	Roster.RequestScan(true)
 end)
