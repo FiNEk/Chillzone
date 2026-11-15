@@ -30,6 +30,8 @@ local pendingPolicies = {}
 local lastLegacyProbe = -1e9
 local probeSince -- с каких пор у меня сертификат и главный корень, а членства нет (Tick)
 local unionQueries = {}
+local haves = {} -- [Key] = { at, set }: хэши записей каталога, названные согильдийцем перед UQ (UH)
+local HaveWire -- хэши своих записей каталога для сверки (ниже, у Security.Catalog)
 local unionQueryAt, unionQueryDelay = -1e9, 0
 local MAX_CERT, MAX_WIRE, MAX_PENDING, FP_LEN = 1800, 7000, 32, 16
 
@@ -518,7 +520,14 @@ function S.Say()
     -- K1 понимает и 0.8; новый запрос состава идёт отдельно, чтобы старый издатель не потерял ключ.
     -- UQ раньше K1: приоритетный каталог не должен прерывать уже начатую выдачу KP.
     if needUnion and lastHello >= unionQueryAt then
-        ns.Comm.Send("GUILD", "UQ~1", { prio = unionQueryDelay == 0 and ns.Comm.PRIO_BOOTSTRAP or true, key = "union-query" })
+        local prio = unionQueryDelay == 0 and ns.Comm.PRIO_BOOTSTRAP or true
+        -- Сверка раньше UQ (before): после /reload записи у меня есть, и каталог не нужен заново.
+        -- Прежние версии UH не знают и шлют весь каталог.
+        local have = HaveWire()
+        if have ~= "" then
+            ns.Comm.Send("GUILD", "UH~" .. have, { prio = prio, key = "union-have", before = "union-query" })
+        end
+        ns.Comm.Send("GUILD", "UQ~1", { prio = prio, key = "union-query" })
         unionQueryDelay = math.min(3600, math.max(60, unionQueryDelay * 2))
         unionQueryAt = lastHello + unionQueryDelay
     elseif not needUnion then unionQueryAt, unionQueryDelay = -1e9, 0 end
@@ -571,10 +580,11 @@ local function PolicyCurrent(p)
 end
 -- Каталог доверия своей гильдии: корни своей гильдии и объединения, владелец объединения,
 -- действующие решения главы, допуски издателей и отзывы. Рассылает его TrustCatalog.lua —
--- один раз на всех офицеров, а не по копии от каждого. Записи — TrustCatalog.Record.
-function S.Catalog()
+-- один раз на всех офицеров, а не по копии от каждого. Записи — TrustCatalog.Record. Те же
+-- записи есть и у рядового: их хэши он называет при входе (UH).
+local function Records()
     local list, TC = {}, ns.TrustCatalog
-    if not S.CanAdmin() or not Store() then return list end
+    if not Store() then return list end
     for gk, root in pairs(S.Roots()) do
         if LocalOrMember(root.guild) then
             list[#list + 1] = TC.Record("KT", "KT:" .. gk, "KT~" .. root.guild .. "~" .. root.name .. "~" .. root.public,
@@ -589,6 +599,27 @@ function S.Catalog()
         end
     end
     return list
+end
+function S.Catalog()
+    return S.CanAdmin() and Records() or {}
+end
+-- Сверка перед UQ: хэши записей каталога, которые у меня уже есть, — офицеры пришлют только
+-- недостающие. Сначала корни и владелец: без них недостающим считается и всё, что на них
+-- опирается. Пустая строка — записей нет, сверять нечего.
+HaveWire = function()
+    local list = Records()
+    table.sort(list, function(a, b)
+        if a.tier ~= b.tier then return a.tier < b.tier end
+        return a.slot < b.slot
+    end)
+    local out = {}
+    for i = 1, math.min(#list, C.TRUST_HAVE_MAX) do out[i] = ns.TrustCatalog.Digest(list[i]) end
+    return table.concat(out)
+end
+-- Что назвал согильдиец key своей сверкой (UH): действует, пока его вход ещё отвечается.
+local function Have(key)
+    local h = key and haves[key]
+    return h and ns.Now() - h.at < 2 * C.TRUST_SHARE_WINDOW and h.set or nil
 end
 -- Офицеры, которые делят рассылку каталога: объявили ключ (K1) за PEER_WINDOW, не вышли из
 -- игры по ростеру, и я сам. У всех клиентов список примерно один и тот же.
@@ -613,7 +644,7 @@ function S.ShareTrust(bootstrap, asker, urgent)
     if urgent then
         ns.TrustCatalog.Urgent(asker)
     else
-        ns.TrustCatalog.Request(asker, false, bootstrap)
+        ns.TrustCatalog.Request(asker, false, bootstrap, nil, Have(asker))
     end
     return true
 end
@@ -1206,6 +1237,16 @@ local function NativeTrustReply(union, bootstrap, key, fresh)
         ns.TrustCatalog.Request(key, true, nil, fresh)
     end
 end
+-- Сверка вошедшего перед UQ: хэши записей каталога, которые у него есть (TrustCatalog.Digest).
+-- Его UQ и первый K1 тогда просят только недостающие записи.
+ns.Comm.On("UH", function(msg, sender, dist)
+    if dist ~= "GUILD" or not S.CanAdmin() or not NativeRole(sender) then return end
+    local list, size = msg:match("^UH~([%w_-]+)$"), ns.TrustCatalog.DIGEST
+    if not list or #list % size ~= 0 or #list > C.TRUST_HAVE_MAX * size then return end
+    local set = {}
+    for i = 1, #list, size do set[list:sub(i, i + size - 1)] = true end
+    haves[U.Key(sender)] = { at = ns.Now(), set = set }
+end)
 ns.Comm.On("UQ", function(msg, sender, dist, ctx)
     if msg == "UQ~1" and dist == "GUILD" and ctx and ctx.unionControl and NativeRole(sender) then
         local key = U.Key(sender)
@@ -1557,12 +1598,13 @@ ns.On("LOGIN", function()
             if not next(list) then policySent[key] = nil end
         end
         for key, t in pairs(unionQueries) do if clock - t >= 3600 then unionQueries[key] = nil end end
+        for key, h in pairs(haves) do if clock - h.at >= 2 * C.TRUST_SHARE_WINDOW then haves[key] = nil end end
     end)
 end)
 ns.On("GUILD_CHANGED", function()
     keys, issuing, pending, outgoing, hints = {}, {}, {}, {}, {}
     acceptedLinks = {}
-    unionQueries, unionQueryAt, unionQueryDelay = {}, -1e9, 0
+    unionQueries, unionQueryAt, unionQueryDelay, haves = {}, -1e9, 0, {}
     lastHello, lastPolicy, lastSaid = -1e9, -1e9, nil
     S.Say()
 end)
