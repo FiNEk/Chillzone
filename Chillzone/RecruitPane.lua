@@ -7,6 +7,7 @@ local Pane = { frames = {}, requestRows = {}, guildRows = {} }
 ns.RecruitPane = Pane
 local guildRows, replyRows = Pane.guildRows, {}
 local pane, child, intro, note, inbox, inboxChild, inboxHint, inboxEmpty, inboxBox
+local wide = 0 -- насколько вставка шире исходной: столько же получают строки и тексты (Pane.Layout)
 
 local function Label(parent, x, y, width, font)
 	local f = parent:CreateFontString(nil, "OVERLAY", font or "GameFontHighlightSmall")
@@ -93,9 +94,9 @@ function Pane.Render()
 		local row = guildRows[i]
 		if not row then
 			row = CreateFrame("Frame", nil, child)
-			row:SetSize(730, 54)
-			row.title = Label(row, 0, 1, 480, "GameFontNormal")
-			row.sub = Label(row, 0, 23, 480)
+			row:SetSize(730 + wide, 54)
+			row.title = Label(row, 0, 1, 480 + wide, "GameFontNormal")
+			row.sub = Label(row, 0, 23, 480 + wide)
 			row.ask = Button(row, L.RECRUIT_ASK, 210, function()
 				local p = R.NextContact(row.guild)
 				if p then R.Prompt(p) else ns.Print(Unavailable(row.guild, #R.Officers(row.guild))) end
@@ -119,7 +120,7 @@ function Pane.Render()
 	for key, text in pairs(R.replied) do replies[#replies + 1] = { key = key, text = text } end
 	table.sort(replies, function(a, b) return a.key < b.key end)
 	for i, reply in ipairs(replies) do
-		local label = replyRows[i] or Label(child, 0, 0, 725)
+		local label = replyRows[i] or Label(child, 0, 0, 725 + wide)
 		replyRows[i] = label
 		label:ClearAllPoints()
 		label:SetPoint("TOPLEFT", child, "TOPLEFT", 0, -y)
@@ -224,7 +225,7 @@ function Pane.RenderInbox()
 		local row = Pane.requestRows[count]
 		if not row then
 			row = CreateFrame("Frame", nil, inboxChild)
-			row:SetSize(730, 98)
+			row:SetSize(730 + wide, 98)
 			row:EnableMouse(true)
 			row:SetScript("OnEnter", function(self)
 				if not self.req then return end
@@ -234,10 +235,10 @@ function Pane.RenderInbox()
 				GameTooltip:Show()
 			end)
 			row:SetScript("OnLeave", function() GameTooltip:Hide() end)
-			row.title = Label(row, 0, 0, 730, "GameFontNormal")
-			row.message = Label(row, 0, 20, 730)
+			row.title = Label(row, 0, 0, 730 + wide, "GameFontNormal")
+			row.message = Label(row, 0, 20, 730 + wide)
 			row.message:SetHeight(26)
-			row.source = Label(row, 0, 48, 730, "GameFontDisableSmall")
+			row.source = Label(row, 0, 48, 730 + wide, "GameFontDisableSmall")
 			row.accept = Button(row, L.RECRUIT_INVITE, 140, function() Pane.Invite(row.req) end)
 			row.accept:SetPoint("TOPLEFT", 0, -66)
 			row.decline = Button(row, L.RECRUIT_DECLINE, 130, function() R.Decline(row.req) end)
@@ -273,6 +274,35 @@ function Pane.Invite(req)
 	inboxBox.req = req
 	inboxBox:Run({ { kind = "I", name = req.name } }, { tip = L.RECRUIT_CMD_TIP })
 	Pane.RenderInbox()
+end
+-- Раскладка под вставку width×height (UI.lua): строки, тексты и строка команды тянутся по ширине.
+-- Высота ответов зависит от ширины, поэтому открытый экран вступления перекладывается заново.
+function Pane.Layout(width)
+	wide = math.max(0, math.floor(width) - 804)
+	if pane then
+		intro:SetWidth(740 + wide)
+		note:SetWidth(530 + wide)
+		child:SetWidth(740 + wide)
+		for _, row in ipairs(guildRows) do
+			row:SetWidth(730 + wide)
+			row.title:SetWidth(480 + wide)
+			row.sub:SetWidth(480 + wide)
+		end
+		for _, label in ipairs(replyRows) do label:SetWidth(725 + wide) end
+		if pane:IsShown() then Pane.Render() end
+	end
+	if inbox then
+		inboxHint:SetWidth(570 + wide)
+		inboxBox:SetWidth(740 + wide)
+		inboxChild:SetWidth(740 + wide)
+		inboxEmpty:SetWidth(730 + wide)
+		for _, row in ipairs(Pane.requestRows) do
+			row:SetWidth(730 + wide)
+			row.title:SetWidth(730 + wide)
+			row.message:SetWidth(730 + wide)
+			row.source:SetWidth(730 + wide)
+		end
+	end
 end
 function Pane.ShowInbox() if inbox then inbox:Show(); Pane.RenderInbox() end end
 function Pane.HideInbox()

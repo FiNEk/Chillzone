@@ -957,6 +957,40 @@ T.test("crafters: длинный список приходит страница�
 	NoErrors(c.B, "Борис")
 end)
 
+T.test("crafters: в высоком окне в карточке видно больше рецептов", function()
+	local w, c = Build()
+	local recipes = {}
+	for i = 1, 60 do recipes[10000 + i * 1000] = true end
+	Learn(c.A, Smith(300, recipes))
+	c.A.ns.Crafters.SetPost(164, true)
+	T.ok(c.A.ns.Crafters.Post())
+	w:Run(30)
+	local key, V = Key(c.A), c.V.ns
+	T.ok(V.Crafters.Want(key, 164))
+	w:Run(60)
+	T.eq(#(V.Crafters.Recipes(key, 164) or {}), 60)
+	V.UI.Toggle("crafters")
+	V.CraftersPane.Open(key)
+	local f = V.CraftersPane.frames
+	local function Shown()
+		local n = 0
+		for _, r in ipairs(f.recipes) do
+			if r:IsShown() then n = n + 1 end
+		end
+		return n
+	end
+	T.eq(Shown(), 8, "исходное окно: 166 / 22")
+	-- Вставка выше на 220: список рецептов 386 в высоту; карточка открыта, строки перекладываются сразу.
+	V.UI.Resize(814 + 200, 426 + 220)
+	T.eq(Shown(), 18, "386 / 22")
+	T.ok(#f.recipes <= 19, "строк создано на видимую часть: " .. #f.recipes)
+	f.card.scroll:SetVerticalScroll(22 * 30)
+	T.eq(f.recipes[1].it.id, 10000 + 31 * 1000, "прокрутка в высоком окне")
+	V.UI.Resize(814, 426)
+	T.eq(Shown(), 8, "обратно — как было")
+	NoErrors(c.V, "Вера")
+end)
+
 T.test("crafters: страницу принимают только от того, кого спросили", function()
 	local w, c = Build()
 	Master(c.A)

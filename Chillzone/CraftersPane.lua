@@ -26,12 +26,18 @@ local ACTION_W = 84
 local PROF_ROWS = 6
 local LIST_TOP = 60
 local SEARCH_DELAY = 0.25
-local NAME_W = LIST_W - 6 - ACTION_W - 8 -- имя в строке каталога без витрины
 local SHOW_SIZE = 18 -- значок витрины в строке каталога
 local NO_ICON = "Interface\\Icons\\INV_Misc_QuestionMark"
 local STAR = "Interface\\TargetingFrame\\UI-RaidTargetingIcon_1"
+-- Ширины заданы под исходное окно (вставка 804×340). Растянутое окно (Layout) отдаёт лишнюю ширину
+-- каталогу, а правая панель той же ширины стоит у правого края и растёт вниз: длиннее список рецептов.
+local BASE_W, BASE_H, SIDE_V = 804, 340, 16 -- вставка исходного окна; панель ниже её верха и выше низа
+local listW, sideX = LIST_W, SIDE_X
 
-local pane, search, searchHint, loaded, list, listChild, empty, side
+-- Имя в строке каталога без витрины.
+local function NameW() return listW - 6 - ACTION_W - 8 end
+
+local pane, search, searchHint, loaded, list, listChild, empty, side, divider
 local levelLo, levelHi -- требуемый уровень предмета «от» и «до»
 local mine, card
 local rows, filters, profRows, cardChips, recipeRows = {}, {}, {}, {}, {}
@@ -185,7 +191,7 @@ local function Row(i)
 	local r = rows[i]
 	if r then return r end
 	r = CreateFrame("Button", nil, listChild)
-	r:SetWidth(LIST_W)
+	r:SetWidth(listW)
 	r:SetHeight(ROW_H)
 	r.bg = r:CreateTexture(nil, "BACKGROUND")
 	r.bg:SetAllPoints()
@@ -209,10 +215,10 @@ local function Row(i)
 	r.status:SetWidth(ACTION_W - 4)
 	r.name = FS(r, "GameFontHighlight")
 	r.name:SetPoint("TOPLEFT", 6, -5)
-	r.name:SetWidth(NAME_W)
+	r.name:SetWidth(NameW())
 	r.sub = FS(r, "GameFontHighlightSmall")
 	r.sub:SetPoint("BOTTOMLEFT", 6, 6)
-	r.sub:SetWidth(NAME_W)
+	r.sub:SetWidth(NameW())
 	r.shows = {}
 	for _, fs in ipairs({ r.name, r.sub, r.status }) do
 		if fs.SetWordWrap then fs:SetWordWrap(false) end
@@ -258,6 +264,11 @@ local function ShowIcon(r, j)
 	return b
 end
 
+-- Имя рядом с витриной из n значков.
+local function ShowNameW(n)
+	return n > 0 and NameW() - n * (SHOW_SIZE + 2) - 2 or NameW()
+end
+
 -- Витрина справа от имени, слева от «Шепнуть»; имя укорачивается на её ширину.
 local function RenderShowcase(r, show)
 	local n = #show
@@ -271,7 +282,7 @@ local function RenderShowcase(r, show)
 		b:Show()
 	end
 	for j = n + 1, #r.shows do r.shows[j]:Hide() end
-	r.name:SetWidth(n > 0 and NAME_W - n * (SHOW_SIZE + 2) - 2 or NAME_W)
+	r.name:SetWidth(ShowNameW(n))
 end
 
 local function FilterChip(id)
@@ -442,7 +453,7 @@ local function BuildList()
 	empty:SetWidth(LIST_W - 12)
 	empty:Hide()
 
-	local divider = pane:CreateTexture(nil, "ARTWORK")
+	divider = pane:CreateTexture(nil, "ARTWORK")
 	divider:SetColorTexture(1, 1, 1, 0.08)
 	divider:SetWidth(1)
 	divider:SetPoint("TOPLEFT", SIDE_X - 8, -10)
@@ -579,9 +590,11 @@ end
 -- по одному на строку. Рамок столько, сколько видно, их содержимое меняется при прокрутке: у
 -- мастера бывает несколько сотен рецептов.
 -- RECIPES_H — высота списка, когда строка состояния над ним в одну строку; длиннее она — короче список
--- (card.listH). LIST_BOTTOM — низ списка от верха панели: ниже кнопки.
+-- (card.listH). LIST_BOTTOM — низ списка от верха панели: ниже кнопки. Обе — у исходного окна: в
+-- окне выше панель длиннее, и на столько же ниже низ списка и длиннее сам список (Layout).
 local RECIPE_H, REAGENT_H, RECIPES_H, LIST_BOTTOM = 22, 16, 166, 292
-local RECIPE_ROWS = math.ceil(RECIPES_H / RECIPE_H) + 1
+local recipesH, listBottom = RECIPES_H, LIST_BOTTOM
+local function RecipeRows() return math.ceil(recipesH / RECIPE_H) + 1 end
 local RECIPE_NAME_W = SIDE_W - 26 - 26 - 22 -- название рецепта без звёздочки витрины
 local PLUS, MINUS = "Interface\\Buttons\\UI-PlusButton-Up", "Interface\\Buttons\\UI-MinusButton-Up"
 local expanded = {} -- [номер рецепта] = true: реагенты раскрыты, на сессию
@@ -598,7 +611,7 @@ local function RecipeHeight(it)
 end
 
 -- Верх каждого рецепта в списке и высота всего списка.
-local function Layout()
+local function RecipeTops()
 	local tops, y = {}, 0
 	for i, it in ipairs(card.items) do
 		tops[i] = y
@@ -611,9 +624,9 @@ local PlaceRecipes
 
 -- Пересчитать высоту списка и разложить видимые строки; прокрутка остаётся в пределах списка.
 local function Resize()
-	Layout()
+	RecipeTops()
 	card.child:SetHeight(math.max(10, card.total))
-	local most = math.max(0, card.total - (card.listH or RECIPES_H))
+	local most = math.max(0, card.total - (card.listH or recipesH))
 	if (card.scroll:GetVerticalScroll() or 0) > most then card.scroll:SetVerticalScroll(most) end
 	PlaceRecipes()
 end
@@ -699,10 +712,10 @@ function PlaceRecipes()
 	local items = card.items or {}
 	local offset = card.scroll:GetVerticalScroll() or 0
 	local index = #items > 0 and FirstVisible(offset) or 1
-	for i = 1, RECIPE_ROWS do
+	for i = 1, RecipeRows() do
 		local r = recipeRows[i] or RecipeRow(i)
 		local it = items[index]
-		if it and card.tops[index] >= offset + (card.listH or RECIPES_H) then it = nil end
+		if it and card.tops[index] >= offset + (card.listH or recipesH) then it = nil end
 		r:SetShown(it ~= nil)
 		r.it = it
 		if it then
@@ -742,6 +755,8 @@ function PlaceRecipes()
 		end
 		index = index + 1
 	end
+	-- Окно стало ниже: строки сверх нужных остались от высокого и не нужны.
+	for i = RecipeRows() + 1, #recipeRows do recipeRows[i]:Hide() end
 end
 
 local function BuildCard()
@@ -876,7 +891,8 @@ local function RenderCard(view)
 	card.search:SetPoint("TOPLEFT", 0, -top)
 	card.scroll:ClearAllPoints()
 	card.scroll:SetPoint("TOPLEFT", 0, -(top + 24))
-	card.listH = math.max(RECIPE_H, math.min(RECIPES_H, LIST_BOTTOM - top - 24))
+	card.top = top
+	card.listH = math.max(RECIPE_H, math.min(recipesH, listBottom - top - 24))
 	card.scroll:SetHeight(card.listH)
 	Resize()
 	-- Пусто: ничего не подошло под поиск, нет рецептов этих уровней или все подходящие — персональные.
@@ -920,7 +936,7 @@ function Pane.Build(parent)
 	BuildList()
 	side = CreateFrame("Frame", nil, pane)
 	side:SetPoint("TOPLEFT", SIDE_X, -8)
-	side:SetSize(SIDE_W, 324)
+	side:SetSize(SIDE_W, BASE_H - SIDE_V)
 	BuildMine()
 	BuildCard()
 	Pane.frames.pane, Pane.frames.rows, Pane.frames.filters = pane, rows, filters
@@ -928,8 +944,41 @@ function Pane.Build(parent)
 	Pane.frames.profs, Pane.frames.cardChips, Pane.frames.all = profRows, cardChips, allChip
 	Pane.frames.empty, Pane.frames.loaded, Pane.frames.recipes = empty, loaded, recipeRows
 	Pane.frames.levelLo, Pane.frames.levelHi = levelLo, levelHi
+	Pane.frames.list, Pane.frames.side = list, side
 	pane:Hide()
 	return pane
+end
+
+-- Раскладка под вставку width×height (UI.lua): каталог шире, правая панель у правого края и выше,
+-- список рецептов в карточке длиннее. Открытая карточка перекладывает строки без нового сбора.
+function Pane.Layout(width, height)
+	if not pane then return end
+	local extra = math.max(0, math.floor(width - BASE_W))
+	local taller = math.max(0, math.floor(height - BASE_H))
+	listW, sideX = LIST_W + extra, SIDE_X + extra
+	recipesH, listBottom = RECIPES_H + taller, LIST_BOTTOM + taller
+	list:SetWidth(listW)
+	listChild:SetWidth(listW)
+	empty:SetWidth(listW - 12)
+	loaded:ClearAllPoints()
+	loaded:SetPoint("RIGHT", pane, "TOPLEFT", listW + 8, -17)
+	loaded:SetWidth(listW - 324)
+	for _, r in ipairs(rows) do -- значки витрины привязаны к правому краю строки и едут сами
+		r:SetWidth(listW)
+		r.sub:SetWidth(NameW())
+		r.name:SetWidth(ShowNameW(r.it and r.it.show and #r.it.show or 0))
+	end
+	divider:ClearAllPoints()
+	divider:SetPoint("TOPLEFT", sideX - 8, -10)
+	divider:SetPoint("BOTTOMLEFT", sideX - 8, 10)
+	side:ClearAllPoints()
+	side:SetPoint("TOPLEFT", sideX, -8)
+	side:SetHeight(BASE_H + taller - SIDE_V)
+	if pane:IsShown() and card:IsShown() and card.top then
+		card.listH = math.max(RECIPE_H, math.min(recipesH, listBottom - card.top - 24))
+		card.scroll:SetHeight(card.listH)
+		Resize()
+	end
 end
 
 function Pane.Render()

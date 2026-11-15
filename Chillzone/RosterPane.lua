@@ -3,7 +3,8 @@
 -- игрок командой в чате игры (CommandBox.lua): щелчок по строке показывает команду для этого
 -- игрока, «Исключать по очереди» — по одной для всех, кто не заходил дольше заданного числа дней,
 -- начиная с самых давних. Строка команды встаёт на место строки отметок, таблица не сдвигается.
--- Строки таблицы переставляются под видимую часть прокрутки, как в «Переписи».
+-- Строки таблицы переставляются под видимую часть прокрутки, как в «Переписи». В широком окне
+-- лишнее место получают имя и звание, в высоком — число строк (P.Layout).
 local ADDON, ns = ...
 local L, U, T = ns.L, ns.Util, ns.Transfer
 local P = {}
@@ -14,14 +15,36 @@ local rows = {}
 local people = {} -- отсортированный состав
 local sort = { key = "days", desc = true }
 local note -- итог последней очереди или щелчка вместо числа участников
-local ROW_H, ROWS, HEAD_H, WIDTH, VISIBLE = 18, 17, 18, 760, 15
+local ROW_H, HEAD_H, BASE_W, GAP = 18, 18, 760, 4
+local WIDTH, VISIBLE = BASE_W, 15
+local ROWS = VISIBLE + 2
 local TOP = 8 + ns.CommandBox.HEIGHT + 6 -- заголовок таблицы под строкой отметок или команды
+-- base — ширина в исходном окне, grow — доля лишней ширины; x считает Columns.
 local COLUMNS = {
-	{ key = "name", title = "TRANSFER_COL_NAME", x = 4, w = 290 },
-	{ key = "level", title = "TRANSFER_COL_LEVEL", x = 298, w = 50 },
-	{ key = "rank", title = "TRANSFER_COL_RANK", x = 352, w = 210 },
-	{ key = "days", title = "TRANSFER_COL_LAST", x = 566, w = 170 },
+	{ key = "name", title = "TRANSFER_COL_NAME", base = 290, grow = 3 },
+	{ key = "level", title = "TRANSFER_COL_LEVEL", base = 50, grow = 0 },
+	{ key = "rank", title = "TRANSFER_COL_RANK", base = 210, grow = 2 },
+	{ key = "days", title = "TRANSFER_COL_LAST", base = 170, grow = 0 },
 }
+
+-- Ширины и отступы колонок под ширину таблицы WIDTH (в исходной: x = 4, 298, 352, 566).
+-- Остаток округления достаётся имени.
+local function Columns()
+	local extra, weight = math.max(0, WIDTH - BASE_W), 0
+	for _, col in ipairs(COLUMNS) do weight = weight + col.grow end
+	local adds, left = {}, extra
+	for i, col in ipairs(COLUMNS) do
+		adds[i] = col.grow > 0 and math.floor(extra * col.grow / weight) or 0
+		left = left - adds[i]
+	end
+	adds[1] = adds[1] + left
+	local x = GAP
+	for i, col in ipairs(COLUMNS) do
+		col.x, col.w = x, col.base + adds[i]
+		x = x + col.w + GAP
+	end
+end
+Columns()
 local INACTIVE = "|cffff8a5c" -- давность тех, кто попадёт в очередь
 
 local function Button(parent, text, width, fn)
@@ -207,6 +230,7 @@ local function PlaceRows()
 			r:Hide()
 		end
 	end
+	for i = ROWS + 1, #rows do rows[i]:Hide() end
 end
 
 local function BuildTools()
@@ -295,6 +319,31 @@ function P.Build(parent)
 	empty:SetText(L.ROSTER_EMPTY)
 	P.frames = { pane = pane, tools = tools, box = box, head = head, rows = rows, scroll = scroll, empty = empty }
 	pane:Hide()
+end
+
+local function PlaceCell(cell, owner, col, pad)
+	cell:ClearAllPoints()
+	cell:SetPoint("LEFT", owner, "LEFT", col.x + pad, 0)
+	cell:SetWidth(col.w - 2 * pad)
+end
+
+-- Раскладка под вставку width×height (UI.lua): шире таблица и её колонки, выше — больше строк.
+function P.Layout(width, height)
+	if not pane then return end
+	WIDTH = math.max(BASE_W, math.floor(width) - 44)
+	VISIBLE = math.max(15, math.floor((height - TOP - HEAD_H - 8) / ROW_H))
+	ROWS = VISIBLE + 2
+	Columns()
+	tools:SetWidth(WIDTH)
+	box:SetWidth(WIDTH)
+	head:SetWidth(WIDTH)
+	child:SetWidth(WIDTH)
+	for c, col in ipairs(COLUMNS) do PlaceCell(head.cells[c], head, col, 0) end
+	for _, r in ipairs(rows) do
+		r:SetWidth(WIDTH)
+		for c, col in ipairs(COLUMNS) do PlaceCell(r.cells[c], r, col, 3) end
+	end
+	if pane:IsShown() then PlaceRows() end
 end
 
 function P.Render()
