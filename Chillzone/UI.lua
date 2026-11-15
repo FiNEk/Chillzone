@@ -1,6 +1,6 @@
 -- Chillzone: окно — как «Гильдия и сообщества»: рамка ButtonFrameTemplate с портретом, вкладки-
--- значки на правом краю. Сверху повседневные: Чат, Группы, Мастера, Перепись, Заявки (главам и офицерам),
--- Королевство. Ниже, с отступом, служебные: Настройки и «Управление».
+-- значки на правом краю. Сверху повседневные: Чат, Группы, Мастера, Перепись, Заявки (главам и офицерам).
+-- Ниже, с отступом, служебные: Настройки и «Управление».
 -- «Управление» собирает пять разделов с переключателем на месте названия вкладки: «Объединение»
 -- (UnionPane.lua: глава главной гильдии управляет составом, офицер гильдии вне объединения запрашивает
 -- связь), «Состав» (RosterPane.lua: состав своей гильдии и исключение по очереди) и «Кадры»
@@ -8,8 +8,8 @@
 -- объединения, «Отладка» (Debug.lua, главы и офицеры) и «Журнал» (JournalPane.lua, любой игрок).
 -- Кому нет ни «Объединения», ни «Кадров», ни «Отладки», значка «Управления» не видит: журнал открывает
 -- кнопка в Настройках.
--- Чат рисует ChatPane.lua, Перепись — CensusPane.lua, Королевство и Отладку — список строк из Views.lua
--- и Debug.lua во вставке окна. Кнопка у миникарты — LibDBIcon, объект запуска — LibDataBroker.
+-- Чат рисует ChatPane.lua, Перепись — CensusPane.lua, Отладку — список строк из Debug.lua во вставке
+-- окна. Кнопка у миникарты — LibDBIcon, объект запуска — LibDataBroker.
 local ADDON, ns = ...
 
 local L = ns.L
@@ -30,7 +30,6 @@ local TABS = {
 	{ key = "crafters", text = "TAB_CRAFTERS", icons = { "Interface\\Icons\\Trade_BlackSmithing", "Interface\\Icons\\INV_Hammer_20" } },
 	{ key = "census", text = "TAB_CENSUS", icons = { "Interface\\Icons\\achievement_guildperk_everybodysfriend", "Interface\\Icons\\INV_Misc_Book_09" } },
 	{ key = "requests", text = "TAB_REQUESTS", icons = { "Interface\\Icons\\INV_Letter_15" } },
-	{ key = "kingdom", text = "TAB_KINGDOM", icons = { "Interface\\Icons\\achievement_guildperk_honorablemention", "Interface\\Icons\\INV_Misc_Note_01" } },
 	{ key = "settings", text = "TAB_SETTINGS", icons = { "Interface\\Icons\\INV_Misc_Gear_01" }, service = true },
 	{ key = "manage", text = "TAB_MANAGE", icons = { "Interface\\Icons\\Trade_Engineering", "Interface\\Icons\\INV_Misc_Spyglass_03" }, service = true },
 }
@@ -48,8 +47,8 @@ for _, def in ipairs(SECTIONS) do IS_SECTION[def.key], TITLES[def.key] = true, d
 for _, def in ipairs(TABS) do TITLES[def.key] = def.text end
 -- Без членства в объединении открываются только эти страницы, остальные заменяет экран вступления.
 local OPEN_TO_ALL = { settings = true, union = true, journal = true }
--- Между значками и перед служебной группой. Восемь значков у главы и офицера: 36 + 8 * 32 + 6 * 14 + 30 =
--- 406 из 426 по высоте окна; при 20 и 44 столбец уходил на 30 ниже нижнего края.
+-- Между значками и перед служебной группой. Семь значков у главы и офицера: 36 + 7 * 32 + 5 * 14 + 30 =
+-- 360 из 426 по высоте окна; при восьми значках и отступах 20 и 44 столбец уходил на 30 ниже нижнего края.
 local TAB_GAP, SERVICE_GAP = 14, 30
 local SECTION_H = 26 -- высота кнопки раздела: строка названия вкладки над вставкой
 local DEBUG_EVERY = 5 -- «Отладка» обновляется чаще остальных: там счётчики и состояние реле
@@ -99,7 +98,7 @@ local function FirstIcon(paths)
 end
 
 ---------------------------------------------------------------------------
--- Строки «Королевства» и «Отладки»
+-- Строки «Отладки»
 ---------------------------------------------------------------------------
 local function Row(i)
 	local r = rows[i]
@@ -740,10 +739,11 @@ function UI.Render()
 	end
 	ns.CensusPane.Hide()
 	scroll:Show()
+	-- Сюда доходит только «Отладка»; незнакомая страница остаётся пустой.
 	if current == "debug" then
 		ns.SafeCall("debug tab", function() RenderRows(ns.Debug.Lines()) end)
 	else
-		RenderRows(ns.Views.Kingdom())
+		RenderRows({})
 	end
 end
 
@@ -932,7 +932,7 @@ local function Create()
 	switcher:Hide()
 	UI.status, UI.heading, UI.switcher, UI.sections = status, heading, switcher, sections
 
-	-- Перепись, Королевство и Настройки — во вставке, как Inset у ButtonFrameTemplate: (4,-60) → (-6,26).
+	-- Перепись, Отладка и Настройки — во вставке, как Inset у ButtonFrameTemplate: (4,-60) → (-6,26).
 	local okInset, inset = pcall(CreateFrame, "Frame", nil, f, "InsetFrameTemplate")
 	body = okInset and inset or CreateFrame("Frame", nil, f)
 	body:SetPoint("TOPLEFT", f, "TOPLEFT", 4, -60)
@@ -980,7 +980,7 @@ local function Create()
 			UI.Render()
 		elseif elapsed >= 30 then
 			elapsed, debugElapsed = 0, 0
-			if current == "census" or current == "kingdom" or current == "join" or current == "requests" or current == "union"
+			if current == "census" or current == "join" or current == "requests" or current == "union"
 				or current == "groups" or current == "crafters" or current == "transfer" or current == "roster" then
 				UI.Render()
 			else UI.RenderStatus() end
@@ -1026,7 +1026,7 @@ end
 
 local function Refresh()
 	if not frame or not frame:IsShown() then return end
-	if current == "census" or current == "kingdom" or current == "debug" or current == "union" or current == "requests"
+	if current == "census" or current == "debug" or current == "union" or current == "requests"
 		or TabsChanged() then
 		UI.Render()
 	else
@@ -1086,7 +1086,6 @@ ns.Command("minimap", function()
 	ns.Print(ns.db.settings.minimap.hide and L.MINIMAP_HIDDEN or L.MINIMAP_SHOWN)
 end, L.HELP_MINIMAP)
 
-ns.Command("kingdom", function() UI.Toggle("kingdom") end, L.HELP_KINGDOM)
 ns.Command("census", function() UI.Toggle("census") end, L.HELP_CENSUS)
 ns.Command("groups", function() UI.Toggle("groups") end, L.HELP_GROUPS)
 ns.Command("crafters", function() UI.Toggle("crafters") end, L.HELP_CRAFTERS)

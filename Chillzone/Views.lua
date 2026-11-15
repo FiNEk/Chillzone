@@ -1,5 +1,4 @@
--- Chillzone: содержимое вкладок окна — список гильдий и карточка гильдии «Переписи», дерево
--- «Королевства» (строки { text, right, indent, tip(tooltip) }, их рисует UI.lua), шапка окна,
+-- Chillzone: содержимое вкладок окна — список гильдий и карточка гильдии «Переписи», шапка окна,
 -- строки и люди чата, подсказки.
 local ADDON, ns = ...
 
@@ -46,6 +45,49 @@ local function GuildLabel(s)
 	if s.mine then name = name .. " " .. GREY .. L.MINE_MARK .. "|r" end
 	if s.conflict then name = name .. " " .. RED .. "!|r" end
 	return name
+end
+
+---------------------------------------------------------------------------
+-- Аддон у людей из списков: чат, «Руководство» и «кто в игре» на «Переписи»
+---------------------------------------------------------------------------
+-- Аддон у согильдийца по приветам H1 (Census.Addon). «Нет» — только про того, кто в игре:
+-- от вышедшего привета и не должно быть.
+local function GuildAddon(key, online)
+	local has, version = ns.Census.Addon(key)
+	if has == false and not online then has = nil end
+	return has, version
+end
+
+-- Кто из других гильдий точно с аддоном: писал в общие каналы подписанной строкой или прислал
+-- отчёт переписи. Строку из канала игры (e.ch) может написать и игрок без аддона.
+-- Остальных не знаем: приветы H1 ходят только внутри гильдии. Значение — версия аддона или
+-- true, если версии не знаем: строка чата её не несёт, а отчёт R1 называет версию своего автора.
+local function AddonKnown(summary)
+	local known = {}
+	for tier in pairs(ns.Chat.TIER_LEVEL) do
+		for _, e in ipairs(ns.Chat.History(tier)) do
+			local k = not e.ch and U.Key(e.s)
+			if k then known[k] = true end
+		end
+	end
+	for _, s in ipairs(summary) do
+		local k = U.Key(s.origin)
+		if k then known[k] = s.r and s.r.version or known[k] or true end
+	end
+	return known
+end
+
+-- Аддон у человека с ключом k: согильдиец (own) — по приветам H1, остальные и согильдиец,
+-- о котором приветы пока молчат, — по known (AddonKnown). true и версия, если знаем, — есть;
+-- false — нет; nil — неизвестно.
+local function PersonAddon(k, own, inGame, known)
+	if own then
+		local has, version = GuildAddon(k, inGame)
+		if has ~= nil then return has, version end
+	end
+	local v = k and known[k]
+	if not v then return nil end
+	return true, v ~= true and v or nil
 end
 
 ---------------------------------------------------------------------------
@@ -99,10 +141,13 @@ function Views.GuildCard(s)
 	}
 	card.extra = L.CARD_EXTRA:format(r.users or 0, r.inactive7 or 0, r.inactive30 or 0)
 	card.people = {}
+	local known = AddonKnown(ns.Data.Summary())
 	local function person(p, role)
+		local on = (s.fresh and p.online) and true or false
+		local has, version = PersonAddon(U.Key(p.name), s.mine, on, known)
 		card.people[#card.people + 1] = {
 			name = p.name, class = p.class, level = p.level, days = p.days, role = role,
-			online = (s.fresh and p.online) and true or false, guild = s.guild, main = s.main,
+			online = on, guild = s.guild, main = s.main, addon = has, version = version,
 		}
 	end
 	if r.leader then
@@ -131,7 +176,7 @@ function Views.GuildCard(s)
 	else
 		card.staleNote = L.CARD_STALE
 	end
-	card.onlineGroup = Views.OnlineGroup(s, L.ONLINE_HEAD)
+	card.onlineGroup = Views.OnlineGroup(s, L.ONLINE_HEAD, known)
 	return card
 end
 
@@ -281,64 +326,6 @@ function Views.CensusRows(now)
 end
 
 ---------------------------------------------------------------------------
--- Вкладка «Королевство»
----------------------------------------------------------------------------
-local function PersonTip(p, role, guild)
-	return function(tt)
-		tt:AddLine(Views.Name(p.name, p.class))
-		tt:AddLine(role .. ", " .. Codec.Plain(guild), 0.8, 0.8, 0.8)
-		if p.level and p.level > 0 then tt:AddLine(L.TIP_LEVEL:format(p.level), 0.8, 0.8, 0.8) end
-		tt:AddLine(Views.State(p.online, p.days), 0.6, 0.6, 0.6)
-	end
-end
-
-local function Captains(lines, node, indent)
-	for _, c in ipairs(node.captains) do
-		lines[#lines + 1] = {
-			text = ICON_OFFICER .. " " .. Dot(c.online) .. Views.Name(c.name, c.class),
-			right = GREY .. L.ROLE_CAPTAIN .. "|r", indent = indent,
-			tip = PersonTip(c, L.ROLE_CAPTAIN, node.guild),
-		}
-	end
-end
-
-function Views.Kingdom()
-	local lines = {}
-	local tree = ns.Data.Kingdom()
-	lines[#lines + 1] = { text = GOLD .. L.KINGDOM_KING .. "|r", header = true }
-	local king = tree.king
-	if king then
-		lines[#lines + 1] = {
-			text = ICON_KING .. " " .. Dot(king.leaderOnline) .. Views.Name(king.leader, king.leaderClass) .. "  " .. GREY .. "<" .. Codec.Plain(king.guild) .. ">|r" .. (king.conflict and (" " .. RED .. "!|r") or ""),
-			right = GOLD .. L.ROLE_KING .. "|r",
-			tip = PersonTip({ name = king.leader, class = king.leaderClass, level = king.leaderLevel, online = king.leaderOnline, days = king.leaderDays }, L.ROLE_KING, king.guild),
-		}
-		Captains(lines, king, 1)
-	else
-		lines[#lines + 1] = { text = GREY .. L.KINGDOM_NO_KING:format(C.MAIN_GUILD) .. "|r", wrap = true }
-	end
-	local lords = 0
-	for _, node in ipairs(tree.guilds) do
-		if not node.main then
-			if lords == 0 then lines[#lines + 1] = { text = GOLD .. L.KINGDOM_LORDS .. "|r", header = true, gap = true } end
-			lords = lords + 1
-			local lord = node.leader and (Dot(node.leaderOnline) .. Views.Name(node.leader, node.leaderClass)) or (GREY .. "—|r")
-			lines[#lines + 1] = {
-				text = lord .. "  " .. GREY .. "<" .. Codec.Plain(node.guild) .. ">|r" .. (node.conflict and (" " .. RED .. "!|r") or ""),
-				right = GREY .. L.ROLE_LORD .. "|r",
-				tip = node.leader and PersonTip({ name = node.leader, class = node.leaderClass, level = node.leaderLevel, online = node.leaderOnline, days = node.leaderDays }, L.ROLE_LORD, node.guild) or nil,
-			}
-			Captains(lines, node, 1)
-		end
-	end
-	if lords == 0 then
-		lines[#lines + 1] = { text = GOLD .. L.KINGDOM_LORDS .. "|r", header = true, gap = true }
-		lines[#lines + 1] = { text = GREY .. L.KINGDOM_NO_LORDS .. "|r", wrap = true }
-	end
-	return lines
-end
-
----------------------------------------------------------------------------
 -- Окно чата: строки сообщений и список людей справа
 ---------------------------------------------------------------------------
 local ACTIVE_WINDOW = 3600 -- «писал за последний час»
@@ -360,32 +347,6 @@ local function ByRole(a, b)
 	if (a.online and 1 or 0) ~= (b.online and 1 or 0) then return a.online and true or false end
 	if (a.rank or 9) ~= (b.rank or 9) then return (a.rank or 9) < (b.rank or 9) end
 	return a.name < b.name
-end
-
--- Аддон у согильдийца по приветам H1 (Census.Addon). «Нет» — только про того, кто в игре:
--- от вышедшего привета и не должно быть.
-local function GuildAddon(key, online)
-	local has, version = ns.Census.Addon(key)
-	if has == false and not online then has = nil end
-	return has, version
-end
-
--- Кто из других гильдий точно с аддоном: писал в общие каналы подписанной строкой или прислал
--- отчёт переписи. Строку из канала игры (e.ch) может написать и игрок без аддона.
--- Остальных не знаем: приветы H1 ходят только внутри гильдии.
-local function AddonKnown(summary)
-	local known = {}
-	for tier in pairs(ns.Chat.TIER_LEVEL) do
-		for _, e in ipairs(ns.Chat.History(tier)) do
-			local k = not e.ch and U.Key(e.s)
-			if k then known[k] = true end
-		end
-	end
-	for _, s in ipairs(summary) do
-		local k = U.Key(s.origin)
-		if k then known[k] = true end
-	end
-	return known
 end
 
 -- Своя гильдия по ростеру: в G — кто в игре, в O — офицеры (в игре первыми).
@@ -448,11 +409,7 @@ function Views.People(channel, now)
 	local summary = ns.Data.Summary(now)
 	local known, mine = AddonKnown(summary), U.GuildKey(ns.MyGuild())
 	local function addon(k, guild, inGame)
-		if mine and U.GuildKey(guild) == mine then
-			local has, version = GuildAddon(k, inGame)
-			if has ~= nil then return has, version end
-		end
-		return known[k] or nil
+		return PersonAddon(k, mine ~= nil and U.GuildKey(guild) == mine, inGame, known)
 	end
 	for _, s in ipairs(summary) do
 		if s.recent then
@@ -527,10 +484,11 @@ function Views.OnlineGroup(s, label, known)
 		known = known or AddonKnown(ns.Data.Summary())
 		for _, p in ipairs(state.people) do
 			local k = U.Key(p.name)
+			local has, version = PersonAddon(k, false, true, known)
 			people[#people + 1] = {
 				name = p.name, class = p.class, level = p.level, online = true, days = 0,
 				role = roles[k] or "member", guild = s.guild, main = s.main,
-				addon = (p.addon or known[k]) and true or nil,
+				addon = (p.addon or has) and true or nil, version = version,
 			}
 		end
 	end
@@ -661,8 +619,13 @@ function Views.MinimapTip(tt)
 	tt:AddLine("Chillzone", 0.5, 0.83, 0.76)
 	tt:AddLine(status.big, 1, 0.82, 0)
 	tt:AddLine(status.small, 0.7, 0.7, 0.7)
-	local tree = ns.Data.Kingdom()
-	if tree.king then tt:AddLine(L.ROLE_KING .. ": " .. Views.Name(tree.king.leader, tree.king.leaderClass), 1, 0.82, 0) end
+	-- Король — глава главной гильдии по её отчёту.
+	for _, s in ipairs(ns.Data.Summary()) do
+		if s.main and s.recent and s.r.leader then
+			tt:AddLine(L.ROLE_KING .. ": " .. Views.Name(s.r.leader, s.r.leaderClass), 1, 0.82, 0)
+			break
+		end
+	end
 	tt:AddLine(" ")
 	tt:AddLine(L.MINIMAP_LEFT, 0.6, 0.6, 0.6)
 	tt:AddLine(L.MINIMAP_RIGHT, 0.6, 0.6, 0.6)

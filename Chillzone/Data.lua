@@ -169,29 +169,6 @@ function Data.Totals(now)
 	return guilds, total, online
 end
 
--- Дерево королевства: король (глава главной гильдии), его капитаны, лорды остальных
--- гильдий с их капитанами.
-function Data.Kingdom(now)
-	local tree = { king = nil, guilds = {} }
-	for _, s in ipairs(Data.Summary(now)) do
-		if s.recent then
-			local r = s.r
-			local node = {
-				guild = s.guild, main = s.main, conflict = s.conflict, fresh = s.fresh,
-				leader = r.leader, leaderOnline = s.fresh and r.leaderOnline or false,
-				leaderClass = r.leaderClass, leaderLevel = r.leaderLevel, leaderDays = r.leaderDays,
-				captains = {},
-			}
-			for _, o in ipairs(r.officers or {}) do
-				node.captains[#node.captains + 1] = { name = o.name, online = s.fresh and o.online or false, class = o.class, level = o.level, rank = o.rank, days = o.days }
-			end
-			if s.main and r.leader then tree.king = node end
-			tree.guilds[#tree.guilds + 1] = node
-		end
-	end
-	return tree
-end
-
 -- Для карты: [zoneKey] = { total = n, guilds = { [название] = n } } по свежим отчётам.
 function Data.ZoneCounts(now)
 	local out = {}
