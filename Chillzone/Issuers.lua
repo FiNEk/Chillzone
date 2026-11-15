@@ -231,14 +231,35 @@ function I.Records()
     end
     return list
 end
+-- Шёпотом адресату (Share) уходят отзывы любой гильдии и действующие допуски главной.
+local function Whispered(d)
+    return Admissible(d) and (not d.active or (d.expires > ns.ServerTime() and U.IsMainGuild(d.guild)))
+end
+-- Те же допуски и отзывы записями (TrustCatalog.Record), вместе с отзывами главы (KV): их
+-- хэши пингующий называет реле в сверке (RH, Security.lua), чтобы реле их не повторяло.
+function I.ShareRecords()
+    local list, TC = {}, ns.TrustCatalog
+    for gk, l in pairs(Store()) do
+        for key, d in pairs(l) do
+            if Whispered(d) then
+                list[#list + 1] = TC.Record("KD", "KD:" .. gk .. ":" .. key, Wire(d.raw), ns.PREFIX,
+                    "issuer-share:" .. gk .. ":" .. key)
+            end
+        end
+    end
+    if ns.IssuerRevocations then
+        for _, r in ipairs(ns.IssuerRevocations.Records()) do list[#list + 1] = r end
+    end
+    return list
+end
 -- В гильдию допуски и отзывы уходят каталогом доверия (TrustCatalog.lua) по запросу вошедших;
--- здесь — шёпот одному адресату.
-function I.Share(target, priority)
+-- здесь — шёпот одному адресату. have — хэши того, что у адресата уже есть (его сверка RH):
+-- эти байты ему не нужны.
+function I.Share(target, priority, have)
     if target == "GUILD" then return end
     for _, list in pairs(Store()) do
         for _, d in pairs(list) do
-            if Admissible(d) and (not d.active
-                or (d.active and d.expires > ns.ServerTime() and U.IsMainGuild(d.guild))) then
+            if Whispered(d) and not (have and have[ns.TrustCatalog.WireDigest("KD", Wire(d.raw), ns.PREFIX)]) then
                 local key = target .. ":" .. U.GuildKey(d.guild) .. ":" .. d.key
                 local old = shared[key]
                 if not old or old.raw ~= d.raw or ns.Now() - old.at >= C.AUTH_INTRODUCE then
@@ -249,7 +270,7 @@ function I.Share(target, priority)
             end
         end
     end
-    if ns.IssuerRevocations then ns.IssuerRevocations.Share(target, priority) end
+    if ns.IssuerRevocations then ns.IssuerRevocations.Share(target, priority, have) end
 end
 function I.ShareRevocations(target, priority)
     for _, list in pairs(Store()) do

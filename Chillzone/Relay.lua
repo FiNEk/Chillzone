@@ -278,6 +278,9 @@ local function Ask(e, payload, renews)
 	if silent and not renews then return end
 	if ns.Issuers then ns.Issuers.ShareRevocations(e.name, true) end
 	ns.Security.Introduce(e.name) -- в RP и RR только отпечаток моего сертификата
+	-- Что из ответа реле у меня уже есть (RH): оно не повторит свой сертификат, допуски,
+	-- решения и владельца.
+	ns.Security.SayHave(e.name, "ask:" .. e.key)
 	-- Очередь и блокировка клиента не означают молчание реле. Отсчёт ответа начинается
 	-- после отправки всех кусков; отдельный маркер защищает новый опрос от старого колбэка.
 	local probe = not silent and {} or nil
@@ -730,7 +733,7 @@ local function Pong(sender)
 	if lastPong[k] and now - lastPong[k] < PONG_GAP then return end
 	lastPong[k] = now
 	ns.Security.SendPolicies(sender)
-	ns.Security.Introduce(sender)
+	ns.Security.IntroduceRelay(sender)
 	ShareTop(sender)
 	ns.Comm.Send("WHISPER", Codec.EncodeRelayList(GossipList(k)), { target = sender, prio = true, key = "ry:" .. k })
 end

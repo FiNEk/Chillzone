@@ -136,13 +136,18 @@ function R.Records()
     return list
 end
 -- В гильдию — сразу (TrustCatalog.Direct): новый отзыв без окна каталога, а услышанный от
--- офицера меньше окна назад не повторяется. Шёпот — как прежде.
-function R.Share(target, priority)
+-- офицера меньше окна назад не повторяется. Шёпот — как прежде, кроме того, что адресат
+-- назвал в сверке (have — хэши, RH в Security.lua).
+function R.Share(target, priority, have)
     for gk, list in pairs(Store()) do
         for k, r in pairs(list) do
             local key = target .. ":" .. U.GuildKey(r.guild) .. ":" .. r.key
             local old = shared[key]
             local proof = Shareable(r)
+            if proof and have and target ~= "GUILD"
+                and have[ns.TrustCatalog.WireDigest("KV", proof.wire, ns.PREFIX)] then
+                proof = nil
+            end
             if proof and target == "GUILD" then
                 ns.TrustCatalog.Direct(ns.TrustCatalog.Record("KV", "KV:" .. gk .. ":" .. k, proof.wire, ns.PREFIX,
                     "issuer-revoke:" .. key), priority)
