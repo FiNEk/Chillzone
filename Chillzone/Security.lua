@@ -32,6 +32,8 @@ local probeSince -- с каких пор у меня сертификат и г�
 local unionQueries = {}
 local haves = {} -- [Key] = { at, set }: хэши записей каталога, названные согильдийцем перед UQ (UH)
 local HaveWire -- хэши своих записей каталога для сверки (ниже, у Security.Catalog)
+local relayHaves = {} -- (я реле) [Key пингующего] = { at, set }: его сверка (RH)
+local haveSent = {} -- [Key реле] = { wire, at }: моя сверка этому реле (S.SayHave)
 local unionQueryAt, unionQueryDelay = -1e9, 0
 local MAX_CERT, MAX_WIRE, MAX_PENDING, FP_LEN = 1800, 7000, 32, 16
 
@@ -624,6 +626,72 @@ HaveWire = function()
     for i = 1, math.min(#list, C.TRUST_HAVE_MAX) do out[i] = ns.TrustCatalog.Digest(list[i]) end
     return table.concat(out)
 end
+-- Что реле шлёт пингующему шёпотом в ответ на RP и RR (SendPolicies): владелец объединения,
+-- действующие решения главы, допуски главной гильдии и все отзывы (Issuers.ShareRecords).
+-- Те же записи у пингующего — его сверка (RH): реле повторяет только недостающее.
+local function RelayRecords()
+    local list, TC = {}, ns.TrustCatalog
+    if not Store() then return list end
+    list[#list + 1] = ns.UnionAuthority.Record()
+    for gk, p in pairs(Store().policies) do
+        if PolicyCurrent(p) then
+            list[#list + 1] = TC.Record("KA", "KA:" .. gk, p.wire, PolicyPrefix(p), "union:" .. U.GuildKey(p.guild))
+        end
+    end
+    for _, r in ipairs(ns.Issuers.ShareRecords()) do list[#list + 1] = r end
+    return list
+end
+-- Сверка у реле перед RP и RR: хэши того, что у меня уже есть из его ответа. Первым — его
+-- сертификат: без него ответ RY не принять. Записи — по уровням, как в UH; что не вошло в
+-- RELAY_HAVE_MAX, реле пришлёт. Записи собираются не чаще раза в две секунды: репортёр
+-- спрашивает три реле каждые 15 секунд.
+local relayBase, relayBaseAt = nil, -1e9
+local function RelayHaveWire(target)
+    local now, TC = ns.Now(), ns.TrustCatalog
+    if not relayBase or now - relayBaseAt >= 2 then
+        local list = RelayRecords()
+        table.sort(list, function(a, b)
+            if a.tier ~= b.tier then return a.tier < b.tier end
+            return a.slot < b.slot
+        end)
+        relayBase, relayBaseAt = {}, now
+        for i, r in ipairs(list) do relayBase[i] = TC.Digest(r) end
+    end
+    local out = {}
+    local c = S.Member(C.MAIN_GUILD, target)
+    if c then out[1] = TC.WireDigest("KP", "KP~" .. Ed.ToB64(c.raw), ns.PREFIX) end
+    for _, d in ipairs(relayBase) do
+        if #out >= C.RELAY_HAVE_MAX then break end
+        out[#out + 1] = d
+    end
+    return table.concat(out)
+end
+-- Реле target я сейчас спрошу (RP, RR с ключом очереди before): сначала — сверка (RH), что из его
+-- ответа у меня уже есть. Прежде реле на каждый вход участника других гильдий слало ему все
+-- допуски, решения и владельца заново: больше половины шёпота реле. Тому же реле — при изменении
+-- и не реже RELAY_HAVE_EVERY: реле помнит сверку RELAY_HAVE_TTL. Пустая сверка не уходит:
+-- реле и так пришлёт всё. Прежние версии RH молча отбрасывают и шлют всё, как раньше.
+function S.SayHave(target, before)
+    local key = U.Key(target)
+    if not key or key == ns.myKey then return end
+    local wire, now = RelayHaveWire(target), ns.Now()
+    local sent = haveSent[key]
+    if wire == "" or (sent and sent.wire == wire and now - sent.at < C.RELAY_HAVE_EVERY) then return end
+    local entry = { wire = wire, at = now }
+    haveSent[key] = entry
+    -- Не ушла — повторить при следующем опросе, а не через RELAY_HAVE_EVERY.
+    local function Lost(ok) if not ok and haveSent[key] == entry then haveSent[key] = nil end end
+    if not ns.Comm.Send("WHISPER", "RH~" .. wire, { target = target, prio = true, key = "relay-have:" .. key,
+        before = before, done = Lost }) then
+        Lost(false)
+    end
+end
+-- (я реле) Сверка пингующего key (RH) или nil: её нет (прежняя версия, RH потерян или давний),
+-- и реле шлёт всё, как раньше.
+local function RelayHave(key)
+    local h = key and relayHaves[key]
+    return h and ns.Now() - h.at < C.RELAY_HAVE_TTL and h.set or nil
+end
 -- Что назвал согильдиец key своей сверкой (UH): действует, пока его вход ещё отвечается.
 local function Have(key)
     local h = key and haves[key]
@@ -753,25 +821,46 @@ end)
 -- Ответ реле (Pong) на каждую регистрацию репортёра, а она раз в 15 секунд. Владелец и решения
 -- уходят адресату, только если изменились или с прошлой отправки прошло AUTH_INTRODUCE, как допуски
 -- (Issuers.Share): те же байты получатель всё равно отбрасывает, а смену решения главы реле
--- ещё и сразу шлёт держателю аренды (UNION_POLICY в Relay.lua).
+-- ещё и сразу шлёт держателю аренды (UNION_POLICY в Relay.lua). Что адресат назвал в сверке
+-- (RH), ему не шлётся вовсе: у него эти байты уже есть.
 function S.SendPolicies(target)
     local key, now = U.Key(target), ns.Now()
+    local have, TC = RelayHave(key), ns.TrustCatalog
     local owner, sent = ns.UnionAuthority.Current(), ownerSent[key]
-    if owner and (not sent or sent.raw ~= owner.raw or now - sent.at >= C.AUTH_INTRODUCE) then
+    if owner and (not sent or sent.raw ~= owner.raw or now - sent.at >= C.AUTH_INTRODUCE)
+        and not (have and have[TC.Digest(ns.UnionAuthority.Record())]) then
         ownerSent[key] = { raw = owner.raw, at = now }
         ns.UnionAuthority.Share(target, true)
     end
-    ns.Issuers.Share(target, true)
+    ns.Issuers.Share(target, true, have)
     policySent[key] = policySent[key] or {}
     for _, p in pairs(Store() and Store().policies or {}) do
         local old = policySent[key][p.guild]
-        if PolicyCurrent(p)
+        if PolicyCurrent(p) and not (have and have[TC.WireDigest("KA", p.wire, PolicyPrefix(p))])
             and (not old or old.wire ~= p.wire or now - old.at >= C.AUTH_INTRODUCE) then
             policySent[key][p.guild] = { wire = p.wire, at = now }
             ns.Comm.Send("WHISPER", p.wire, { target = target, prio = true,
                 key = "policy:" .. U.Key(target) .. ":" .. p.guild, prefix = PolicyPrefix(p) })
         end
     end
+end
+-- Мой сертификат в ответе реле (Pong): не нужен, если пингующий назвал его в сверке (RH).
+-- Тогда он считается доставленным и для других путей (Forward): Introduce его не повторит.
+-- Сертификат реле обновляется раз в AUTH_RENEW, и новый уходит, пока его нет в сверке.
+local myKp = {}
+function S.IntroduceRelay(target)
+    local have, mine = RelayHave(U.Key(target)), S.MyCertificate()
+    if have and mine then
+        if myKp.raw ~= mine.raw then
+            myKp.raw, myKp.digest = mine.raw, ns.TrustCatalog.WireDigest("KP", "KP~" .. Ed.ToB64(mine.raw), ns.PREFIX)
+        end
+        local c = have[myKp.digest] and Certificate(mine.raw)
+        if c then
+            introduced[Peer(target) .. "|" .. c.fp] = ns.Now()
+            return
+        end
+    end
+    S.Introduce(target)
 end
 -- Контакт гильдии получает решение шёпотом при каждой подписи. Другой персонаж этого же
 -- аккаунта со мной в игре не бывает: решение он найдёт в общих SavedVariables. Контакт,
@@ -1255,6 +1344,22 @@ ns.Comm.On("UH", function(msg, sender, dist)
     for i = 1, #list, size do set[list:sub(i, i + size - 1)] = true end
     haves[U.Key(sender)] = { at = ns.Now(), set = set }
 end)
+-- (я реле) Сверка пингующего перед RP и RR (S.SayHave): хэши того, что из моего ответа у него
+-- уже есть. Прав не даёт: шёпот подписан сервером, и подделавший сверку лишь сам не получит
+-- записей. Пингующих — не больше RELAY_HAVE_PEERS, новый сверх предела получит всё.
+ns.Comm.On("RH", function(msg, sender, dist)
+    if dist ~= "WHISPER" or not ns.Relay or not ns.Relay.IAmRelay() then return end
+    local list, size, key = msg:match("^RH~([%w_-]+)$"), ns.TrustCatalog.DIGEST, U.Key(sender)
+    if not key or not list or #list % size ~= 0 or #list > C.RELAY_HAVE_MAX * size then return end
+    if not relayHaves[key] then
+        local n = 0
+        for _ in pairs(relayHaves) do n = n + 1 end
+        if n >= C.RELAY_HAVE_PEERS then return end
+    end
+    local set = {}
+    for i = 1, #list, size do set[list:sub(i, i + size - 1)] = true end
+    relayHaves[key] = { at = ns.Now(), set = set }
+end)
 ns.Comm.On("UQ", function(msg, sender, dist, ctx)
     if msg == "UQ~1" and dist == "GUILD" and ctx and ctx.unionControl and NativeRole(sender) then
         local key = U.Key(sender)
@@ -1607,12 +1712,15 @@ ns.On("LOGIN", function()
         end
         for key, t in pairs(unionQueries) do if clock - t >= 3600 then unionQueries[key] = nil end end
         for key, h in pairs(haves) do if clock - h.at >= 2 * C.TRUST_SHARE_WINDOW then haves[key] = nil end end
+        for key, h in pairs(relayHaves) do if clock - h.at >= C.RELAY_HAVE_TTL then relayHaves[key] = nil end end
+        for key, sent in pairs(haveSent) do if clock - sent.at >= C.RELAY_HAVE_EVERY then haveSent[key] = nil end end
     end)
 end)
 ns.On("GUILD_CHANGED", function()
     keys, issuing, pending, outgoing, hints = {}, {}, {}, {}, {}
     acceptedLinks = {}
     unionQueries, unionQueryAt, unionQueryDelay, haves = {}, -1e9, 0, {}
+    relayHaves, haveSent, relayBase = {}, {}, nil
     lastHello, lastPolicy, lastSaid = -1e9, -1e9, nil
     S.Say()
 end)

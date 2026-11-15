@@ -978,7 +978,9 @@ for _, started in ipairs({ false, true }) do
         -- Как при повторном Q1: корни объявляются ещё раз, затем тот же сертификат.
         V.ns.Security.ShareTrust()
         V.ns.Security.Introduce("GUILD", raw, true)
-        for _ = 1, 30 do
+        -- Запас GUILD к этому моменту зависит от случайных задержек приветов: полоса может
+        -- набирать куски по одному в SEND_INTERVAL, поэтому ждём до опустошения очереди.
+        for _ = 1, 600 do
             if V.ns.Comm.QueueSize() == 0 then break end
             V.ns.Comm.Flush(1); w:Run(0.1)
         end

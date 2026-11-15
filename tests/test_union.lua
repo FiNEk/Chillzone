@@ -48,37 +48,166 @@ T.test("union-review: повторный запрос каталога полу�
     T.eq(priorities[#priorities], false, "повторный каталог наравне с чатом")
 end)
 
-T.test("union-review: реле не повторяет владельца и решения в каждом ответе репортёру", function()
-    local w, k, o, v = Build()
-    w:Pair(v, k); w:Run(120)
-    T.ok(v.ns.Census.IsReporter() and k.ns.Relay.IAmRelay() and o.ns.Relay.IAmRelay(), "Вера регистрируется у двух реле")
-    -- Первые куски шёпотов Вере: [тип][кто] = сколько.
-    local function Count(from)
-        local n = {}
-        for i = from + 1, #w.log do
-            local e = w.log[i]
-            local kind = e.dist == "WHISPER" and e.target == v:Name()
-                and (e.msg:match("^C[^:]*:1:%d+:(%u%w)~") or e.msg:match("^(%u%w)~"))
-            if kind then
-                n[kind] = n[kind] or {}
-                n[kind][e.from] = (n[kind][e.from] or 0) + 1
+-- Первые куски шёпотов с from-го события журнала: [тип][кто] = сколько; to — кому.
+local function CountWhispers(w, from, to)
+    local n = {}
+    for i = from + 1, #w.log do
+        local e = w.log[i]
+        local kind = e.dist == "WHISPER" and e.target == to
+            and (e.msg:match("^C[^:]*:1:%d+:(%u%w)~") or e.msg:match("^(%u%w)~"))
+        if kind then
+            n[kind] = n[kind] or {}
+            n[kind][e.from] = (n[kind][e.from] or 0) + 1
+        end
+    end
+    return n
+end
+
+for _, old in ipairs({ true, false }) do
+    T.test("union-review: реле не повторяет владельца и решения в каждом ответе репортёру"
+        .. (old and " (без сверки RH)" or " (сверка RH)"), function()
+        local w, k, o, v = Build()
+        -- Прежняя версия сверку не шлёт: реле повторяет записи раз в AUTH_INTRODUCE.
+        if old then v.ns.Security.SayHave = function() end end
+        -- Сертификаты реле Вере: [байты] = сколько раз. Офицер обновляет свой раз в AUTH_RENEW,
+        -- и новый уходит Вере заново; повторять те же байты незачем.
+        local certs, repeated = {}, 0
+        for _, relay in ipairs({ k, o }) do
+            local send = relay.ns.Comm.Send
+            relay.ns.Comm.Send = function(dist, msg, opts)
+                if dist == "WHISPER" and msg:sub(1, 3) == "KP~" and opts
+                    and relay.ns.Util.Key(opts.target) == v.ns.myKey then
+                    local id = relay:Name() .. msg
+                    if certs[id] then repeated = repeated + 1 end
+                    certs[id] = true
+                end
+                return send(dist, msg, opts)
             end
         end
-        return n
+        w:Pair(v, k); w:Run(120)
+        T.ok(v.ns.Census.IsReporter() and k.ns.Relay.IAmRelay() and o.ns.Relay.IAmRelay(),
+            "Вера регистрируется у двух реле")
+        local from = #w.log
+        w:Run(300)
+        local n = CountWhispers(w, from, v:Name())
+        T.ok(n.RY and (n.RY[k:Name()] or 0) >= 15 and (n.RY[o:Name()] or 0) >= 15,
+            "реле отвечают на каждую регистрацию")
+        T.eq(n.UO, nil, "владелец в ответе не повторяется")
+        T.eq(n.KA, nil, "решения в ответе не повторяются")
+        from = #w.log
+        w:Run(k.ns.Config.AUTH_INTRODUCE + 60)
+        n = CountWhispers(w, from, v:Name())
+        if old then
+            -- Раз в AUTH_INTRODUCE — снова, по разу от каждого реле: страховка от потерянного шёпота.
+            -- Глава ещё и сам доставляет решение контакту гильдии раз в UNION_CONTACT_RETRY.
+            T.ok(n.UO and n.UO[o:Name()] == 1 and n.UO[k:Name()] and n.UO[k:Name()] <= 2,
+                "владелец раз в AUTH_INTRODUCE")
+            T.ok(n.KA and n.KA[o:Name()] == 1 and n.KA[k:Name()] and n.KA[k:Name()] <= 2,
+                "решение раз в AUTH_INTRODUCE")
+        else
+            -- Вера назвала в сверке владельца, решение и сертификаты реле: повторять нечего.
+            -- Решение контакту гильдии глава доставляет отдельно (UNION_CONTACT_RETRY).
+            T.eq(n.UO and n.UO[o:Name()], nil, "офицер-реле не повторяет владельца")
+            T.eq(n.KA and n.KA[o:Name()], nil, "офицер-реле не повторяет решение")
+            T.ok(not n.UO or (n.UO[k:Name()] or 0) <= 1, "владелец от главы — только контакту")
+            T.ok(not n.KA or (n.KA[k:Name()] or 0) <= 1, "решение от главы — только контакту")
+            T.eq(repeated, 0, "реле не повторяют один и тот же сертификат")
+            T.ok(n.KP and (n.KP[o:Name()] or 0) >= 1, "обновлённый сертификат реле доходит")
+            -- Сверка меняется с обновлением сертификата реле (AUTH_RENEW): не чаще раза в 10 минут.
+            local sent = CountWhispers(w, from, o:Name()).RH
+            local every = math.min(k.ns.Config.AUTH_RENEW, k.ns.Config.RELAY_HAVE_EVERY)
+            T.ok(sent and (sent[v:Name()] or 0) >= 1
+                and sent[v:Name()] <= math.ceil((k.ns.Config.AUTH_INTRODUCE + 60) / every) + 1,
+                "сверка уходит реле при изменении, а не на каждую регистрацию")
+        end
+    end)
+end
+
+-- Вход участника другой гильдии: владелец, решения, допуски и сертификаты реле у него уже
+-- сохранены. Прежде реле на каждый такой вход слало всё заново (больше половины шёпота реле).
+for _, old in ipairs({ true, false }) do
+    T.test("union-review: вход с сохранёнными записями — реле их не повторяет"
+        .. (old and " (без сверки RH)" or " (сверка RH)"), function()
+        local w, k, o, v = Build()
+        w:Pair(v, k); w:Run(60)
+        T.ok(k.ns.Issuers.Grant(o:Name(), o.ns.Security.PublicKey()), "глава выдал допуск офицеру")
+        w:Run(120)
+        T.ok(v.ns.Issuers.For(o.guild, o.ns.myKey), "допуск офицера у Веры есть")
+        v:Logout()
+        -- Реле забыли и свои отправки Вере, и её сверку.
+        w:Run(k.ns.Config.AUTH_INTRODUCE + k.ns.Config.RELAY_HAVE_TTL)
+        local known, repeated = {}, 0
+        for _, relay in ipairs({ k, o }) do
+            local c = v.ns.Security.Member(relay.guild, relay:Name())
+            known[relay:Name()] = c and ("KP~" .. v.ns.Ed25519.ToB64(c.raw))
+            local send = relay.ns.Comm.Send
+            relay.ns.Comm.Send = function(dist, msg, opts)
+                if dist == "WHISPER" and opts and relay.ns.Util.Key(opts.target) == v.ns.myKey
+                    and msg == known[relay:Name()] then
+                    repeated = repeated + 1
+                end
+                return send(dist, msg, opts)
+            end
+        end
+        local R = w:Reload(v)
+        if old then R.ns.Security.SayHave = function() end end
+        local from = #w.log
+        w:Run(120)
+        local n = CountWhispers(w, from, R:Name())
+        T.ok(n.RY and n.RY[o:Name()], "Вера снова опрашивает реле")
+        if old then
+            T.ok(n.UO and n.UO[o:Name()] == 1, "прежняя версия: владелец заново")
+            T.ok(n.KA and n.KA[o:Name()] == 1, "прежняя версия: решение заново")
+            T.ok(n.KD and n.KD[o:Name()], "прежняя версия: допуск заново")
+        else
+            T.eq(n.UO and n.UO[o:Name()], nil, "владелец не повторяется")
+            T.eq(n.KA and n.KA[o:Name()], nil, "решение не повторяется")
+            T.eq(n.KD, nil, "допуск не повторяется")
+            T.eq(repeated, 0, "сохранённый сертификат реле не повторяется")
+            -- Сверка уходит раньше первого опроса: иначе реле успело бы ответить всем.
+            local rh, ask
+            for i = from + 1, #w.log do
+                local e = w.log[i]
+                if e.dist == "WHISPER" and e.from == R:Name() and e.target == o:Name() then
+                    local kind = e.msg:match("^C[^:]*:1:%d+:(%u%w)~") or e.msg:match("^(%u%w)~")
+                    if kind == "RH" then rh = rh or i end
+                    if kind == "RP" or kind == "RR" then ask = ask or i end
+                end
+            end
+            T.ok(rh and ask and rh < ask, "сверка раньше опроса")
+        end
+        T.eq(#R.ns.db.errors, 0, "без ошибок")
+    end)
+end
+
+T.test("union-review: неполная, испорченная или чужая сверка RH не мешает доставке", function()
+    local w, k, o, v = Build()
+    w:Pair(v, k); w:Run(60)
+    T.ok(o.ns.Relay.IAmRelay() and not v.ns.Relay.IAmRelay(), "офицер — реле, Вера — нет")
+    T.ok(v.ns.UnionAuthority.Current(), "владелец у Веры есть")
+    local owner = o.ns.TrustCatalog.Digest(o.ns.UnionAuthority.Record())
+    -- Что client шлёт шёпотом name в ответе реле (SendPolicies) после сверки rh: [тип] = сколько.
+    local function Reply(client, name, rh, dist)
+        if rh then client.ns.Comm.Dispatch(rh, name, dist or "WHISPER") end
+        local kinds, send = {}, client.ns.Comm.Send
+        client.ns.Comm.Send = function(d, msg, opts)
+            local kind = d == "WHISPER" and opts and opts.target == name and msg:match("^(%u%w)~")
+            if kind then kinds[kind] = (kinds[kind] or 0) + 1 end
+            return send(d, msg, opts)
+        end
+        client.ns.Security.SendPolicies(name)
+        client.ns.Comm.Send = send
+        return kinds
     end
-    local from = #w.log
-    w:Run(300)
-    local n = Count(from)
-    T.ok(n.RY and (n.RY[k:Name()] or 0) >= 15 and (n.RY[o:Name()] or 0) >= 15, "реле отвечают на каждую регистрацию")
-    T.eq(n.UO, nil, "владелец в ответе не повторяется")
-    T.eq(n.KA, nil, "решения в ответе не повторяются")
-    -- Раз в AUTH_INTRODUCE — снова, по разу от каждого реле: страховка от потерянного шёпота.
-    -- Глава ещё и сам доставляет решение контакту гильдии раз в UNION_CONTACT_RETRY.
-    from = #w.log
-    w:Run(k.ns.Config.AUTH_INTRODUCE + 60)
-    n = Count(from)
-    T.ok(n.UO and n.UO[o:Name()] == 1 and n.UO[k:Name()] and n.UO[k:Name()] <= 2, "владелец раз в AUTH_INTRODUCE")
-    T.ok(n.KA and n.KA[o:Name()] == 1 and n.KA[k:Name()] and n.KA[k:Name()] <= 2, "решение раз в AUTH_INTRODUCE")
+    local got = Reply(o, "Пётр Первый", "RH~" .. owner)
+    T.eq(got.UO, nil, "названного владельца реле не шлёт")
+    T.ok(got.KA, "решение, которого нет в сверке, уходит")
+    T.ok(Reply(o, "Пётр Второй", "RH~" .. owner, "GUILD").UO, "сверка не шёпотом не действует")
+    T.ok(Reply(o, "Пётр Третий", "RH~" .. owner .. "A").UO, "сверка с обрезанным хэшем отброшена")
+    T.ok(Reply(o, "Пётр Четвёртый", "RH~" .. string.rep(owner, o.ns.Config.RELAY_HAVE_MAX + 1)).UO,
+        "слишком длинная сверка отброшена")
+    T.ok(Reply(v, "Пётр Пятый", "RH~" .. owner).UO, "не реле сверку не принимает")
+    for _, c in ipairs({ o, v }) do T.eq(#c.ns.db.errors, 0, c:Name() .. ": без ошибок") end
 end)
 
 T.test("union-review: очистка истёкшего допуска сохраняет ручной запрет корня", function()
