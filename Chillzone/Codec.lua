@@ -1167,17 +1167,22 @@ end
 -- связь (trusted(key); nil — всем). Если хоть кто-то из них делится зонами, выбирают только
 -- из делящихся. Все считают одинаково — переговоры не нужны. Нет ни одного доверенного — nil.
 -- peers: [key] = { t = последний H1, z = делится зонами }.
+-- Один проход: trusted у каждого на связи спрашивается один раз (у большой гильдии выборы идут
+-- на каждое пересылаемое сообщение).
 function Codec.PickReporter(selfKey, selfShares, peers, now, window, trusted)
 	local function ok(key) return trusted == nil or trusted(key) == true end
 	local selfOk = selfKey ~= nil and ok(selfKey)
-	local anyShares = selfOk and selfShares and true or false
+	local bestShares, bestAny -- наименьший Key среди делящихся зонами и среди всех доверенных
 	for key, p in pairs(peers) do
-		if now - p.t <= window and p.z and ok(key) then anyShares = true end
+		if now - p.t <= window and ok(key) then
+			if not bestAny or key < bestAny then bestAny = key end
+			if p.z and (not bestShares or key < bestShares) then bestShares = key end
+		end
 	end
-	local best = selfOk and (not anyShares or selfShares) and selfKey or nil
-	for key, p in pairs(peers) do
-		if now - p.t <= window and (p.z or not anyShares) and ok(key) and (not best or key < best) then best = key end
-	end
+	local anyShares = (selfOk and selfShares) or bestShares ~= nil
+	local best = bestAny
+	if anyShares then best = bestShares end
+	if selfOk and (not anyShares or selfShares) and (not best or selfKey < best) then best = selfKey end
 	return best
 end
 

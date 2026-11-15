@@ -15,12 +15,23 @@ local byte, char = string.byte, string.char
 local function upperAP(c) return "\208" .. char(byte(c) + 32) end
 local function upperRYa(c) return "\209" .. char(byte(c) - 32) end
 
+-- Fold зовут на каждое имя и название гильдии: U.Key у каждого сообщения, выборы репортёра у
+-- каждого согильдийца. lower и три gsub на строку дороги, а строк немного и они повторяются,
+-- поэтому ответ запоминается. Он зависит только от строки; таблица сбрасывается целиком, когда
+-- в ней FOLD_KEEP строк.
+local FOLD_KEEP = 4096
+local folded, foldedCount = {}, 0
 function U.Fold(s)
-	s = tostring(s or ""):lower()
-	s = s:gsub("\208([\144-\159])", upperAP)
-	s = s:gsub("\208([\160-\175])", upperRYa)
-	s = s:gsub("\208\129", "\209\145")
-	return s
+	s = tostring(s or "")
+	local out = folded[s]
+	if out then return out end
+	out = s:lower()
+	out = out:gsub("\208([\144-\159])", upperAP)
+	out = out:gsub("\208([\160-\175])", upperRYa)
+	out = out:gsub("\208\129", "\209\145")
+	if foldedCount >= FOLD_KEEP then folded, foldedCount = {}, 0 end
+	folded[s], foldedCount = out, foldedCount + 1
+	return out
 end
 
 -- Русская форма слова для числа: 1 участник, 2 участника, 5 участников (11–14 — как 5).
@@ -172,10 +183,20 @@ function U.IsRecruitGuild(guild)
 end
 
 -- Звание связного (Config.RELAY_RANK): название целиком, без учёта регистра и пробелов по краям.
+-- Его спрашивают о каждом согильдийце при выборах репортёра, а званий в гильдии с десяток:
+-- ответ запоминается по названию, пока RELAY_RANK тот же.
+local relayRankFor, relayRanks, relayRankCount = nil, {}, 0
 function U.IsRelayRankName(rankName)
-	local want = U.Trim(ns.Config.RELAY_RANK)
-	if want == "" or type(rankName) ~= "string" then return false end
-	return U.Fold(U.Trim(rankName)) == U.Fold(want)
+	if type(rankName) ~= "string" then return false end
+	local config = ns.Config.RELAY_RANK
+	if config ~= relayRankFor or relayRankCount >= 64 then relayRankFor, relayRanks, relayRankCount = config, {}, 0 end
+	local yes = relayRanks[rankName]
+	if yes == nil then
+		local want = U.Trim(config)
+		yes = want ~= "" and U.Fold(U.Trim(rankName)) == U.Fold(want)
+		relayRanks[rankName], relayRankCount = yes, relayRankCount + 1
+	end
+	return yes
 end
 
 -- Кому гильдия доверяет связь: "leader", "officer", "rank" (связной), "member" (любой
