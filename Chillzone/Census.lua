@@ -250,11 +250,27 @@ function Census.SendHello()
 	end
 end
 
+-- Вне планового привета (HELLO_EVERY) гильдии отвечает только тот, кто ей пересылает:
+-- репортёр или передающий дела. Вошедшему он нужен сразу, чтобы принимать RG (MayForward), а
+-- остальных тот услышит в их плановых приветах до конца LOGIN_QUIET: HELLO_EVERY короче.
+-- Раньше на каждый вход отвечали все клиенты гильдии, и одних H1 было по три-четыре в минуту
+-- на клиента. Когда вошедший сам становится репортёром, прежний отвечает как передающий дела:
+-- его выбрал бы вошедший без себя (Census.Reporter(true)).
+local function Answers()
+	return Census.Forwarding()
+end
+
 -- Привет в ответ на запрос каталога доверия (Security.ShareTrust): не чаще раза в gap
--- секунд. Сменилась готовность — сразу, как в Track. Плановый привет (HELLO_EVERY) и
--- ответ новому соседу (H1) идут как прежде.
+-- секунд и только от пересылающего (Answers). Сменилась готовность — сразу, как в Track.
 function Census.Hello(gap)
+	if not Answers() then return end
 	if helloReady ~= (ns.Security.MyCertificate() ~= nil) or ns.Now() - helloAt >= gap then Census.SendHello() end
+end
+
+-- Ответ новому соседу. Задержка выбирается сразу: случайная задержка не зависит от того,
+-- ответит ли клиент, и порядок случайных чисел у всех клиентов прежний.
+local function HelloBack()
+	if Answers() then Census.SendHello() end
 end
 
 ns.Comm.On("H1", function(msg, sender, dist)
@@ -266,10 +282,10 @@ ns.Comm.On("H1", function(msg, sender, dist)
 	local since = known and now - known.t <= C.PEER_WINDOW and known.since or now
 	peers[key] = { t = now, since = since, z = h.zones, r = h.relay, name = sender, version = h.version, unready = h.unready }
 	ns.Update.Heard(key, h.version)
-	-- Новый согильдиец с аддоном: ответить своим приветом, чтобы выборы сошлись быстрее,
-	-- и отметить его в списке людей окна.
+	-- Новый согильдиец с аддоном: отметить его в списке людей окна, а репортёру — ответить
+	-- своим приветом (HelloBack), чтобы вошедший сразу принимал его RG.
 	if not known or known.version ~= h.version then ns.Fire("PEERS") end
-	if not known then ns.After(math.random(2, 6), "hello back", Census.SendHello) end
+	if not known then ns.After(math.random(2, 6), "hello back", HelloBack) end
 end)
 
 ---------------------------------------------------------------------------

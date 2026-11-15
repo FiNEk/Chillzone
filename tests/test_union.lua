@@ -48,6 +48,39 @@ T.test("union-review: повторный запрос каталога полу�
     T.eq(priorities[#priorities], false, "повторный каталог наравне с чатом")
 end)
 
+T.test("union-review: реле не повторяет владельца и решения в каждом ответе репортёру", function()
+    local w, k, o, v = Build()
+    w:Pair(v, k); w:Run(120)
+    T.ok(v.ns.Census.IsReporter() and k.ns.Relay.IAmRelay() and o.ns.Relay.IAmRelay(), "Вера регистрируется у двух реле")
+    -- Первые куски шёпотов Вере: [тип][кто] = сколько.
+    local function Count(from)
+        local n = {}
+        for i = from + 1, #w.log do
+            local e = w.log[i]
+            local kind = e.dist == "WHISPER" and e.target == v:Name()
+                and (e.msg:match("^C[^:]*:1:%d+:(%u%w)~") or e.msg:match("^(%u%w)~"))
+            if kind then
+                n[kind] = n[kind] or {}
+                n[kind][e.from] = (n[kind][e.from] or 0) + 1
+            end
+        end
+        return n
+    end
+    local from = #w.log
+    w:Run(300)
+    local n = Count(from)
+    T.ok(n.RY and (n.RY[k:Name()] or 0) >= 15 and (n.RY[o:Name()] or 0) >= 15, "реле отвечают на каждую регистрацию")
+    T.eq(n.UO, nil, "владелец в ответе не повторяется")
+    T.eq(n.KA, nil, "решения в ответе не повторяются")
+    -- Раз в AUTH_INTRODUCE — снова, по разу от каждого реле: страховка от потерянного шёпота.
+    -- Глава ещё и сам доставляет решение контакту гильдии раз в UNION_CONTACT_RETRY.
+    from = #w.log
+    w:Run(k.ns.Config.AUTH_INTRODUCE + 60)
+    n = Count(from)
+    T.ok(n.UO and n.UO[o:Name()] == 1 and n.UO[k:Name()] and n.UO[k:Name()] <= 2, "владелец раз в AUTH_INTRODUCE")
+    T.ok(n.KA and n.KA[o:Name()] == 1 and n.KA[k:Name()] and n.KA[k:Name()] <= 2, "решение раз в AUTH_INTRODUCE")
+end)
+
 T.test("union-review: очистка истёкшего допуска сохраняет ручной запрет корня", function()
     local w, k, o = Build()
     w:Run(90)

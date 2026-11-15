@@ -15,11 +15,15 @@
 -- * Запрос. UQ и первый K1 соседа просят весь каталог, остальные K1 и плановое объявление
 --   офицера (раз в 30 с) — только корни. Первый K1 меньше окна после UQ того же соседа — тот же
 --   вход (Security.lua): он просит только корни, иначе его запрос сдвинулся бы за уже
---   разосланное. Запрос запоминается временем прихода. Запись нужна, пока её не разослали
---   после последнего запроса: кто пришёл после рассылки, её не слышал.
+--   разосланное. Первый K1 без владельца объединения просит корни нового соседа (fresh).
+--   Запрос запоминается временем прихода. Запись нужна, пока её не разослали после последнего
+--   запроса: кто пришёл после рассылки, её не слышал.
 -- * Окно. Те же байты — не чаще TRUST_SHARE_WINDOW. Запросы внутри окна ждут его конца, и
---   одна копия обслуживает их все. Корень по одним плановым объявлениям — не чаще
---   TRUST_SHARE_ROOTS: иначе его свежая копия почти всегда держала бы окно для вошедших.
+--   одна копия обслуживает их все. Корни новому соседу — тоже через окно: вошедший офицер
+--   узнаёт корень гильдии раньше, чем возьмётся за /chillzone trust init. Корень по одним
+--   плановым объявлениям — не чаще TRUST_SHARE_ROOTS: это лишь страховка для того, кто
+--   пропустил каталог при входе, а у гильдии с десятком корней каждые две минуты выходило
+--   четыре-пять KT в минуту от одного офицера.
 -- * Кто шлёт. У каждой записи свой порядок офицеров на связи (хэш записи и имени, у всех
 --   клиентов одинаковый). Первый шлёт через TRUST_SHARE_DELAY..+JITTER секунд, каждый
 --   следующий — ещё на TRUST_SHARE_STEP позже, если копии так и не было. Офицеры делят
@@ -58,7 +62,7 @@ local KINDS = { KT = 1, UO = 1, KA = 2, KD = 3, KV = 3 } -- вид → уров�
 local HISTORY = 6 -- копий одной записи помнится
 local KEEP = 15 * 60 -- столько помнятся запросы и копии
 local copies = {} -- [id] = { { at, done, seq, served }, ... } по возрастанию at: рассылки по GUILD
-local asks = { all = {}, roots = {} } -- времена запросов по порядку
+local asks = { all = {}, roots = {}, fresh = {} } -- времена запросов по порядку
 local bootAt, urgentSince = -1e9, -1e9 -- последний запрос входа; срочно — что не разослано после
 local lastAsk = {} -- [Key] = когда согильдиец последний раз попросил весь каталог (UQ при входе)
 local mine = {} -- [вид] = { когда ушли мои сообщения этого вида по GUILD }
@@ -214,8 +218,8 @@ end
 
 -- Запрос, которого запись r ещё не обслужила, с какого момента окно позволяет её повторить
 -- (от начала последней копии) и до какого момента запросы обслужены (served); e = nil — запись
--- никому не нужна. Плановое объявление корней (asks.roots) — не чаще TRUST_SHARE_ROOTS:
--- иначе свежая копия корня почти всегда держала бы окно и задерживала вошедших.
+-- никому не нужна. Корни новому соседу (asks.fresh) — через окно, плановое объявление корней
+-- (asks.roots) — не чаще TRUST_SHARE_ROOTS.
 local function Pending(list, r)
 	local last = Latest(r.id)
 	local at = last and last.at or -1e9
@@ -223,8 +227,11 @@ local function Pending(list, r)
 	local e = After(asks.all, served)
 	local ready = e and math.max(e, at + C.TRUST_SHARE_WINDOW)
 	if r.kind == "KT" then
+		local fresh = After(asks.fresh, served)
+		local soon = fresh and math.max(fresh, at + C.TRUST_SHARE_WINDOW)
+		if soon and (not ready or soon < ready) then e, ready = fresh, soon end
 		local root = After(asks.roots, served)
-		local soon = root and math.max(root, at + C.TRUST_SHARE_ROOTS)
+		soon = root and math.max(root, at + C.TRUST_SHARE_ROOTS)
 		if soon and (not ready or soon < ready) then e, ready = root, soon end
 	end
 	return e, ready, served
@@ -340,7 +347,7 @@ end
 -- served — до какого момента запросы обслужены (Pending).
 local function Priority(served)
 	if bootAt > served then return ns.Comm.PRIO_BOOTSTRAP end
-	if urgentSince > served or After(asks.all, served) then return true end
+	if urgentSince > served or After(asks.all, served) or After(asks.fresh, served) then return true end
 	return nil -- только плановое объявление корней: не обгоняет чат
 end
 
@@ -446,11 +453,12 @@ Schedule = function(at)
 end
 
 -- Согильдиец key попросил каталог: весь (UQ, первый K1 без недавнего UQ) или только корни
--- (roots: остальные K1, плановое объявление офицера). boot — его первый запрос: записи обгоняют чат.
-function TC.Request(key, roots, boot)
+-- (roots: остальные K1, плановое объявление офицера). fresh — корни новому соседу, через окно,
+-- а не раз в TRUST_SHARE_ROOTS. boot — его первый запрос: записи обгоняют чат.
+function TC.Request(key, roots, boot, fresh)
 	local now = ns.Now()
 	if roots then
-		Push(asks.roots, now)
+		Push(fresh and asks.fresh or asks.roots, now)
 	else
 		Push(asks.all, now)
 		if key then lastAsk[key] = now end
@@ -484,7 +492,8 @@ end
 -- и при постановке, и перед первым куском — только запись, которую гильдия слышала меньше окна
 -- назад и после всех запросов. force — без этой проверки. Возвращает, поставлено ли сообщение.
 -- Корень перед сертификатом (KT, затем KP с before) сюда не ходит: Security.ShareRoot шлёт его
--- всегда. А снятое задание Comm сразу убирает из очереди, и ждавшие его через before идут.
+-- всегда, кроме продления тому, кто корень уже знает. А снятое задание Comm сразу убирает из
+-- очереди, и ждавшие его через before идут.
 function TC.Direct(r, prio, force, guard)
 	if not r then return false end
 	if not force and Heard(r) then return false end
@@ -539,7 +548,7 @@ ns.On("LOGIN", function()
 end)
 
 ns.On("GUILD_CHANGED", function()
-	copies, asks, lastAsk, mine = {}, { all = {}, roots = {} }, {}, {}
+	copies, asks, lastAsk, mine = {}, { all = {}, roots = {}, fresh = {} }, {}, {}
 	bootAt, urgentSince, q1At, pushUntil = -1e9, -1e9, -1e9, -1e9
 	catalog, ranks, rankSig = nil, {}, nil
 end)

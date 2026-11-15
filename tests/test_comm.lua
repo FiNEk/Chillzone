@@ -272,16 +272,49 @@ for _, relay in ipairs({ false, true }) do
 		local delivered
 		comm.Send("WHISPER", "GA~1", { target = TARGET, prio = true, done = function(ok) delivered = ok end })
 		comm.Pump()
-		T.eq(Count(sent, "GUILD"), parts, "GUILD отправил свою квоту")
+		-- GUILD и у реле — запас после тишины, затем кусок за тик: больше сервер отвечает кодом 3.
+		T.eq(Count(sent, "GUILD"), comm.GUILD_BURST, "GUILD отправил свой запас")
 		T.eq(delivered, true, "шёпот ушёл в первый же тик")
 		-- И обычный шёпот получает квоту каждый тик, сколько бы ни ждало в GUILD.
 		for i = 1, parts + 1 do comm.Send("WHISPER", "OQ~" .. i, { target = TARGET }) end
 		w.now = w.now + comm.SEND_INTERVAL
 		comm.Pump()
-		T.eq(Count(sent, "WHISPER"), 1 + parts)
-		T.eq(Count(sent, "GUILD"), 2 * parts)
+		T.eq(Count(sent, "WHISPER"), 1 + parts, "шёпот отправил свою квоту")
+		T.eq(Count(sent, "GUILD"), comm.GUILD_BURST + 1, "запас кончился: кусок за тик")
 	end)
 end
+
+T.test("comm: запас GUILD — пачка после тишины, затем кусок за тик, отказ обнуляет", function()
+	local codes = {}
+	local w, _, comm, sent = Lanes(codes)
+	for i = 1, 40 do comm.Send("GUILD", "H1~" .. i) end
+	comm.Pump()
+	T.eq(#sent, comm.GUILD_BURST, "после тишины — весь запас")
+	-- Дальше — кусок за SEND_INTERVAL, сколько бы ни ждало: за минуту не больше 60 / SEND_INTERVAL.
+	for _ = 1, 50 do
+		w.now = w.now + comm.SEND_INTERVAL
+		comm.Pump()
+	end
+	T.eq(#sent, 40, "очередь ушла целиком")
+	local before = #sent
+	-- Пауза копит запас, но не больше GUILD_BURST.
+	for i = 1, 40 do comm.Send("GUILD", "K1~" .. i) end
+	w.now = w.now + 600
+	comm.Pump()
+	T.eq(#sent - before, comm.GUILD_BURST, "запас не растёт выше предела")
+	-- Срочное (Flush) тратит тот же запас.
+	comm.Send("GUILD", "M1~a", { prio = true })
+	comm.Flush(2)
+	T.eq(#sent - before, comm.GUILD_BURST, "без запаса и срочное ждёт насоса")
+	-- Отказ сервера раньше, чем кончился запас: копить заново после паузы.
+	w.now = w.now + 600
+	codes.GUILD = 3
+	comm.Pump()
+	codes.GUILD = 0
+	w.now = w.now + 2
+	comm.Pump()
+	T.eq(#sent - before, comm.GUILD_BURST + 1, "после отказа — по куску, а не весь запас")
+end)
 
 T.test("comm: полосы — блокировка чата держит обе", function()
 	local codes = {}
@@ -450,6 +483,7 @@ end)
 
 T.test("comm: skip — проверка перед первым куском, начатое досылается", function()
 	local w, _, comm, sent = Lanes()
+	comm.GUILD_BURST = 1 -- кусок за тик: видно начатое сообщение
 	local skip, result, checks = false, nil, 0
 	comm.Send("GUILD", "KD~" .. string.rep("x", 600), { skip = function() checks = checks + 1; return skip end,
 		done = function(ok, why) result = why or ok end })
@@ -486,6 +520,7 @@ end)
 
 T.test("comm: Watch — своё GUILD после всех кусков и с временем первого, шёпот — нет", function()
 	local w, c, comm = Lanes()
+	comm.GUILD_BURST = 1 -- кусок за тик: видно начатое сообщение
 	local seen = {}
 	comm.Watch(function(msg, sender, prefix, started)
 		seen[#seen + 1] = { msg = msg, sender = sender, prefix = prefix, started = started }
@@ -540,6 +575,7 @@ T.test("comm: Watch — игра возвращает своё GUILD и мне, 
 		if msg == long then heard[#heard + 1] = { sender = sender, started = started, at = w.now } end
 	end)
 	local log0 = #w.log
+	a.ns.Comm.GUILD_BURST = 1 -- кусок за тик: первый и последний приходят в разное время
 	a.ns.Comm.Send("GUILD", long)
 	w:Run(10)
 	T.ok(echoes >= 3, "в симуляторе, как в игре, свои куски GUILD приходят и отправителю")

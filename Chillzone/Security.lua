@@ -25,6 +25,7 @@ local serial, lastHello, lastPolicy = 0, -1e9, -1e9
 local lastSaid
 local policySigning = {}
 local policySent = {}
+local ownerSent = {} -- [Key адресата] = { raw, at }: владелец, отправленный в ответ реле (SendPolicies)
 local pendingPolicies = {}
 local lastLegacyProbe = -1e9
 local unionQueries = {}
@@ -423,6 +424,15 @@ local function Issue(name, public, root, delegation)
     local old = S.Member(ns.MyGuild(), name)
     local renew = role == "member" and C.AUTH_TTL / 2 or C.AUTH_RENEW
     if old and old.public == public and old.role == role and old.rank == rank and now - old.issued < renew then return end
+    -- Продление: у получателя действующий сертификат от этого корня (S.Member) на тот же ключ, и
+    -- в последнем K1 он объявил, что сертификат у него есть (без ~0). Значит, корень он знает, и
+    -- KT перед KP не нужен: роль офицера продлевается раз в AUTH_RENEW, и такие KT были самой
+    -- частой копией корня в гильдии. Не получивший прежний KP объявляет K1 с ~0, и тогда
+    -- сертификат с корнем уходит ему шёпотом заново (обработчик K1). Свой сертификат издатель
+    -- продлевает себе: корень он знает сам.
+    local peer = keys[key]
+    local knowsRoot = old ~= nil and old.public == public
+        and (key == ns.myKey or (peer ~= nil and peer.public == public and peer.certified == true))
     if old then now = math.max(now, old.issued + 1) end
     local expires = now + C.AUTH_TTL
     if delegation ~= "" then
@@ -444,8 +454,9 @@ local function Issue(name, public, root, delegation)
         if not c then return end
         Keep(Approve(c, root.public))
         -- Корень — раньше сертификата: без корня новичок отбросит KP, а повторно его не выдадут.
+        -- При продлении (knowsRoot) корень у получателя уже есть.
         local queuedKey = "credential:" .. key
-        ShareRoot(root.guild, root, true, queuedKey)
+        if not knowsRoot then ShareRoot(root.guild, root, true, queuedKey) end
         ns.Comm.Send("GUILD", "KP~" .. Ed.ToB64(raw), { prio = true, key = queuedKey, guard = S.CanAdmin })
     end)
     if not started then issuing[key] = nil end
@@ -699,15 +710,23 @@ ns.Comm.On("KU", function(msg, sender, dist)
     local guild, public = msg:match("^KU~([^~]+)~([%w_-]+)$")
     if guild and U.IsMemberGuild(guild) and U.GuildKey(guild) ~= GuildKey() then Unretire(U.GuildKey(guild), public) end
 end)
+-- Ответ реле (Pong) на каждую регистрацию репортёра, а она раз в 15 секунд. Владелец и решения
+-- уходят адресату, только если изменились или с прошлой отправки прошло AUTH_INTRODUCE, как допуски
+-- (Issuers.Share): те же байты получатель всё равно отбрасывает, а смену решения главы реле
+-- ещё и сразу шлёт держателю аренды (UNION_POLICY в Relay.lua).
 function S.SendPolicies(target)
     local key, now = U.Key(target), ns.Now()
-    ns.UnionAuthority.Share(target, true)
+    local owner, sent = ns.UnionAuthority.Current(), ownerSent[key]
+    if owner and (not sent or sent.raw ~= owner.raw or now - sent.at >= C.AUTH_INTRODUCE) then
+        ownerSent[key] = { raw = owner.raw, at = now }
+        ns.UnionAuthority.Share(target, true)
+    end
     ns.Issuers.Share(target, true)
     policySent[key] = policySent[key] or {}
     for _, p in pairs(Store() and Store().policies or {}) do
         local old = policySent[key][p.guild]
         if PolicyCurrent(p)
-            and (not old or old.wire ~= p.wire or now - old.at >= 120) then
+            and (not old or old.wire ~= p.wire or now - old.at >= C.AUTH_INTRODUCE) then
             policySent[key][p.guild] = { wire = p.wire, at = now }
             ns.Comm.Send("WHISPER", p.wire, { target = target, prio = true,
                 key = "policy:" .. U.Key(target) .. ":" .. p.guild, prefix = PolicyPrefix(p) })
@@ -1175,14 +1194,16 @@ ns.Comm.On("KT", function(msg, sender, dist)
 end)
 -- Запрос вошедшего: весь каталог (union) или только корни. Запрос запоминается временем
 -- прихода, а сами записи уходят через окно TrustCatalog: одна копия на всех спросивших и на
--- всех офицеров. Привет — не чаще того же окна.
-local function NativeTrustReply(union, bootstrap, key)
+-- всех офицеров. fresh — первый K1 соседа: корни ему через окно и привет (Census.Hello, не
+-- чаще окна). Остальные K1 — плановое объявление ключа раз в минуту от каждого клиента: на них
+-- корень повторяется лишь раз в TRUST_SHARE_ROOTS, а привета нет.
+local function NativeTrustReply(union, bootstrap, key, fresh)
     if not S.CanAdmin() then return end
     if union then
         S.ShareTrust(bootstrap, key)
     else
-        ns.TrustCatalog.Request(key, true)
-        if ns.Census then ns.Census.Hello(C.TRUST_SHARE_WINDOW) end
+        ns.TrustCatalog.Request(key, true, nil, fresh)
+        if fresh and ns.Census then ns.Census.Hello(C.TRUST_SHARE_WINDOW) end
     end
 end
 ns.Comm.On("UQ", function(msg, sender, dist, ctx)
@@ -1201,7 +1222,8 @@ ns.Comm.On("K1", function(msg, sender, dist)
     if not raw or #raw ~= 32 then return end
     local k = U.Key(sender)
     local firstPeer = not keys[k] or keys[k].public ~= public
-    keys[k] = { name = sender, public = public, at = ns.Now() }
+    -- certified — объявил, что сертификат у него есть (без ~0): Issue продлевает его без корня.
+    keys[k] = { name = sender, public = public, at = ns.Now(), certified = not flag:find("~0", 1, true) }
     -- У участника нет сертификата, а у меня, активного издателя, он есть: первый KP до него
     -- не дошёл (лимит, ещё не было корня). Issue свежий сертификат заново не выдаёт.
     -- Пока выданный сертификат ещё ждёт в очереди или очередь выдачи полна — не дублировать.
@@ -1226,7 +1248,8 @@ ns.Comm.On("K1", function(msg, sender, dist)
     -- слышал, а новый запрос сдвинул бы его запрос за них, и каталог ушёл бы повторно.
     -- Тогда K1 просит только корни. Если UQ не дошёл или был давно, весь каталог просит K1.
     local sameEntry = unionQueries[k] and ns.Now() - unionQueries[k] < C.TRUST_SHARE_WINDOW
-    NativeTrustReply(requested or (firstPeer and not sameEntry and Store().owner ~= nil), requested, k)
+    NativeTrustReply(requested or (firstPeer and not sameEntry and Store().owner ~= nil), requested, k,
+        firstPeer and not sameEntry)
 end)
 ns.Comm.On("KP", function(msg, sender, dist)
     if dist ~= "GUILD" and dist ~= "WHISPER" then return end
@@ -1521,6 +1544,11 @@ ns.On("LOGIN", function()
         for key, t in pairs(served) do if clock - t >= 60 then served[key] = nil end end
         for key, t in pairs(resent) do if clock - t >= 60 then resent[key] = nil end end
         for key, t in pairs(introduced) do if clock - t >= C.AUTH_INTRODUCE then introduced[key] = nil end end
+        for key, sent in pairs(ownerSent) do if clock - sent.at >= C.AUTH_INTRODUCE then ownerSent[key] = nil end end
+        for key, list in pairs(policySent) do
+            for guild, sent in pairs(list) do if clock - sent.at >= C.AUTH_INTRODUCE then list[guild] = nil end end
+            if not next(list) then policySent[key] = nil end
+        end
         for key, t in pairs(unionQueries) do if clock - t >= 3600 then unionQueries[key] = nil end end
     end)
 end)

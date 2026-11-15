@@ -242,10 +242,20 @@ end
 ---------------------------------------------------------------------------
 local Out, FlushHold -- вперёд
 
+-- Запись в журнал — при смене состояния: реле отвечало, причина другая или прошёл час. Кандидаты
+-- в реле — все с сертификатом главной гильдии за неделю, и вышедшие из игры пробуются снова раз
+-- в RELAY_DOWN: без этого их повторы вытесняют из журнала всё остальное за несколько часов.
+local MARKDOWN_LOG_GAP = 3600
 local function MarkDown(e, why, retryAfter)
 	local now = Now()
+	-- «Не в игре» и «адресат недоступен» — одно состояние: ответ сервера или память о нём в Comm.
+	local kind = retryAfter and why or "offline"
+	local changed = e.verified ~= nil or e.downWhy ~= kind or now - (e.downLogged or -1e9) >= MARKDOWN_LOG_GAP
 	e.down, e.asked, e.probe, e.verified = now + (retryAfter or C.RELAY_DOWN), nil, nil, nil
-	ns.Log("реле %s недоступно: %s", e.name or e.key, why)
+	if changed then
+		e.downWhy, e.downLogged = kind, now
+		ns.Log("реле %s недоступно: %s", e.name or e.key, why)
+	end
 	-- Что ему недавно ушло, уходит через другое реле.
 	local list = recent[e.key]
 	recent[e.key] = nil

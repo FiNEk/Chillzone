@@ -410,6 +410,72 @@ T.test("trust-catalog: привет в ответ на запросы катал
 	T.eq(calls, before + 1, "готовность сменилась — сразу")
 end)
 
+T.test("trust-catalog: без входов корень повторяется не чаще TRUST_SHARE_ROOTS, новому соседу — в окне", function()
+	local w, k, _, m = Build(2)
+	local C = k.ns.Config
+	local heard = Listen(m)
+	local root = k.ns.store.security.roots[k.ns.Util.GuildKey(k.guild)]
+	local id = k.ns.PREFIX .. "\n" .. "KT~" .. root.guild .. "~" .. root.name .. "~" .. root.public
+	local function Count(since)
+		local n, last = 0, nil
+		for _, e in ipairs(heard) do
+			if e.id == id and e.started >= since then n, last = n + 1, e.started end
+		end
+		return n, last
+	end
+	local function Admins(fn)
+		for _, c in ipairs(w.clients) do
+			if c.guild == k.guild and c.ns.Security.CanAdmin() then fn(c) end
+		end
+	end
+	-- Без входов корень просят только K1 раз в минуту и плановое объявление офицера.
+	local t0 = w.now
+	w:Run(3 * C.TRUST_SHARE_ROOTS)
+	local n = Count(t0)
+	T.ok(n >= 1 and n <= 4, "копий корня за " .. 3 * C.TRUST_SHARE_ROOTS .. " с: " .. n)
+	-- Сразу после копии плановые запросы её не повторяют.
+	local t1 = w.now
+	T.ok(RunUntil(w, function() return Count(t1) > 0 end, C.TRUST_SHARE_ROOTS + 60), "копия корня по плановым запросам")
+	local _, copied = Count(t1)
+	Admins(function(c) c.ns.TrustCatalog.Request(nil, true) end)
+	w:Run(90)
+	T.eq(Count(copied + 0.5), 0, "плановый запрос через 90 с после копии")
+	-- Корни новому соседу — через окно, а не через TRUST_SHARE_ROOTS.
+	local t2 = w.now
+	Admins(function(c) c.ns.TrustCatalog.Request(m.ns.myKey, true, nil, true) end)
+	T.ok(RunUntil(w, function() return Count(t2) > 0 end, C.TRUST_SHARE_DELAY + C.TRUST_SHARE_JITTER + 5),
+		"новому соседу корень пришёл через " .. (w.now - t2) .. " с")
+	T.eq(#k.ns.db.errors, 0, "без ошибок")
+end)
+
+T.test("trust-catalog: продление сертификата идёт без корня, первый сертификат вошедшему — с корнем", function()
+	local w, k, _, _, officers = Build(1)
+	local o, C = officers[1], k.ns.Config
+	-- Корень перед выданным сертификатом (Security.ShareRoot) — KT с before = "credential:<ключ>".
+	-- Продлевает издатель-корень (Карл) и роль офицера, и свою.
+	local roots, renewals = 0, { [o.ns.myKey] = 0, [k.ns.myKey] = 0 }
+	local send = k.ns.Comm.Send
+	k.ns.Comm.Send = function(dist, msg, opts)
+		if dist == "GUILD" and opts and msg:sub(1, 3) == "KT~" and tostring(opts.before):find("^credential:") then
+			roots = roots + 1
+		end
+		local to = dist == "GUILD" and opts and msg:sub(1, 3) == "KP~" and tostring(opts.key):match("^credential:(.+)$")
+		if to and renewals[to] then renewals[to] = renewals[to] + 1 end
+		return send(dist, msg, opts)
+	end
+	local since = k.ns.ServerTime()
+	w:Run(2 * C.AUTH_RENEW + 60)
+	T.ok(renewals[o.ns.myKey] >= 1, "роль офицера продлена: " .. renewals[o.ns.myKey])
+	T.ok(renewals[k.ns.myKey] >= 1, "своя роль главы продлена: " .. renewals[k.ns.myKey])
+	T.eq(roots, 0, "корень перед продлением не уходит")
+	local mine = o.ns.Security.MyCertificate()
+	T.ok(mine and mine.issued >= since, "офицер принял продлённый сертификат")
+	local g = Join(w, "Новичок")
+	T.ok(RunUntil(w, function() return g.ns.Security.MyCertificate() ~= nil end, 120), "вошедший получил сертификат")
+	T.ok(roots >= 1, "перед первым сертификатом — корень: " .. roots)
+	T.eq(#k.ns.db.errors, 0, "без ошибок")
+end)
+
 -- Офицер прежней версии: на каждый запрос шлёт весь каталог (или только корни) сразу, без окна.
 -- reversed — в обратном порядке: допуски и решения раньше корня и владельца; once — весь каталог
 -- только на первый запрос, дальше молчит.
