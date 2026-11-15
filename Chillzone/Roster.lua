@@ -322,10 +322,11 @@ function Roster.FormatPattern(fmt)
 	return pattern, order
 end
 
--- Разобрать строку по формату игры: аргументы по их номерам в формате или nil.
+-- Разобрать строку по формату игры: аргументы по их номерам в формате или nil. Защищённую
+-- строку (secret) не трогать: у неё тип string, но любое обращение к ней — ошибка Lua.
 function Roster.MatchFormat(text, fmt)
 	local pattern, order = Roster.FormatPattern(fmt)
-	if not pattern or type(text) ~= "string" or #order == 0 then return nil end
+	if not pattern or type(text) ~= "string" or Secret(text) or #order == 0 then return nil end
 	local caps = { text:match(pattern) }
 	if #caps ~= #order then return nil end
 	local args = {}
@@ -338,7 +339,7 @@ end
 -- /ginvite): ростер может скрывать игроков не в сети и обновляется не сразу.
 -- Возвращает "left" или "joined" и имя игрока либо nil.
 function Roster.GuildEvent(text)
-	if type(text) ~= "string" then return nil end
+	if type(text) ~= "string" or Secret(text) then return nil end
 	local events = {
 		{ ERR_GUILD_REMOVE_SS, "left" }, { ERR_GUILD_LEAVE_S, "left" }, { ERR_GUILD_JOIN_S, "joined" },
 	}
