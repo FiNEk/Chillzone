@@ -535,9 +535,11 @@ ns.Comm.On("Q1", function(_, sender, dist)
 	lastQ1Answer = now
 	-- Каталог доверия (корни, допуски) — раньше самих конвертов: срочно, без окна каталога.
 	ns.Security.ShareTrust(false, U.Key(sender), true)
+	-- Ключ очереди тот же, что у пересылки нового отчёта (Relay.ReportKey): при заторе ещё не
+	-- ушедшая пересылка и ответ не встают в очередь двумя копиями, уходит одна, самая новая.
 	for _, c in ipairs(ns.Data.Cached()) do
 		ns.Security.IntroduceWire("GUILD", c.raw, true) -- спросивший мог отбросить прежний KP
-		ns.Comm.Send("GUILD", Codec.EncodeRM("RG", "L", c.origin, c.raw), { key = "q1:" .. c.key })
+		ns.Comm.Send("GUILD", Codec.EncodeRM("RG", "L", c.origin, c.raw), { key = ns.Relay.ReportKey(c.key) })
 		Census.Shown(c.raw, true)
 	end
 end)

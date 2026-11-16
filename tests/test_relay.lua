@@ -1840,6 +1840,37 @@ T.test("relay: репортёр пересылает гильдии отчёт �
 	NoErrors(c)
 end)
 
+T.test("relay: при заторе GUILD пересылка отчёта и ответ на Q1 о нём уходят одной копией", function()
+	local w, c = Build()
+	local guild = c.G.guild
+	local reporter, relay = MainRoles(c)
+	local wire, st = UnsentReport(w, c.G)
+	w:Run(reporter.ns.Config.Q1_GAP)
+	local sent = 0
+	reporter.ns.Comm.Watch(function(msg, sender)
+		if not sender and msg:sub(1, 5) == "RG~L~" and msg:find(wire, 1, true) then sent = sent + 1 end
+	end)
+	-- Затор: впереди отчёта в очереди GUILD репортёра сорок кусков.
+	for i = 1, 40 do reporter.ns.Comm.Send("GUILD", "ZZ~" .. ("x"):rep(200) .. i) end
+	relay.ns.Comm.Send("WHISPER", relay.ns.Codec.EncodeRM("RM", "L", c.G:Name(), wire), { target = reporter:Name() })
+	w:Run(10)
+	T.eq(reporter.ns.Data.Row(guild).st, st, "репортёр принял новый отчёт, его пересылка ждёт в очереди")
+	T.eq(reporter.ns.Comm.Queued(reporter.ns.Relay.ReportKey(reporter.ns.Util.GuildKey(guild)), true), 1,
+		"пересылка стоит под ключом отчёта гильдии")
+	c.M.ns.Comm.Send("GUILD", "Q1~")
+	w:Run(5)
+	T.eq(reporter.ns.Comm.Queued(reporter.ns.Relay.ReportKey(reporter.ns.Util.GuildKey(guild)), true), 1,
+		"ответ на Q1 заменил ещё не ушедшую пересылку, а не встал второй копией")
+	for _ = 1, 180 do
+		if c.M.ns.Data.Row(guild).st == st then break end
+		w:Run(1)
+	end
+	w:Run(30)
+	T.eq(c.M.ns.Data.Row(guild).st, st, "гильдия получила новый отчёт")
+	T.eq(sent, 1, "отчёт ушёл гильдии один раз")
+	NoErrors(c)
+end)
+
 T.test("relay: репортёр не отдаёт гильдии второй раз отчёт, который она слышала от репортёра", function()
 	local w, c = Build()
 	local guild = c.G.guild
