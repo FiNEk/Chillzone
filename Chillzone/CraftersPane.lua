@@ -1,9 +1,10 @@
 -- Chillzone: вкладка «Мастера профессий». Слева каталог мастеров объединения с поиском и фильтром по
 -- профессии, справа — своё ремесло (прочитанные профессии, примечание, своя карточка) или
 -- карточка выбранного мастера со списком его рецептов. Строки готовит Views.lua, логика — в
--- Crafters.lua. Витрина мастера — значки справа от имени в строке каталога и рецепты первыми в
--- карточке; свою витрину игрок отмечает звёздочками в своей карточке, а кнопка «Витрина» открывает
--- её и до размещения — черновиком, который там же и размещается.
+-- Crafters.lua. Витрина мастера — ряд значков под строкой профессий в каталоге (строка мастера с
+-- витриной выше на этот ряд) и рецепты первыми в карточке; свою витрину игрок отмечает звёздочками
+-- в своей карточке, а кнопка «Витрина» открывает её и до размещения — черновиком, который там же и
+-- размещается.
 --
 -- Поля ввода — свои EditBox, штатные popup и выпадающие списки не используются (taint). Поле
 -- ввода и окна чата игры вкладка не трогает: «Шепнуть» и меню правого щелчка открывают шёпот
@@ -21,12 +22,15 @@ ns.CraftersPane = Pane
 
 local LIST_W = 468 -- каталог; справа от него полоса прокрутки
 local SIDE_X, SIDE_W = 512, 328 -- панель шире исходной на 46: на столько наименьшее окно шире исходного
-local ROW_H = 38
+local ROW_H = 38 -- строка мастера: имя и профессии
+local SHOW_SIZE, SHOW_GAP = 18, 2 -- значок витрины в строке каталога и зазор между значками
+-- Витрина — ряд значков под строкой профессий: строка мастера с витриной выше на этот ряд.
+local SHOW_Y = ROW_H - 3 -- верх ряда от верха строки
+local SHOW_ROW_H = SHOW_Y + SHOW_SIZE + 5
 local ACTION_W = 84
 local PROF_ROWS = 6
 local LIST_TOP = 60
 local SEARCH_DELAY = 0.25
-local SHOW_SIZE = 18 -- значок витрины в строке каталога
 local NO_ICON = "Interface\\Icons\\INV_Misc_QuestionMark"
 local STAR = "Interface\\TargetingFrame\\UI-RaidTargetingIcon_1"
 -- Ширины заданы под наименьшее окно (вставка 850 в ширину), высоты — под исходную вставку 340.
@@ -209,16 +213,17 @@ local function Row(i)
 	r.button = Button(r, L.CRAFT_WHISPER, ACTION_W - 4, "row whisper", function()
 		if r.it then Whisper(r.it.card.name) end
 	end)
+	-- Имя, профессии и «Шепнуть» стоят от верха строки: в строке с витриной они там же, где без неё.
 	r.button:SetHeight(20)
-	r.button:SetPoint("RIGHT", -4, 0)
+	r.button:SetPoint("RIGHT", r, "TOPRIGHT", -4, -ROW_H / 2)
 	r.status = FS(r, "GameFontHighlightSmall", "CENTER")
-	r.status:SetPoint("RIGHT", -4, 0)
+	r.status:SetPoint("RIGHT", r, "TOPRIGHT", -4, -ROW_H / 2)
 	r.status:SetWidth(ACTION_W - 4)
 	r.name = FS(r, "GameFontHighlight")
 	r.name:SetPoint("TOPLEFT", 6, -5)
 	r.name:SetWidth(NameW())
 	r.sub = FS(r, "GameFontHighlightSmall")
-	r.sub:SetPoint("BOTTOMLEFT", 6, 6)
+	r.sub:SetPoint("BOTTOMLEFT", r, "TOPLEFT", 6, -(ROW_H - 6))
 	r.sub:SetWidth(NameW())
 	r.shows = {}
 	for _, fs in ipairs({ r.name, r.sub, r.status }) do
@@ -265,25 +270,22 @@ local function ShowIcon(r, j)
 	return b
 end
 
--- Имя рядом с витриной из n значков.
-local function ShowNameW(n)
-	return n > 0 and NameW() - n * (SHOW_SIZE + 2) - 2 or NameW()
-end
-
--- Витрина справа от имени, слева от «Шепнуть»; имя укорачивается на её ширину.
+-- Витрина — ряд значков под строкой профессий, от её левого края; имя и профессии остаются во всю
+-- ширину. Значков не больше CRAFT_SHOW: больше бывает только в испорченной сохранённой карточке.
+-- Возвращает, сколько значков показано.
 local function RenderShowcase(r, show)
-	local n = #show
-	for j, s in ipairs(show) do
-		local b = ShowIcon(r, j)
+	local n = math.min(#show, C.CRAFT_SHOW)
+	for j = 1, n do
+		local s, b = show[j], ShowIcon(r, j)
 		b.prof, b.tip = s.prof, Views.CraftShowTip(s.id)
 		b.icon:SetTexture(ns.Crafters.RecipeIcon(s.id) or NO_ICON)
 		ns.Crafters.RecipeName(s.id) -- игра называет рецепт не сразу: к подсказке строки он уже назван
 		b:ClearAllPoints()
-		b:SetPoint("TOPRIGHT", r, "TOPRIGHT", -(ACTION_W + 4 + (n - j) * (SHOW_SIZE + 2)), -3)
+		b:SetPoint("TOPLEFT", r, "TOPLEFT", 6 + (j - 1) * (SHOW_SIZE + SHOW_GAP), -SHOW_Y)
 		b:Show()
 	end
 	for j = n + 1, #r.shows do r.shows[j]:Hide() end
-	r.name:SetWidth(ShowNameW(n))
+	return n
 end
 
 local function FilterChip(id)
@@ -348,12 +350,13 @@ local function RenderList()
 		r.it, r.tip = it, it.tip
 		r:ClearAllPoints()
 		r:SetPoint("TOPLEFT", listChild, "TOPLEFT", 0, -y)
-		y = y + ROW_H + 2
+		local h = RenderShowcase(r, it.show or {}) > 0 and SHOW_ROW_H or ROW_H
+		r:SetHeight(h)
+		y = y + h + 2
 		r.mine:SetShown(it.own == true)
 		r.picked:SetShown(viewing ~= nil and it.key == viewing)
 		r.name:SetText(it.name)
 		r.sub:SetText(it.sub)
-		RenderShowcase(r, it.show or {})
 		r.button:SetShown(it.action == "whisper")
 		r.status:SetText(it.action and "" or (it.status or ""))
 		r:Show()
@@ -658,7 +661,7 @@ local function Star(r)
 	local it = r.it
 	if not it or viewing ~= ns.myKey or not viewProf then return end
 	local ok, why = ns.Crafters.SetShow(viewProf, it.id, not it.show)
-	cardWhy = not ok and (why == "full" and L.CRAFT_SHOW_FULL:format(C.CRAFT_SHOW) or L.CRAFT_SHOW_MISSING) or nil
+	cardWhy = not ok and (why == "full" and L.CRAFT_SHOW_FULL:format(Views.CraftCount(C.CRAFT_SHOW)) or L.CRAFT_SHOW_MISSING) or nil
 	Pane.Render()
 end
 
@@ -964,10 +967,10 @@ function Pane.Layout(width, height)
 	loaded:ClearAllPoints()
 	loaded:SetPoint("RIGHT", pane, "TOPLEFT", listW + 8, -17)
 	loaded:SetWidth(listW - 324)
-	for _, r in ipairs(rows) do -- значки витрины привязаны к правому краю строки и едут сами
+	for _, r in ipairs(rows) do -- витрина привязана к левому краю строки, «Шепнуть» — к правому
 		r:SetWidth(listW)
+		r.name:SetWidth(NameW())
 		r.sub:SetWidth(NameW())
-		r.name:SetWidth(ShowNameW(r.it and r.it.show and #r.it.show or 0))
 	end
 	divider:ClearAllPoints()
 	divider:SetPoint("TOPLEFT", sideX - 8, -10)
