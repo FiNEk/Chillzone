@@ -49,6 +49,7 @@ read_globals = {
 
 	-- функции
 	"ChannelUnban",
+	"ChatEdit_GetActiveWindow",
 	"ChatFrame_AddMessageEventFilter",
 	"ChatFrame_OpenChat",
 	"ClearCursor",

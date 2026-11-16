@@ -2113,3 +2113,255 @@ T.test("crafters pane: витрина до размещения — чернов
 	T.eq(f.mine.note:GetText(), "кую на заказ")
 	NoErrors(c.A, "Арагорн")
 end)
+
+---------------------------------------------------------------------------
+-- Ссылка на мастера в чате
+---------------------------------------------------------------------------
+local CRAFT_LINK = "addon:Chillzone:craft:164:Арагорн Светлый"
+local CRAFT_TEXT = "[Кузнечное дело: Арагорн Светлый]"
+local CRAFT_SHOWN = "|cffffd000|H" .. CRAFT_LINK .. "|h" .. CRAFT_TEXT .. "|h|r"
+
+-- Строка события, как её покажет чат игры после фильтров аддона, или nil — строка скрыта.
+local function Filtered(cl, event, text)
+	for _, fn in ipairs(cl.filters[event] or {}) do
+		local hide, new = fn(nil, event, text, "Кто-то Где-то", "", "")
+		if hide then return nil end
+		if new ~= nil then text = new end
+	end
+	return text
+end
+
+-- Режим геймпада у клиента: on — включить, false — вернуть мышь и клавиатуру.
+local function Gamepad(cl, on)
+	cl.env.C_InputInterfaceStyle = on and { GetCurrentStyle = function() return 1 end } or nil
+	cl.env.Enum = on and { InputDeviceInterfaceType = { Gamepad = 1 } } or nil
+end
+
+T.test("crafters link: текст ссылки и мастер по нему — только из каталога", function()
+	local w, c = Build()
+	Master(c.A)
+	local Cr = c.V.ns.Crafters
+	local seen = Cr.Get(Key(c.A))
+	T.eq(Cr.LinkText(seen, 164), CRAFT_TEXT)
+	T.no(Cr.LinkText(seen, 165), "профессии нет в карточке")
+	T.no(Cr.LinkText(nil, 164))
+	local found, prof = Cr.FromLink("Кузнечное дело: Арагорн Светлый")
+	T.eq(found, seen, "мастер из каталога")
+	T.eq(prof, 164)
+	T.eq(Cr.FromLink("кузнечное дело: арагорн светлый"), seen, "регистр не важен")
+	T.eq(Cr.FromLink("Кузнечное дело:  Арагорн Светлый "), seen, "лишние пробелы не мешают")
+	T.no(Cr.FromLink("Кожевничество: Арагорн Светлый"), "этой профессии у мастера нет")
+	T.no(Cr.FromLink("Кузнечное дело: Нет Такого"), "незнакомый мастер")
+	T.no(Cr.FromLink("Рыбная ловля: Арагорн Светлый"), "профессия не из каталога")
+	T.no(Cr.FromLink("Кузнечное дело Арагорн Светлый"), "без двоеточия")
+	T.no(Cr.FromLink(("я"):rep(70)), "длинный текст")
+	-- Своя — только размещённая.
+	T.eq(c.A.ns.Crafters.FromLink("Кузнечное дело: Арагорн Светлый").own, true, "своя размещённая")
+	-- Автор в игноре — не мастер.
+	c.V.ns.store.ignore[Key(c.A)] = true
+	T.no(Cr.FromLink("Кузнечное дело: Арагорн Светлый"), "автор в игноре")
+	c.V.ns.store.ignore[Key(c.A)] = nil
+	T.ok(c.A.ns.Crafters.Withdraw())
+	T.no(c.A.ns.Crafters.FromLink("Кузнечное дело: Арагорн Светлый"), "снятая своя — нет")
+	w:Run(30)
+	T.no(Cr.FromLink("Кузнечное дело: Арагорн Светлый"), "снятая чужая — нет")
+	NoErrors(c.V, "Вера")
+end)
+
+T.test("crafters link: Shift+щелчок по мастеру вставляет текст ссылки в открытое поле", function()
+	local w, c = Build()
+	Learn(c.A, Smith())
+	c.A:CloseProfession()
+	Learn(c.A, { id = 165, skill = 80, max = 150, recipes = { [2149] = true } })
+	c.A.ns.Crafters.SetPost(164, true)
+	c.A.ns.Crafters.SetPost(165, true)
+	T.ok(c.A.ns.Crafters.Post("кую и шью"))
+	w:Run(30)
+	local V, L = c.V, c.V.ns.L
+	V:Slash("/chillzone", "crafters")
+	local f = V.ns.CraftersPane.frames
+	T.ok(Tip(V, PaneRow(V, c.A)):find(L.CRAFT_TIP_LINK, 1, true), "подсказка строки")
+	-- Поле чата закрыто: подсказка в чат, карточка не открывается.
+	V.shift = true
+	PaneRow(V, c.A):Click()
+	T.eq(V:Saw(L.CRAFT_LINK_NO_INPUT), 1, "поля нет — подсказка")
+	T.no(f.card:IsShown(), "Shift+щелчок карточку не открывает")
+	-- Открытое поле чата игры: текст ссылки на первую профессию дописывается, фокус не трогается.
+	local edit = V.env.ChatFrame1EditBox
+	edit:Show()
+	edit:SetText("Кому кузнеца? ")
+	V.activeChat = edit
+	PaneRow(V, c.A):Click()
+	T.eq(edit:GetText(), "Кому кузнеца? " .. CRAFT_TEXT, "текст ссылки в поле игры")
+	T.no(edit:HasFocus(), "курсор аддон не ставит")
+	-- Под фильтром — ссылка на профессию фильтра.
+	V.shift = false
+	f.filters[165]:Click()
+	V.shift = true
+	edit:SetText("")
+	PaneRow(V, c.A):Click()
+	T.eq(edit:GetText(), "[Кожевничество: Арагорн Светлый]", "профессия под фильтром")
+	V.shift = false
+	f.all:Click()
+	-- Скрытое поле игра ещё помнит, но оно закрыто: не вставляем.
+	edit:Hide()
+	edit:SetText("")
+	V.shift = true
+	PaneRow(V, c.A):Click()
+	T.eq(edit:GetText(), "", "закрытое поле не трогаем")
+	T.eq(V:Saw(L.CRAFT_LINK_NO_INPUT), 2)
+	-- Режим геймпада: поле игры не трогаем.
+	edit:Show()
+	Gamepad(V, true)
+	PaneRow(V, c.A):Click()
+	T.eq(edit:GetText(), "", "геймпад — поле игры не трогаем")
+	T.eq(V:Saw(L.CRAFT_LINK_NO_INPUT), 3)
+	Gamepad(V, false)
+	-- Поле Chillzone с курсором — первым, даже при открытом поле игры.
+	local own = V.env.CreateFrame("EditBox")
+	local focused = V.ns.ChatTab.FocusedInput
+	V.ns.ChatTab.FocusedInput = function() return own end
+	PaneRow(V, c.A):Click()
+	T.eq(own:GetText(), CRAFT_TEXT, "в поле Chillzone")
+	T.eq(edit:GetText(), "", "поле игры не тронуто")
+	V.ns.ChatTab.FocusedInput = focused
+	-- Карточка: Shift+щелчок по профессии — ссылка на неё, без Shift — её рецепты.
+	V.shift = false
+	PaneRow(V, c.A):Click()
+	w:Run(1)
+	T.ok(f.card:IsShown(), "щелчок без Shift — карточка")
+	T.ok(Tip(V, f.cardChips[2]):find(L.CRAFT_TIP_LINK, 1, true), "подсказка профессии")
+	V.shift = true
+	f.cardChips[2]:Click()
+	V.shift = false
+	T.eq(edit:GetText(), "[Кожевничество: Арагорн Светлый]", "профессия из карточки")
+	-- Своя карточка: размещённая — ссылка на себя, черновик — нет.
+	c.A:Slash("/chillzone", "crafters")
+	c.A.activeChat = c.A.env.ChatFrame1EditBox
+	c.A.activeChat:Show()
+	c.A.shift = true
+	PaneRow(c.A, c.A):Click()
+	c.A.shift = false
+	T.eq(c.A.activeChat:GetText(), CRAFT_TEXT, "своя размещённая")
+	Learn(c.K, Smith())
+	c.K.ns.Crafters.SetPost(164, true)
+	c.K:Slash("/chillzone", "crafters")
+	c.K.ns.CraftersPane.frames.mine.showcase:Click()
+	c.K.activeChat = c.K.env.ChatFrame1EditBox
+	c.K.activeChat:Show()
+	c.K.shift = true
+	c.K.ns.CraftersPane.frames.cardChips[1]:Click()
+	c.K.shift = false
+	T.eq(c.K.activeChat:GetText(), "", "на черновик ссылки нет")
+	T.eq(c.K:Saw(c.K.ns.L.CRAFT_LINK_DRAFT), 1, "сначала разместить")
+	for _, cl in ipairs({ V, c.A, c.K }) do
+		NoErrors(cl, cl:Name())
+		T.eq(#cl:Leaks(), 0)
+		T.eq(#cl.tells, 0, "шёпот не открывался")
+	end
+end)
+
+T.test("crafters link: в чате игры текст становится ссылкой, щелчок открывает карточку", function()
+	local w, c = Build()
+	Master(c.A)
+	local V, L, Links = c.V, c.V.ns.L, c.V.ns.ChatLinks
+	local text = "Кому кузнеца? " .. CRAFT_TEXT
+	for _, event in ipairs({ "CHAT_MSG_GUILD", "CHAT_MSG_OFFICER", "CHAT_MSG_WHISPER", "CHAT_MSG_WHISPER_INFORM",
+		"CHAT_MSG_PARTY", "CHAT_MSG_RAID", "CHAT_MSG_SAY", "CHAT_MSG_CHANNEL" }) do
+		T.eq(Filtered(V, event, text), "Кому кузнеца? " .. CRAFT_SHOWN, event)
+	end
+	-- Остальные аргументы события возвращаются как были, с пропусками.
+	local out = { Links.Filter(nil, "CHAT_MSG_WHISPER", text, "Отправитель", "", nil, "4") }
+	T.eq(out[1], false, "строка не скрыта")
+	T.eq(out[2], "Кому кузнеца? " .. CRAFT_SHOWN)
+	T.eq(out[3], "Отправитель")
+	T.eq(out[6], "4", "аргументы после пропуска на месте")
+	T.eq(Links.Crafts(Links.Crafts(text)), Links.Crafts(text), "повторная обработка ничего не меняет")
+	-- Незнакомый мастер, чужая профессия, скобки внутри ссылки на предмет и простые скобки — как есть,
+	-- фильтр новых аргументов не возвращает.
+	for _, plain in ipairs({
+		"[Кузнечное дело: Нет Такого]", "[Алхимия: Арагорн Светлый]", "[Важно] сбор в 20:00",
+		"|cff1eff00|Hitem:2660:0|h[Кузнечное дело: Арагорн Светлый]|h|r", "без скобок",
+	}) do
+		T.eq(Filtered(V, "CHAT_MSG_GUILD", plain), plain, plain)
+		T.eq(select("#", Links.Filter(nil, "CHAT_MSG_GUILD", plain, "Кто-то")), 1, "без новых аргументов: " .. plain)
+	end
+	T.eq(Links.Crafts("Эй, " .. CRAFT_TEXT .. " и " .. CRAFT_TEXT), "Эй, " .. CRAFT_SHOWN .. " и " .. CRAFT_SHOWN, "две ссылки")
+	-- Закрытое значение Forever не читается.
+	V.env.issecretvalue = function() return true end
+	T.eq(select("#", Links.Filter(nil, "CHAT_MSG_GUILD", text)), 1, "закрытое значение не трогаем")
+	V.env.issecretvalue = function() return false end
+	-- Щелчок в чате игры: окно на «Мастерах профессий», карточка и рецепты, спрошенные у мастера.
+	V:CallHooks("SetItemRef", CRAFT_LINK, CRAFT_SHOWN, "LeftButton", V.env.ChatFrame1)
+	T.eq(V.ns.UI.Current(), "crafters", "окно на мастерах")
+	local f = V.ns.CraftersPane.frames
+	T.ok(f.card:IsShown(), "карточка мастера")
+	T.ok(f.card.name:GetText():find("Арагорн Светлый", 1, true))
+	T.eq(f.card.state:GetText(), L.CRAFT_ASKING, "список спрошен")
+	w:Run(20)
+	T.ok(CardText(V):find("Грубое точило", 1, true), "рецепты показаны")
+	-- Правый щелчок и Shift+щелчок окна не открывают.
+	V.ns.UI.Toggle()
+	V:CallHooks("SetItemRef", CRAFT_LINK, CRAFT_SHOWN, "RightButton")
+	T.eq(V.ns.UI.Current(), nil, "правый щелчок")
+	V.shift = true
+	V:CallHooks("SetItemRef", CRAFT_LINK, CRAFT_SHOWN, "LeftButton")
+	V.shift = false
+	T.eq(V.ns.UI.Current(), nil, "Shift+щелчок — дело игры")
+	-- Мастера уже нет в каталоге: подсказка, окно не открывается.
+	V:CallHooks("SetItemRef", "addon:Chillzone:craft:164:Нет Такого", "[x]", "LeftButton")
+	T.eq(V:Saw(L.CRAFT_LINK_GONE:format("Нет Такого", "Кузнечное дело")), 1, "нет в каталоге")
+	T.eq(V.ns.UI.Current(), nil)
+	-- Испорченная ссылка и метка канала — не наше дело.
+	V:CallHooks("SetItemRef", "addon:Chillzone:craft:x:Арагорн Светлый", "[x]", "LeftButton")
+	T.eq(V.ns.UI.Current(), nil, "без номера профессии")
+	V:CallHooks("SetItemRef", "addon:Chillzone:chan:A", "[Чиллзон]", "LeftButton")
+	T.eq(V.ns.UI.Current(), "chat", "метка канала по-прежнему открывает чат")
+	-- Своя ссылка открывает свою карточку.
+	c.A:CallHooks("SetItemRef", CRAFT_LINK, CRAFT_SHOWN, "LeftButton")
+	T.eq(c.A.ns.UI.Current(), "crafters")
+	T.ok(c.A.ns.CraftersPane.frames.card:IsShown(), "своя карточка")
+	NoErrors(V, "Вера")
+	NoErrors(c.A, "Арагорн")
+end)
+
+T.test("crafters link: в окне Chillzone и в копии строки /cz1 — ссылка на мастера", function()
+	local w, c = Build()
+	Master(c.A)
+	local V = c.V
+	c.A:Slash("/cz1", "у кого кузня? " .. CRAFT_TEXT)
+	w:Run(30)
+	local copy
+	for _, l in ipairs(V.printed) do
+		if l:find("у кого кузня?", 1, true) then copy = l end
+	end
+	T.ok(copy and copy:find(CRAFT_SHOWN, 1, true), "копия в чате игры — со ссылкой")
+	local hist = V.ns.Chat.History("A")
+	T.eq(hist[#hist].x, "у кого кузня? " .. CRAFT_TEXT, "в истории — исходный текст")
+	V.ns.UI.OpenChat("A")
+	local msgs = V.ns.ChatPane.frames.messages
+	local shown
+	for _, l in ipairs(msgs.lines) do
+		if l:find(CRAFT_SHOWN, 1, true) then shown = true end
+	end
+	T.ok(shown, "в окне — ссылка")
+	-- Shift+щелчок — текст ссылки в своё поле, чтобы переслать.
+	local box = V.ns.ChatPane.frames.box
+	box:SetText("")
+	V.shift = true
+	msgs.scripts.OnHyperlinkClick(msgs, CRAFT_LINK, CRAFT_SHOWN, "LeftButton")
+	V.shift = false
+	T.eq(box:GetText(), CRAFT_TEXT, "текст ссылки в поле")
+	T.eq(V.ns.UI.Current(), "chat")
+	-- Правый щелчок ничего не делает, левый — карточка мастера.
+	msgs.scripts.OnHyperlinkClick(msgs, CRAFT_LINK, CRAFT_SHOWN, "RightButton")
+	T.eq(V.ns.UI.Current(), "chat", "правый щелчок")
+	msgs.scripts.OnHyperlinkClick(msgs, CRAFT_LINK, CRAFT_SHOWN, "LeftButton")
+	T.eq(V.ns.UI.Current(), "crafters")
+	T.ok(V.ns.CraftersPane.frames.card:IsShown(), "карточка мастера")
+	-- Снятая карточка: в окне снова простой текст.
+	T.ok(c.A.ns.Crafters.Withdraw())
+	w:Run(30)
+	T.no(V.ns.Views.ChatLine(hist[#hist], "A"):find("|Haddon:Chillzone:craft:", 1, true), "мастера нет — текст")
+	NoErrors(V, "Вера")
+end)

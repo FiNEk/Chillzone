@@ -337,6 +337,7 @@ function Chat.Format(tier, guild, sender, class, text, formatBody)
 	local g = Chat.GuildTag(guild)
 	local body = Codec.SanitizeChat(text)
 	if formatBody then body = formatBody(body) end
+	if ns.ChatLinks then body = ns.ChatLinks.Crafts(body) end -- «[Профессия: Имя]» — ссылкой на мастера
 	return Chat.Tag(tier) .. " |cff999999<" .. g .. ">|r |Hplayer:" .. (U.TellName(sender) or "?") .. "|h[" .. name .. "]|h: " .. body
 end
 

@@ -6,9 +6,13 @@
 -- в своей карточке, а кнопка «Витрина» открывает её и до размещения — черновиком, который там же и
 -- размещается.
 --
--- Поля ввода — свои EditBox, штатные popup и выпадающие списки не используются (taint). Поле
--- ввода и окна чата игры вкладка не трогает: «Шепнуть» и меню правого щелчка открывают шёпот
--- через ChatPane.Whisper.
+-- Shift+щелчок по мастеру в каталоге или по его профессии в карточке — ссылка на мастера в поле
+-- ввода (ChatLinks.Share): текст «[Профессия: Имя Фамилия]», который клиенты с аддоном показывают
+-- ссылкой на его карточку.
+--
+-- Поля ввода — свои EditBox, штатные popup и выпадающие списки не используются (taint). Окна чата
+-- игры вкладка не трогает, поле ввода игры — только через ChatLinks.Share (вставка в уже открытое
+-- поле, см. ChatLinks.lua); «Шепнуть» и меню правого щелчка открывают шёпот через ChatPane.Whisper.
 local ADDON, ns = ...
 
 local U = ns.Util
@@ -155,6 +159,22 @@ local function Whisper(name)
 	ns.ChatPane.Whisper(name)
 end
 
+-- Shift+щелчок: ссылка на профессию prof мастера c (без неё или если её нет — на первую) в поле
+-- ввода. Свою карточку до размещения никто не откроет, и ссылки на неё нет.
+local function Share(c, prof)
+	if type(c) ~= "table" then return end
+	if c.own and not c.posted then
+		ns.Print(L.CRAFT_LINK_DRAFT)
+		return
+	end
+	local id = c.profs and c.profs[1] and c.profs[1].id
+	for _, p in ipairs(c.profs or {}) do
+		if p.id == prof then id = p.id end
+	end
+	local text = id and ns.Crafters.LinkText(c, id)
+	if text and not ns.ChatLinks.Share(text) then ns.Print(L.CRAFT_LINK_NO_INPUT) end
+end
+
 ---------------------------------------------------------------------------
 -- Каталог
 ---------------------------------------------------------------------------
@@ -237,6 +257,11 @@ local function Row(i)
 		if not self.it then return end
 		if button == "RightButton" then
 			if self.it.person then ns.SafeCall("crafters: menu", ns.ChatPane.OpenPersonMenu, self, self.it.person, Whisper) end
+			return
+		end
+		-- Shift+щелчок — ссылка: на профессию под фильтром, без фильтра — на первую.
+		if ns.ChatLinks.Linking() then
+			ns.SafeCall("crafters: link", Share, self.it.card, filter)
 			return
 		end
 		ns.SafeCall("crafters: open", Open, self.it.key)
@@ -568,7 +593,8 @@ local function CardChip(i)
 	local chip = cardChips[i]
 	if chip then return chip end
 	chip = Chip(card, "", "prof", function(self)
-		if self.id then Pick(self.id) end
+		if not self.id then return end
+		if ns.ChatLinks.Linking() then Share(card.master, self.id) else Pick(self.id) end
 	end)
 	Tip(chip, nil)
 	cardChips[i] = chip
@@ -841,6 +867,7 @@ local function BuildCard()
 end
 
 local function RenderCard(view)
+	card.master = view.card -- для ссылки по Shift+щелчку на профессию
 	card.name:SetText(view.name)
 	card.line:SetText(view.line)
 	card.note:SetText(view.note or "")
@@ -859,6 +886,7 @@ local function RenderCard(view)
 		chip.tip = function(tt)
 			tt:AddLine(ns.Crafters.ProfName(p.id), 1, 0.82, 0)
 			tt:AddLine(L.CRAFT_TIP_PROF:format(ns.Crafters.ProfName(p.id), p.skill, p.max, p.n), 1, 1, 1, true)
+			tt:AddLine(L.CRAFT_TIP_LINK, 0.5, 0.83, 0.76, true)
 		end
 		chip:ClearAllPoints()
 		chip:SetPoint("TOPLEFT", card, "TOPLEFT", x, -62)
