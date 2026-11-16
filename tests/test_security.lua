@@ -669,6 +669,37 @@ T.test("security: signed packets carry a fingerprint, the credential comes once 
     T.ok(c.G.ns.Security.Member("Чиллзон Север", N:Name()), "and the credential is kept")
 end)
 
+T.test("security: KQ в гильдии — ответ репортёра снимается, если владелец уже ответил", function()
+    local w, c = Build()
+    local N = w:Client({ first = "Нина", surname = "Новая", guild = "Чиллзон Север", rank = 3 })
+    w:Run(5)
+    c.V.ns.Roster.Scan(); c.B.ns.Roster.Scan()
+    w:Run(60)
+    T.ok(c.V.ns.Census.Forwarding(), "Вера пересылает гильдии")
+    local own = c.B.ns.Security.MyCertificate()
+    local foreign = c.V.ns.Security.Member("Чиллзон", c.A:Name())
+    T.ok(own and foreign, "сертификаты Бориса и Арагорна у Веры есть")
+    local function Wire(raw) return "KP~" .. c.V.ns.Ed25519.ToB64(raw) end
+    local sent = {}
+    for _, cl in ipairs({ c.V, c.B }) do
+        cl.ns.Comm.Watch(function(msg, sender)
+            if not sender then sent[cl.first .. "|" .. msg] = (sent[cl.first .. "|" .. msg] or 0) + 1 end
+        end)
+    end
+    -- Затор: полоса GUILD Веры занята заданиями того же уровня, что и ответ на KQ.
+    for i = 1, 30 do c.V.ns.Comm.Send("GUILD", "ZZ~" .. ("x"):rep(200) .. i, { prio = true }) end
+    N.ns.Comm.Send("GUILD", "KQ~" .. own.fp, { prio = true })
+    N.ns.Comm.Send("GUILD", "KQ~" .. foreign.fp, { prio = true })
+    w:Run(90)
+    T.eq(c.V.ns.Comm.Queued("kp:GUILD|"), 0, "очередь Веры разобрана")
+    T.eq(sent["Борис|" .. Wire(own.raw)], 1, "Борис ответил на запрос своего сертификата")
+    T.eq(sent["Вера|" .. Wire(own.raw)], nil, "Вера этот KP не повторила")
+    T.eq(sent["Вера|" .. Wire(foreign.raw)], 1, "сертификат, на который никто не ответил, Вера отдала")
+    for name, cl in pairs({ V = c.V, B = c.B, N = N }) do
+        T.eq(#cl.ns.db.errors, 0, name .. ": " .. table.concat(cl.ns.db.errors, " | "))
+    end
+end)
+
 T.test("security: verification limits count authors and forwarders separately", function()
     local w, c = Build()
     local S = c.G.ns.Security

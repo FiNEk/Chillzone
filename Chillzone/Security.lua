@@ -1465,6 +1465,22 @@ ns.Comm.On("KP", function(msg, sender, dist)
         if c.key == U.Key(sender) then ns.Fire("AUTH_PEER", c, sender) end
     end, sender)
 end)
+-- KP, прозвучавшие в гильдии целиком (свои и чужие): [байты] = когда. Ответ на KQ ждёт в
+-- очереди GUILD иногда минутами, а на тот же KQ отвечают двое: владелец и репортёр. Тот же
+-- KP, прозвучавший после запроса, ещё не ушедший ответ снимает (skip в обработчике KQ).
+local heardKp, heardKpCount = {}, 0
+local HEARD_KP_KEEP, HEARD_KP_MAX = 300, 200
+ns.Comm.Watch(function(msg)
+    if msg:sub(1, 3) ~= "KP~" then return end
+    local now = ns.Now()
+    if not heardKp[msg] then heardKpCount = heardKpCount + 1 end
+    heardKp[msg] = now
+    if heardKpCount <= HEARD_KP_MAX then return end
+    heardKpCount = 0
+    for wire, at in pairs(heardKp) do
+        if now - at > HEARD_KP_KEEP then heardKp[wire] = nil else heardKpCount = heardKpCount + 1 end
+    end
+end)
 -- Запрос сертификата по отпечатку. Шёпотом отвечает любой, у кого он проверен. В гильдии —
 -- только владелец или репортёр (и прежний, пока передаёт дела): они и шлют в гильдию
 -- подписанные пакеты. Один KP на всех.
@@ -1482,9 +1498,12 @@ ns.Comm.On("KQ", function(msg, sender, dist)
     if dist == "GUILD" then
         if c.key ~= ns.myKey and not (ns.Census and ns.Census.Forwarding()) then return end
         served[key] = now
-        local queuedKey = "kp:" .. key
+        local queuedKey, wire = "kp:" .. key, "KP~" .. Ed.ToB64(raw)
         ShareRoot(c.guild, Root(c.guild), true, queuedKey)
-        ns.Comm.Send("GUILD", "KP~" .. Ed.ToB64(raw), { prio = true, key = queuedKey })
+        -- На KQ о сертификате согильдийца отвечают и он сам, и репортёр. Ответ, ещё не ушедший,
+        -- когда тот же KP уже прозвучал после запроса, гильдии не нужен.
+        ns.Comm.Send("GUILD", wire, { prio = true, key = queuedKey,
+            skip = function() return (heardKp[wire] or -1e9) >= now end })
         return
     end
     if not Budget("q:" .. Peer(sender), 20) then return end
