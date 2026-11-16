@@ -82,6 +82,14 @@ function Relay.InnerGuild(inner)
 		or inner:match("^G1~%u~%d+~([^~]+)")
 end
 
+-- Ключ очереди GUILD для отчёта гильдии gk, который я отдаю своей гильдии (RG): один на все
+-- пути — пересылку нового отчёта, ответ на Q1, догоняющую рассылку. Ещё не ушедший отчёт
+-- заменяется более новым, и при заторе один и тот же отчёт не стоит в очереди дважды.
+-- Устаревший отчёт в очередь не ставится: он заменил бы новый.
+function Relay.ReportKey(gk)
+	return "rg:" .. gk
+end
+
 local function Logged(inner)
 	return inner:find("~M1~", 1, true) ~= nil or Codec.InnerType(inner) == "M1"
 end
@@ -343,7 +351,7 @@ function Relay.Register()
 		if Lease(U.GuildKey(g), ns.me, ns.myKey, now) then
 			for _, c in ipairs(ns.Data.Cached()) do
 				ns.Security.IntroduceWire("GUILD", c.raw)
-				ns.Comm.Send("GUILD", Codec.EncodeRM("RG", "L", c.origin, c.raw), { key = "rg:" .. c.key })
+				ns.Comm.Send("GUILD", Codec.EncodeRM("RG", "L", c.origin, c.raw), { key = Relay.ReportKey(c.key) })
 				ns.Census.Shown(c.raw, true)
 			end
 		end
@@ -594,17 +602,18 @@ function Relay.Forward(origin, mode, inner, clear, certificate)
 	end
 	-- Гильдии — один раз. Устаревший отчёт уже отмечен решённым: он заменил бы в очереди ещё не
 	-- ушедший новый.
-	local function ToGuild(key)
+	local function ToGuild()
 		if not Mark("settled", dk, now) then return end
 		ns.Security.Introduce("GUILD", certificate.raw)
-		ns.Comm.Send("GUILD", Codec.EncodeRM("RG", mode, U.Display(origin), inner), { key = key, prio = mode == "P", logged = Logged(inner) })
+		ns.Comm.Send("GUILD", Codec.EncodeRM("RG", mode, U.Display(origin), inner),
+			{ key = mode == "L" and Relay.ReportKey(igk) or nil, prio = mode == "P", logged = Logged(inner) })
 		if mode == "L" then ns.Census.Shown(inner, true) end
 	end
 	-- Чужой отчёт, новый для меня самого, отдаю своей гильдии сразу: её репортёр может молчать
 	-- или быть зарегистрирован у другого реле. Согильдийцы примут его как отчёт новее
 	-- сохранённого (обработчик RG). Репортёру он всё равно уходит по аренде: клиенты до этой
 	-- правки берут RG только от него.
-	if mode == "L" and ctx.taken then ToGuild("rg:" .. okey .. ":" .. Codec.InnerType(inner)) end
+	if mode == "L" and ctx.taken then ToGuild() end
 	for gk, r in pairs(reporters) do
 		if now - r.t > REG_TTL then
 			reporters[gk] = nil
@@ -613,7 +622,7 @@ function Relay.Forward(origin, mode, inner, clear, certificate)
 			Relay.stats.forwarded = Relay.stats.forwarded + 1
 			local key = mode == "L" and ("rm:" .. gk .. ":" .. okey .. ":" .. Codec.InnerType(inner)) or nil
 			if r.key == ns.myKey then
-				if gk == mine then ToGuild(key) end
+				if gk == mine then ToGuild() end
 			else
 				ns.Security.Introduce(r.name, certificate.raw)
 				ns.Comm.Send("WHISPER", Codec.EncodeRM("RM", mode, U.Display(origin), inner), { target = r.name, key = key, prio = mode == "P", logged = Logged(inner) })
@@ -682,13 +691,13 @@ local function Deliver(mode, origin, inner, ctx, toGuild)
 		ctx.authenticated, ctx.certificate, ctx.wire = true, certificate, inner
 		ns.Comm.Inject(clear, certificate.name, ctx)
 	end
-	-- Устаревший отчёт гильдии не отдаю: у всех отчётов автора один ключ очереди, и он заменил бы
-	-- ещё не ушедший новый. С гильдией по нему решено, повторы отсекаются молча.
+	-- Устаревший отчёт гильдии не отдаю: у всех её отчётов один ключ очереди (ReportKey), и он
+	-- заменил бы ещё не ушедший новый. С гильдией по нему решено, повторы отсекаются молча.
 	if ctx.outdated then
 		Mark("settled", dk, now)
 	elseif share and ns.MyGuild() then
 		Mark("settled", dk, now)
-		local key = mode == "L" and ("rg:" .. okey .. ":" .. Codec.InnerType(inner)) or nil
+		local key = mode == "L" and Relay.ReportKey(U.GuildKey(ig)) or nil
 		ns.Security.Introduce("GUILD", certificate.raw)
 		ns.Comm.Send("GUILD", Codec.EncodeRM("RG", mode, origin, inner), { key = key, prio = mode == "P", logged = Logged(inner) })
 		if mode == "L" then ns.Census.Shown(inner, true) end
