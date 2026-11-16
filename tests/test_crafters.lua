@@ -92,7 +92,7 @@ T.test("crafters codec: мусор не читается, поля следую�
 	T.eq(d.note, "заметка")
 end)
 
-T.test("crafters codec: витрина — до трёх рецептов на карточку", function()
+T.test("crafters codec: витрина — до девяти рецептов на карточку", function()
 	local Codec = codec()
 	local c = card()
 	c.profs[1].show = { 2660, 2661 }
@@ -100,16 +100,16 @@ T.test("crafters codec: витрина — до трёх рецептов на �
 	local msg = Codec.EncodeCraft(c)
 	T.ok(msg:find("~164:150:225:12:0a1z:2660.2661,186:75:150:3:zz00:2149~", 1, true), "номера через точку после хеша")
 	T.same(Codec.DecodeCraft(msg), c)
-	-- Больше трёх на карточку, повторы и неподходящие номера отбрасываются.
-	c.profs[1].show = { 2660, 2660, 0, 2661, 12345678, 2662 }
+	-- Больше девяти на карточку, повторы и неподходящие номера отбрасываются.
+	c.profs[1].show = { 2660, 2660, 0, 2661, 12345678, 2662, 2663, 2664, 3115, 3116, 7408, 9983, 16639 }
 	local d = Codec.DecodeCraft(Codec.EncodeCraft(c))
-	T.same(d.profs[1].show, { 2660, 2661, 2662 })
+	T.same(d.profs[1].show, { 2660, 2661, 2662, 2663, 2664, 3115, 3116, 7408, 9983 })
 	T.no(d.profs[2].show, "на вторую профессию места не осталось")
 	-- Чужая витрина читается так же строго, испорченная не мешает карточке.
 	local base = "W1~C~1794412800~Чиллзон~DR~22~"
-	d = Codec.DecodeCraft(base .. "164:150:225:12:0a1z:1.2.3.4,186:1:75:2:0000:5~")
-	T.same(d.profs[1].show, { 1, 2, 3 })
-	T.no(d.profs[2].show, "четвёртый — лишний")
+	d = Codec.DecodeCraft(base .. "164:150:225:12:0a1z:1.2.3.4.5.6.7.8.9.10,186:1:75:2:0000:11~")
+	T.same(d.profs[1].show, { 1, 2, 3, 4, 5, 6, 7, 8, 9 })
+	T.no(d.profs[2].show, "десятый — лишний")
 	d = Codec.DecodeCraft(base .. "164:150:225:12:0a1z:x1,186:1:75:2:0000:7.7.:8~заметка")
 	T.eq(#d.profs, 2, "карточка читается")
 	T.no(d.profs[1].show, "не число — витрины нет")
@@ -117,16 +117,48 @@ T.test("crafters codec: витрина — до трёх рецептов на �
 	T.eq(d.note, "заметка")
 	d = Codec.DecodeCraft(base .. "164:150:225:12:0a1z:0.99999999.5~")
 	T.same(d.profs[1].show, { 5 }, "0 и слишком длинный номер пропущены")
-	-- Самая длинная карточка с витриной умещается в 255 байт.
+	-- Самая длинная карточка из игры: гильдия в 24 буквы, четыре профессии (две основные, кулинария
+	-- и первая помощь) и девять семизначных номеров (на Forever такие есть) — витрина цела,
+	-- укорочено примечание.
 	c.guild, c.profs = ("Щ"):rep(24), {}
+	for i, id in ipairs({ 164, 197, 185, 129 }) do
+		c.profs[i] = { id = id, skill = 300, max = 300, n = 800, hash = "zzzz" }
+	end
+	c.profs[1].show = { 1302601, 1302602, 1302603, 1302604, 1302605 }
+	c.profs[2].show = { 1302606, 1302607, 1302608, 1302609 }
+	c.note = ("я"):rep(30)
+	msg = Codec.EncodeCraft(c)
+	T.ok(msg and #msg <= 255, "уместилось: " .. tostring(msg and #msg))
+	d = Codec.DecodeCraft(msg)
+	T.same(d.profs[1].show, { 1302601, 1302602, 1302603, 1302604, 1302605 })
+	T.same(d.profs[2].show, { 1302606, 1302607, 1302608, 1302609 }, "все девять на месте")
+	T.ok(#d.note > 0 and #d.note < 60, "примечание укорочено: " .. #d.note)
+	-- Карточка, какой в игре не бывает (номера профессий семизначные, их пять), не умещается и с
+	-- пустым примечанием: витрина укорачивается с конца, а карточка всё равно уходит.
+	c.profs = {}
 	for i, id in ipairs({ 164, 165, 171, 197, 202 }) do
 		c.profs[i] = { id = 9999000 + id, skill = 999, max = 999, n = 9999, hash = "zzzz" }
 	end
-	c.profs[5].show = { 9999997, 9999998, 9999999 }
+	c.profs[5].show = { 9999991, 9999992, 9999993, 9999994, 9999995, 9999996, 9999997, 9999998, 9999999 }
 	c.note = ("я"):rep(60)
 	msg = Codec.EncodeCraft(c)
 	T.ok(msg and #msg <= 255, "уместилось: " .. tostring(msg and #msg))
-	T.same(Codec.DecodeCraft(msg).profs[5].show, { 9999997, 9999998, 9999999 }, "витрина цела, укорочено примечание")
+	T.same(Codec.DecodeCraft(msg).profs[5].show, { 9999991, 9999992, 9999993, 9999994, 9999995, 9999996 }, "витрина укорочена с конца")
+end)
+
+-- До 0.16.0 включительно витрина была до трёх рецептов, разбор карточки тот же.
+T.test("crafters codec: клиент 0.16.0 читает первые три рецепта витрины", function()
+	local Codec = codec()
+	local c = card()
+	c.profs[1].show = { 2660, 2661 }
+	c.profs[2].show = { 2149, 2152, 3104 }
+	local msg = Codec.EncodeCraft(c)
+	Codec.CRAFT_SHOW = 3
+	local d = Codec.DecodeCraft(msg)
+	T.same(d.profs[1].show, { 2660, 2661 })
+	T.same(d.profs[2].show, { 2149 }, "лишние пропущены")
+	T.eq(d.note, card().note, "карточка и примечание целы")
+	T.eq(#d.profs, 2)
 end)
 
 T.test("crafters codec: карточка ходит в конверте строки чата", function()
@@ -665,9 +697,17 @@ T.test("crafters: после /reload карточка не уходит рань
 	NoErrors(again, "после /reload")
 end)
 
-T.test("crafters: витрина — свои рецепты, не больше трёх, правка уходит остальным", function()
+-- Окно кузнечного дела, где изучено больше рецептов, чем помещается на витрину; 16988 — нет.
+local function BigSmith()
+	return Smith(150, {
+		[2660] = true, [2661] = true, [2662] = true, [2663] = true, [2664] = true, [3115] = true,
+		[3116] = true, [7408] = true, [9983] = true, [16639] = true, [3104] = true, [16988] = false,
+	})
+end
+
+T.test("crafters: витрина — свои рецепты, не больше девяти, правка уходит остальным", function()
 	local w, c = Build()
-	Learn(c.A, Smith(150, { [2660] = true, [2661] = true, [2662] = true, [2663] = true }))
+	Learn(c.A, BigSmith())
 	local Cr = c.A.ns.Crafters
 	Cr.SetPost(164, true)
 	T.ok(Cr.Post("кую"))
@@ -677,42 +717,44 @@ T.test("crafters: витрина — свои рецепты, не больше 
 	T.ok(Cr.SetShow(164, 2660, true))
 	T.ok(Cr.Dirty(), "витрина — правка карточки")
 	T.same(Cr.Own().profs[1].show, { 2662, 2660 }, "по порядку отметки")
-	local ok, why = Cr.SetShow(164, 3115, true)
+	local ok, why = Cr.SetShow(164, 16988, true)
 	T.no(ok)
 	T.eq(why, "missing", "неизученный рецепт")
 	ok, why = Cr.SetShow(165, 2149, true)
 	T.no(ok)
 	T.eq(why, "missing", "профессии нет в карточке")
-	T.ok(Cr.SetShow(164, 2661, true))
-	ok, why = Cr.SetShow(164, 2663, true)
+	for _, id in ipairs({ 2661, 2663, 2664, 3115, 3116, 7408, 9983 }) do T.ok(Cr.SetShow(164, id, true), id) end
+	T.eq(Cr.ShowCount(), 9)
+	ok, why = Cr.SetShow(164, 16639, true)
 	T.no(ok)
-	T.eq(why, "full", "больше трёх нельзя")
+	T.eq(why, "full", "больше девяти нельзя")
 	T.ok(Cr.SetShow(164, 2660, false))
-	T.ok(Cr.SetShow(164, 2663, true), "после снятия место есть")
-	T.same(Cr.Own().profs[1].show, { 2662, 2661, 2663 })
+	T.ok(Cr.SetShow(164, 16639, true), "после снятия место есть")
+	local nine = { 2662, 2661, 2663, 2664, 3115, 3116, 7408, 9983, 16639 }
+	T.same(Cr.Own().profs[1].show, nine)
 	-- Правка уходит сама, не раньше CRAFT_UPDATE_GAP после прошлой отправки.
 	w:Run(500)
 	T.ok(Cr.Dirty(), "раньше паузы не уходит")
 	w:Run(130)
 	T.no(Cr.Dirty(), "правка ушла")
-	T.same(c.V.ns.Crafters.Get(Key(c.A)).profs[1].show, { 2662, 2661, 2663 }, "другой гильдии — через реле")
-	T.same(c.K.ns.Crafters.Get(Key(c.A)).profs[1].show, { 2662, 2661, 2663 }, "своей — по GUILD")
+	T.same(c.V.ns.Crafters.Get(Key(c.A)).profs[1].show, nine, "другой гильдии — через реле")
+	T.same(c.K.ns.Crafters.Get(Key(c.A)).profs[1].show, nine, "своей — по GUILD")
 	-- Профессию сняли с карточки и вернули: витрина вернулась вместе с ней.
 	Cr.SetPost(164, false)
 	T.eq(Cr.ShowCount(), 0)
 	Cr.SetPost(164, true)
-	T.eq(Cr.ShowCount(), 3)
+	T.eq(Cr.ShowCount(), 9)
 	-- Витрина переживает /reload автора; у смотрящего испорченная сохранённая витрина чинится.
 	local stored = c.V.ns.store.crafters.cards[Key(c.A)]
-	stored.profs[1].show = { 2662, "x", 2661, 5, 6 }
+	stored.profs[1].show = { 2662, "x", 2661, 1, 2, 3, 4, 5, 6, 7, 8, 9 }
 	local db, vdb = c.A.ns.db, c.V.ns.db
 	c.A:Logout()
 	c.V:Logout()
 	local again = w:Client({ first = "Арагорн", surname = "Светлый", guild = "Чиллзон", rank = 1, class = "WARRIOR", level = 24, db = db, reload = true })
 	local vera = w:Client({ first = "Вера", surname = "Верная", guild = "Чиллзон Север", rank = 0, class = "DRUID", level = 22, db = vdb, reload = true })
-	T.same(again.ns.Crafters.Own().profs[1].show, { 2662, 2661, 2663 })
+	T.same(again.ns.Crafters.Own().profs[1].show, nine)
 	T.no(again.ns.Crafters.Dirty(), "после /reload правок нет")
-	T.same(vera.ns.Crafters.Get(Key(again)).profs[1].show, { 2662, 2661, 5 })
+	T.same(vera.ns.Crafters.Get(Key(again)).profs[1].show, { 2662, 2661, 1, 2, 3, 4, 5, 6, 7 }, "не больше девяти")
 	NoErrors(again, "Арагорн")
 	NoErrors(vera, "Вера")
 end)
@@ -1790,7 +1832,7 @@ T.test("crafters pane: витрина — значки в строке, перв
 	-- Своя карточка: звёздочка у каждого рецепта, щелчок ставит и снимает.
 	c.A.ns.UI.Toggle("crafters")
 	local fa = c.A.ns.CraftersPane.frames
-	T.ok(Tip(c.A, fa.mine.showcase):find(L.CRAFT_SHOWCASE_TIP:format(2, 3), 1, true), "на кнопке «Витрина» — сколько выставлено")
+	T.ok(Tip(c.A, fa.mine.showcase):find(L.CRAFT_SHOWCASE_TIP:format(2, 9), 1, true), "на кнопке «Витрина» — сколько выставлено")
 	T.ok(fa.rows[1].it.own and fa.rows[1].shows[1]:IsShown(), "своя витрина в своей строке")
 	T.ok(Tip(c.A, fa.rows[1]):find(L.CRAFT_TIP_OPEN_OWN, 1, true))
 	fa.rows[1]:Click()
@@ -1809,10 +1851,6 @@ T.test("crafters pane: витрина — значки в строке, перв
 	T.same({ rows[1].it.id, rows[2].it.id, rows[3].it.id }, { 2662, 2661, 2660 }, "отмеченный поднялся к витрине")
 	T.eq(fa.card.state:GetText(), "")
 	T.ok(fa.card.refresh.enabled, "правка ещё не ушла")
-	-- Витрина полна: четвёртый не встаёт, объяснение — над списком.
-	rows[3].star:Click()
-	T.eq(fa.card.state:GetText():match("^[^\n]*"), L.CRAFT_SHOW_FULL:format(3))
-	T.same(Cr.Own().profs[1].show, { 2662, 2661 })
 	-- «Обновить» в своей карточке отправляет правки сразу.
 	fa.card.refresh:Click()
 	w:Run(30)
@@ -1822,6 +1860,63 @@ T.test("crafters pane: витрина — значки в строке, перв
 	-- Снять звёздочку.
 	RecipeRows(c.A)[1].star:Click()
 	T.same(Cr.Own().profs[1].show, { 2661 })
+	NoErrors(c.V, "Вера")
+	NoErrors(c.A, "Арагорн")
+end)
+
+-- Раскладку симулятор не считает: место значков и высоту строк записываем сами.
+local function Placed(frame)
+	frame.SetPoint = function(self, point, _, _, x, y) self.at = { point = point, x = x, y = y } end
+	frame.SetHeight = function(self, h) self.h = h end
+	return frame
+end
+
+T.test("crafters pane: витрина — ряд под профессиями, девять значков, десятый не встаёт", function()
+	local w, c = Build()
+	Learn(c.A, BigSmith())
+	local Cr = c.A.ns.Crafters
+	Cr.SetPost(164, true)
+	for _, id in ipairs({ 2660, 2661, 2662, 2663, 2664, 3115, 3116, 7408, 9983 }) do T.ok(Cr.SetShow(164, id, true), id) end
+	T.ok(Cr.Post("кую всё"))
+	Master(c.K, "без витрины")
+	w:Run(30)
+	c.V.ns.UI.Toggle("crafters")
+	local row, plain = PaneRow(c.V, c.A), PaneRow(c.V, c.K)
+	Placed(row)
+	Placed(plain)
+	for j = 1, 9 do Placed(row.shows[j]) end
+	c.V.ns.CraftersPane.Render()
+	-- Девять значков в один ряд под строкой профессий, от её левого края.
+	for j = 1, 9 do
+		local b = row.shows[j]
+		T.ok(b:IsShown(), "значок " .. j)
+		T.eq(b.at.point, "TOPLEFT")
+		T.eq(b.at.y, row.shows[1].at.y, "один ряд")
+		T.eq(b.at.x, 6 + (j - 1) * 20, "слева направо")
+	end
+	T.no(row.shows[10] and row.shows[10]:IsShown())
+	-- Строка с витриной выше на этот ряд, без витрины — прежней высоты; следующая встаёт под ней.
+	T.eq(plain.h, 38, "без витрины — как раньше")
+	T.ok(-row.shows[1].at.y >= plain.h - 3, "ряд ниже строки профессий")
+	T.ok(row.h >= -row.shows[1].at.y + 18, "ряд внутри строки: " .. row.h)
+	T.no(plain.shows[1] and plain.shows[1]:IsShown())
+	local upper, lower = row, plain
+	if row.at.y < plain.at.y then upper, lower = plain, row end
+	T.eq(lower.at.y, upper.at.y - upper.h - 2, "строки не наезжают друг на друга")
+	-- Десятый рецепт не встаёт: объяснение над списком своей карточки.
+	local L, V = c.A.ns.L, c.A.ns.Views
+	T.eq(L.CRAFT_SHOW_FULL:format(V.CraftCount(9)), "На витрине уже 9 рецептов: сначала уберите один.")
+	c.A.ns.UI.Toggle("crafters")
+	local fa = c.A.ns.CraftersPane.frames
+	PaneRow(c.A, c.A):Click()
+	w:Run(1)
+	c.A.ns.CraftersPane.SearchRecipes("топор")
+	local rows = RecipeRows(c.A)
+	T.eq(#rows, 1)
+	T.eq(rows[1].it.id, 3104)
+	rows[1].star:Click()
+	T.eq(fa.card.state:GetText():match("^[^\n]*"), L.CRAFT_SHOW_FULL:format(V.CraftCount(9)))
+	T.eq(Cr.ShowCount(), 9)
 	NoErrors(c.V, "Вера")
 	NoErrors(c.A, "Арагорн")
 end)
