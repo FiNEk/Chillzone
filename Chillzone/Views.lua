@@ -660,6 +660,49 @@ function Views.GroupRoles(roles, counts)
 	return table.concat(out, " ")
 end
 
+-- Значок класса строкой |T|t: из того же атласа, что в «Переписи»; неизвестный — знак вопроса.
+local CLASS_ATLAS = "Interface\\Glues\\CharacterCreate\\UI-CharacterCreate-Classes"
+local UNKNOWN_ICON = "Interface\\Icons\\INV_Misc_QuestionMark"
+
+function Views.ClassIcon(class, size)
+	size = size or 12
+	local c = class and CLASS_ICON_TCOORDS and CLASS_ICON_TCOORDS[class]
+	if type(c) ~= "table" then return ("|T%s:%d:%d:0:0:64:64:5:59:5:59|t"):format(UNKNOWN_ICON, size, size) end
+	local px = {}
+	for i = 1, 4 do px[i] = math.floor((tonumber(c[i]) or 0) * 256 + 0.5) end
+	return ("|T%s:%d:%d:0:0:256:256:%d:%d:%d:%d|t"):format(CLASS_ATLAS, size, size, px[1], px[2], px[3], px[4])
+end
+
+-- Состав группы значками классов в одну строку, по ролям: танки, лекари, бойцы, без роли.
+function Views.GroupClassIcons(comp)
+	local out = {}
+	for _, e in ipairs(type(comp) == "table" and comp or {}) do
+		for _ = 1, e.count or 1 do out[#out + 1] = Views.ClassIcon(e.class) end
+	end
+	return table.concat(out)
+end
+
+-- Состав группы для подсказки: строка на роль — значок роли и классы цветом класса, повторы
+-- числом в скобках; кто без роли — отдельной строкой в конце.
+function Views.GroupComp(comp)
+	local by, order = {}, {}
+	for _, e in ipairs(type(comp) == "table" and comp or {}) do
+		local role = e.role or "-"
+		if not by[role] then
+			by[role] = {}
+			order[#order + 1] = role
+		end
+		local name = e.class and L.CLASS[e.class] and Views.Name(L.CLASS[e.class], e.class) or L.GROUPS_COMP_UNKNOWN
+		by[role][#by[role] + 1] = (e.count or 1) > 1 and L.GROUPS_COMP_COUNT:format(name, e.count) or name
+	end
+	local lines = {}
+	for _, role in ipairs(order) do
+		local names = table.concat(by[role], ", ")
+		lines[#lines + 1] = role == "-" and L.GROUPS_COMP_NO_ROLE:format(names) or (Views.RoleIcon(role) .. " " .. names)
+	end
+	return lines
+end
+
 -- Почему не получилось разместить объявление или подать заявку.
 function Views.GroupWhy(why, arg)
 	if why == "nocert" then return ns.Security.NotReadyReason() end
@@ -690,6 +733,8 @@ local function GroupTip(e, own)
 			local need = ns.Groups.RoleText(e.roles, true)
 			tt:AddLine(need ~= "" and L.GROUPS_TIP_NEED:format(need) or L.GROUPS_TIP_NEED_ANY, 1, 0.82, 0, true)
 			tt:AddLine(L.GROUPS_TIP_SIZE:format(e.size, e.cap), 0.8, 0.8, 0.8)
+			-- Состав: классы и роли без имён. Автор прежней версии его не присылает.
+			for _, line in ipairs(Views.GroupComp(e.comp)) do tt:AddLine(line, 1, 1, 1, true) end
 			if e.min > 0 then tt:AddLine(L.GROUPS_TIP_MIN:format(e.min), 0.8, 0.8, 0.8) end
 		else
 			tt:AddLine(e.title ~= "" and e.title or L.GROUPS_ANYWHERE, 1, 1, 1, true)
@@ -703,6 +748,8 @@ local function GroupTip(e, own)
 		end
 	end
 end
+
+local ROW_ICONS_CAP = 5 -- значки состава в строке доски — у групп не больше этого числа мест
 
 -- Одна запись доски. action: "apply", "withdraw", "invite" или nil; status — что написать
 -- вместо кнопки или под ней.
@@ -718,7 +765,15 @@ local function GroupRow(e, own)
 		local need = Views.GroupRoles(e.roles, true)
 		row.sub = WHITE .. e.title .. "|r" .. note
 		row.right = need ~= "" and need or (GREY .. L.GROUPS_NEED_ANY .. "|r")
-		row.detail = e.size .. "/" .. e.cap .. (e.min > 0 and (", " .. L.GROUPS_FROM_LEVEL:format(e.min)) or "")
+		-- У пятёрки вместо уровня — значки состава: вместе они не уместятся. Уровень остаётся в
+		-- подсказке, а кому он мал, тому строка и так пишет «с N уровня». В рейде значков было бы
+		-- слишком много: его состав — только в подсказке.
+		local icons = e.cap <= ROW_ICONS_CAP and Views.GroupClassIcons(e.comp) or ""
+		if icons ~= "" then
+			row.detail = icons .. " " .. e.size .. "/" .. e.cap
+		else
+			row.detail = e.size .. "/" .. e.cap .. (e.min > 0 and (", " .. L.GROUPS_FROM_LEVEL:format(e.min)) or "")
+		end
 	else
 		row.sub = WHITE .. (e.title ~= "" and e.title or L.GROUPS_ANYWHERE) .. "|r" .. note
 		row.right = Views.GroupRoles(e.roles)
@@ -758,6 +813,7 @@ local function OwnEntry()
 		key = ns.myKey, name = U.Display(ns.me), guild = ns.MyGuild() or "", class = class, level = UnitLevel("player") or 0,
 		mode = mine.mode, id = mine.id, raised = mine.id, kind = mine.kind, title = mine.title, note = mine.note,
 		roles = mine.roles, size = size, cap = mine.cap, min = mine.min,
+		comp = mine.mode == "G" and ns.Groups.Composition() or nil,
 	}
 end
 

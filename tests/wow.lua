@@ -694,7 +694,16 @@ local function Env(c)
 	-- Версия интерфейса: по умолчанию классическая, как у Forever; c.interface — другой клиент.
 	env.GetBuildInfo = function() return "1.15.7", "60000", "Jan 1 2026", c.interface or 11507 end
 	env.UnitFactionGroup = function() return c.faction end
-	env.UnitClass = function() return CLASS_LOCAL[c.class], c.class end
+	-- Участник группы — своим классом (у гостя без класса игра ничего не называет).
+	env.UnitClass = function(unit)
+		local kind, index = tostring(unit):match("^(%a+)(%d+)$")
+		local member = (kind == "party" or kind == "raid") and c.party and c.party[tonumber(index)]
+		if member then
+			if member.class then return CLASS_LOCAL[member.class], member.class end
+			return nil
+		end
+		return CLASS_LOCAL[c.class], c.class
+	end
 	env.UnitLevel = function() return c.level end
 	env.issecretvalue = function() return false end
 	env.GetMaxPlayerLevel = function() return 60 end

@@ -26,7 +26,10 @@
 --
 -- Приглашение в группу — только из щелчка игрока. Роль игрока игра аддону не сообщает:
 -- роли называет сам просящий, нужные роли ведёт автор объявления. Имена состава группы
--- по сети не передаются. Название объявления — свободный текст: списка мест в аддоне нет,
+-- по сети не передаются: в объявлении только классы и роли тех, кто уже в группе (поле comp
+-- G1, как GM в Olympus Groups.lua). В группе игры бывают люди без аддона и вне объединения,
+-- на доску они не просились. Состав меняется вместе с размером, отдельных пакетов нет.
+-- Название объявления — свободный текст: списка мест в аддоне нет,
 -- список занятий игры (C_LFGList) служит только подсказкой. Сроки и лимиты портированы
 -- из Olympus Groups.lua и Board.lua.
 local ADDON, ns = ...
@@ -63,7 +66,7 @@ local myWire -- последний подписанный пакет моего 
 local sealing, dirty = false, false
 local wrapMsg, wrapFor -- конверт, ещё не отданный в подпись: текст G1 и номер объявления
 local wrapAt, wrapId = -1e9, nil -- когда и для какого объявления подписан последний конверт
-local lastSent, nextBeat, sentSize = -1e9, 0, nil
+local lastSent, nextBeat, sentSize, sentComp = -1e9, 0, nil, nil
 local lastRaise, raises = -1e9, {}
 local lastAsk, lastServe, lastServeMine = -1e9, -1e9, -1e9
 local askAt -- когда после входа просить объявления; nil — уже просили
@@ -93,17 +96,23 @@ local function Me()
 	return class, UnitLevel("player") or 0
 end
 
--- Ключи тех, кто сейчас со мной в группе. Имена остаются на этом клиенте.
+-- Кто сейчас со мной в группе, кроме меня: [ключ] = класс от игры (или true, если игра его не
+-- назвала). Имена остаются на этом клиенте.
 local function MemberKeys()
 	local out = {}
 	local n = GetNumGroupMembers and GetNumGroupMembers() or 0
 	if n < 2 or not UnitFullName then return out end
 	local raid = IsInRaid and IsInRaid()
 	for i = 1, raid and n or n - 1 do
-		local name, realm = UnitFullName((raid and "raid" or "party") .. i)
+		local unit = (raid and "raid" or "party") .. i
+		local name, realm = UnitFullName(unit)
 		if type(name) == "string" and name ~= "" then
 			local key = U.Key((U.ParsePlayer(name, realm, ns.realm)))
-			if key then out[key] = true end
+			if key and key ~= ns.myKey then
+				local class
+				if UnitClass then class = select(2, UnitClass(unit)) end
+				out[key] = type(class) == "string" and class ~= "" and class or true
+			end
 		end
 	end
 	return out
@@ -118,14 +127,51 @@ local function Signed()
 	return n
 end
 
--- Размер собираемой группы: я и записанные. Группа игры, где я лидер, — не меньше её состава:
--- в ней бывают и позванные мимо записи. Чужая группа, где я не лидер, не в счёт.
+-- Одна роль из отмеченных или nil: при нескольких неизвестно, кем игрок пойдёт.
+local function OneRole(r)
+	local one
+	for _, k in ipairs(Groups.ROLES) do
+		if type(r) == "table" and (tonumber(r[k]) or 0) > 0 then
+			if one then return nil end
+			one = k
+		end
+	end
+	return one
+end
+
+-- Кто в собираемой группе, по записи на человека: { class, role }, без имён. Я — с ролью, если в
+-- «Моих ролях» отмечена одна. Записанные и позванные — с занятой ролью (или одной своей) и
+-- классом из заявки, а уже вошедшие в мою группу игры — с классом от игры. Группа игры, где я
+-- лидер, добавляет и тех, кто в ней мимо записи: их роль неизвестна. Чужая группа, где я не
+-- лидер, не в счёт: в ней я сам по себе.
+local function People()
+	local out = { { class = (Me()), role = OneRole(Groups.MyRoles()) } }
+	local party = Leading() and MemberKeys() or {}
+	local listed = {}
+	for _, a in ipairs(applicants) do
+		if a.state ~= "new" then
+			listed[a.key] = true
+			local class = party[a.key]
+			out[#out + 1] = { class = type(class) == "string" and class or a.class, role = a.took or OneRole(a.roles) }
+		end
+	end
+	for key, class in pairs(party) do
+		if not listed[key] then out[#out + 1] = { class = type(class) == "string" and class or nil } end
+	end
+	return out
+end
+
+-- Размер собираемой группы — столько, сколько людей в People: я, записанные и, если я лидер
+-- группы игры, те, кто в ней мимо записи.
 local function Size()
-	local n = 1 + Signed()
-	if Leading() then n = math.max(n, GroupSize()) end
-	return math.min(n, Codec.GROUP_CAP)
+	return math.min(#People(), Codec.GROUP_CAP)
 end
 Groups.Size = Size
+
+-- Состав моей группы так, как его увидят остальные: { { class, role, count } } по ролям (Codec.DecodeComp).
+function Groups.Composition()
+	return (Codec.DecodeComp(Codec.GroupComp(People())))
+end
 
 -- Заявки без ответа: их число горит кружком на кнопке у миникарты и на значке «Группы».
 function Groups.Waiting()
@@ -347,7 +393,7 @@ local LOWERED = { expired = "GROUPS_LOWERED_EXPIRED", full = "GROUPS_LOWERED_FUL
 local LOWERED_LOG = { expired = "вышел срок", full = "группа полна", joined = "я вошёл в группу" }
 
 local function Forget()
-	mine, myWire, dirty, sentSize = nil, nil, false, nil
+	mine, myWire, dirty, sentSize, sentComp = nil, nil, false, nil, nil
 	wrapMsg, wrapFor = nil, nil
 	wipe(applicants)
 	wipe(declined)
@@ -399,15 +445,17 @@ local function Broadcast(prio)
 	local guild = ns.MyGuild()
 	if not mine or not guild then return false, "failed" end
 	local class, level = Me()
-	local size, every = Size(), Every()
+	local people, every = People(), Every()
+	local size = math.min(#people, Codec.GROUP_CAP)
 	local msg = Codec.EncodeGroup({
 		mode = mine.mode, id = mine.id, guild = guild, class = class, level = level, kind = mine.kind,
 		roles = mine.roles, size = mine.mode == "G" and size or 1, cap = mine.cap, min = mine.min,
-		every = every, title = mine.title, note = mine.note,
+		every = every, title = mine.title, note = mine.note, comp = people,
 	})
 	if not msg then return false, "failed" end
 	local id, now = mine.id, ns.Now()
-	dirty, sealing, lastSent, nextBeat, sentSize = false, true, now, now + every * 60, size
+	dirty, sealing, lastSent, nextBeat = false, true, now, now + every * 60
+	sentSize, sentComp = size, Codec.GroupComp(people)
 	local ok, why = ns.Security.Seal(msg, function(wire)
 		sealing = false
 		if not mine or mine.id ~= id then return end -- сняли, пока шла подпись
@@ -441,7 +489,7 @@ end
 -- Заявки ко мне, как пришли. У записи party — игрок сейчас в моей группе игры.
 function Groups.Applicants()
 	local members = #applicants > 0 and MemberKeys() or nil
-	for _, a in ipairs(applicants) do a.party = members and members[a.key] or nil end
+	for _, a in ipairs(applicants) do a.party = members and members[a.key] and true or nil end
 	return applicants
 end
 
@@ -852,7 +900,9 @@ local function CheckMine()
 		return false
 	end
 	if PartyFull(mine.cap) then return Groups.Lower("full") end
-	if Size() ~= sentSize then dirty = true end
+	-- Состав меняется и без смены размера: один вышел, другой вошёл, автор поменял свою роль.
+	local people = People()
+	if math.min(#people, Codec.GROUP_CAP) ~= sentSize or Codec.GroupComp(people) ~= sentComp then dirty = true end
 	return false
 end
 

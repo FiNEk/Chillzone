@@ -77,6 +77,71 @@ T.test("groups codec: мусор не читается", function()
 	T.eq(d.note, "заметка")
 end)
 
+T.test("groups codec: состав группы — классы и роли без имён", function()
+	local Codec = codec()
+	local l = listing()
+	l.comp = {
+		{ class = "MAGE", role = "d" }, { class = "PALADIN", role = "t" }, { class = "MAGE", role = "d" },
+		{ class = "PRIEST", role = "h" }, { class = nil, role = nil }, { class = "HUNTER" },
+	}
+	local msg = Codec.EncodeGroup(l)
+	local tail = "~идём до конца, без спешки~PAT1,PRH1,MAD2,---1,HU-1"
+	T.eq(msg:sub(-#tail), tail, "после примечания, по ролям, одинаковые сложены")
+	local d = Codec.DecodeGroup(msg)
+	T.same(d.comp, {
+		{ class = "PALADIN", role = "t", count = 1 }, { class = "PRIEST", role = "h", count = 1 },
+		{ class = "MAGE", role = "d", count = 2 }, { count = 1 }, { class = "HUNTER", count = 1 },
+	})
+	T.eq(d.note, "идём до конца, без спешки", "примечание на месте")
+	-- Шаблон прежних версий (0.14.0–0.17.1) кончается примечанием: состав ему не мешает.
+	local OLD = "^G1~([GPX])~(%d+)~([^~|]+)~(%u?%u?)~(%d%d?%d?)~(%u)~(%d%d?)%.(%d%d?)%.(%d%d?)~(%d%d?)~(%d%d?)"
+		.. "~(%d%d?%d?)~(%d%d?)~([^~]*)~([^~]*)"
+	T.eq(select(14, msg:match(OLD)), "Мёртвые копи")
+	T.eq(select(15, msg:match(OLD)), "идём до конца, без спешки")
+	-- Без поля — состава нет.
+	T.no(Codec.DecodeGroup(msg:sub(1, -#tail - 1) .. "~заметка").comp)
+	-- У «ищу группу» состава нет.
+	l.mode, l.cap = "P", 0
+	T.no(Codec.EncodeGroup(l):find("PAT1", 1, true))
+	-- Испорченный состав отбрасывается, объявление остаётся; поля после него не мешают.
+	local base = "G1~G~1794412800~Чиллзон~PA~23~D~1.0.2~2~5~18~5~Копи~заметка~"
+	for _, bad in ipairs({ "PAT1,PAT1", "PAT0", "PAX1", "pat1", "PAT1,", "WAT40,MAD1", "имя" }) do
+		local g = Codec.DecodeGroup(base .. bad)
+		T.ok(g and g.note == "заметка", "объявление читается: " .. bad)
+		T.no(g.comp, "состав отброшен: " .. bad)
+	end
+	T.same(Codec.DecodeGroup(base .. "WAT1~новое поле").comp, { { class = "WARRIOR", role = "t", count = 1 } })
+	T.same(Codec.DecodeGroup(base .. "ZZD1").comp, { { role = "d", count = 1 } }, "незнакомый класс — неизвестен")
+end)
+
+T.test("groups codec: длинный состав — только роли, всё умещается в 255 байт", function()
+	local Codec = codec()
+	local classes = { "WARRIOR", "PALADIN", "HUNTER", "ROGUE", "PRIEST", "SHAMAN", "MAGE", "WARLOCK", "DRUID" }
+	local roles = { "t", "h", "d", false }
+	local comp = {}
+	for i = 1, 40 do comp[i] = { class = classes[i % #classes + 1], role = roles[i % 4 + 1] or nil } end
+	local l = listing()
+	l.guild, l.title, l.note = ("Щ"):rep(24), ("Ж"):rep(40), ("я"):rep(90)
+	l.size, l.cap, l.comp = 40, 40, comp
+	local msg = Codec.EncodeGroup(l)
+	T.ok(msg and #msg <= 255, "уместилось: " .. #msg)
+	local d = Codec.DecodeGroup(msg)
+	local total = 0
+	for _, e in ipairs(d.comp) do
+		T.no(e.class, "классов нет")
+		total = total + e.count
+	end
+	T.eq(total, 40, "все сорок посчитаны")
+	T.eq(#d.comp, 4, "танки, лекари, бойцы и без роли")
+	T.ok(#d.note > 0, "примечанию место осталось")
+	-- Больше 40 не уходит.
+	comp[41] = { class = "MAGE", role = "d" }
+	local _, sum = Codec.DecodeComp(Codec.EncodeComp(comp))
+	T.eq(sum, 40)
+	-- Короткий состав идёт с классами.
+	T.eq(Codec.GroupComp({ { class = "MAGE", role = "d" }, { class = "MAGE", role = "d", count = 2 } }), "MAD3")
+end)
+
 T.test("groups codec: заявка, отзыв и ответ", function()
 	local Codec = codec()
 	local msg = Codec.EncodeGroupApply(1794412800, "abcdefgh12345678", "Чиллзон", "DRUID", 22, { t = 0, h = 1, d = 1 }, "могу | лечить ~ и бить")
@@ -380,6 +445,7 @@ T.test("groups: автор в чужой группе — объявление �
 	T.ok(c.A.ns.Groups.Mine(), "объявление не снято")
 	T.eq(#c.A.ns.Groups.Applicants(), 1, "запись на месте")
 	T.eq(Seen(c.B, c.A).size, 2, "Карл в размер не идёт: Арагорн и Вера")
+	for _, entry in ipairs(Seen(c.B, c.A).comp) do T.ok(entry.class ~= "PALADIN", "и в состав тоже") end
 	T.no(c.A:Hardware(c.A.ns.Groups.Invite, Key(c.V)), "позвать нельзя")
 	T.eq(c.A:Hardware(c.A.ns.Groups.InviteAll), 0)
 	T.eq(#c.A.partyInvites, 0)
@@ -423,6 +489,86 @@ T.test("groups: выписка и вычёркивание освобождаю�
 	T.eq(c.B.ns.Groups.List()[1].applied, "declined")
 	w:Run(30)
 	T.eq(Seen(c.K, c.A).size, 1, "у всех на доске снова один")
+end)
+
+-- Подсказка строки доски (данные Views) одним текстом.
+local function RowTip(row)
+	local lines = {}
+	row.tip({ AddLine = function(_, text) lines[#lines + 1] = text end })
+	return table.concat(lines, "\n")
+end
+
+T.test("groups: состав — классы и роли без имён, правка при каждой перемене", function()
+	local w, c = Build()
+	local L = c.B.ns.L
+	local wires = Capture(c.A)
+	c.A.ns.Groups.SetRole("t", true) -- Арагорн идёт танком
+	T.ok(c.A.ns.Groups.Raise(Spec({ roles = { t = 0, h = 1, d = 3 } })))
+	w:Run(30)
+	T.same(Seen(c.B, c.A).comp, { { class = "WARRIOR", role = "t", count = 1 } }, "пока в группе один автор")
+	T.same(Seen(c.K, c.A).comp, Seen(c.B, c.A).comp, "своя гильдия видит то же")
+	T.ok(c.V.ns.Groups.Apply(Key(c.A), { t = 0, h = 1, d = 1 }))
+	w:Run(30)
+	T.eq(#Seen(c.B, c.A).comp, 1, "заявка без записи в состав не идёт")
+	T.ok(c.A.ns.Groups.Sign(Key(c.V)))
+	w:Run(40)
+	local e = Seen(c.B, c.A)
+	T.eq(e.size, 2)
+	T.same(e.comp, { { class = "WARRIOR", role = "t", count = 1 }, { class = "DRUID", role = "h", count = 1 } },
+		"Вера — лекарем: эту роль она заняла")
+
+	-- Строка доски: значки классов вместо уровня, в подсказке — классы по ролям.
+	local row = RowOf(c.B, c.A)
+	T.ok(row.detail:find("UI-CharacterCreate-Classes", 1, true), "значок класса в строке: " .. row.detail)
+	T.eq(row.detail:sub(-4), " 2/5")
+	T.no(row.detail:find(L.GROUPS_FROM_LEVEL:format(18), 1, true), "уровень ушёл в подсказку")
+	local tip = RowTip(row)
+	T.ok(tip:find(L.GROUPS_TIP_MIN:format(18), 1, true), "уровень в подсказке")
+	T.ok(tip:find(c.B.ns.Views.RoleIcon("t") .. " " .. L.CLASS.WARRIOR, 1, true), "танк — воин")
+	T.ok(tip:find(c.B.ns.Views.RoleIcon("h") .. " " .. L.CLASS.DRUID, 1, true), "лекарь — друид")
+	T.no(tip:find("Вера", 1, true), "имён записанных нет")
+	local own = RowOf(c.A, c.A)
+	T.eq(own.detail, row.detail, "автор видит свою строку так же")
+
+	-- В группе игры Арагорна гость мимо записи: класс от игры, роль неизвестна. Вера ещё не позвана.
+	c.A.party = { { first = "Гость", surname = "Первый", class = "MAGE" } }
+	c.A:Fire("GROUP_ROSTER_UPDATE")
+	w:Run(40)
+	e = Seen(c.B, c.A)
+	T.eq(e.size, 3, "Арагорн, Вера и гость")
+	T.same(e.comp[3], { class = "MAGE", count = 1 })
+	T.ok(RowTip(RowOf(c.B, c.A)):find(L.GROUPS_COMP_NO_ROLE:format(L.CLASS.MAGE), 1, true), "без роли — отдельной строкой")
+	-- Гость ушёл, пришёл другой: размер тот же, а правка всё равно уходит.
+	c.A.party = { { first = "Гость", surname = "Второй", class = "HUNTER" } }
+	c.A:Fire("GROUP_ROSTER_UPDATE")
+	w:Run(40)
+	e = Seen(c.B, c.A)
+	T.eq(e.size, 3)
+	T.same(e.comp[3], { class = "HUNTER", count = 1 }, "состав сменился без смены размера")
+	-- Вера вошла: её класс теперь от игры, роль — та же занятая.
+	c.A.party = { { first = "Гость", surname = "Второй", class = "HUNTER" }, c.V }
+	c.A:Fire("GROUP_ROSTER_UPDATE")
+	w:Run(40)
+	e = Seen(c.B, c.A)
+	T.eq(e.size, 3, "Вера не считается дважды")
+	T.same(e.comp[2], { class = "DRUID", role = "h", count = 1 })
+	-- Автор отметил ещё и лекаря: кем пойдёт он сам, теперь неизвестно.
+	c.A.ns.Groups.SetRole("h", true)
+	w:Run(40)
+	T.same(Seen(c.B, c.A).comp, {
+		{ class = "DRUID", role = "h", count = 1 }, { class = "HUNTER", count = 1 }, { class = "WARRIOR", count = 1 },
+	})
+	-- Рейд: значков в строке нет, уровень на месте, состав — в подсказке.
+	T.ok(c.A.ns.Groups.Raise(Spec({ kind = "R", cap = 10, roles = { t = 1, h = 1, d = 3 } })))
+	w:Run(40)
+	row = RowOf(c.B, c.A)
+	T.eq(row.detail, "3/10, " .. L.GROUPS_FROM_LEVEL:format(18))
+	T.ok(RowTip(row):find(L.CLASS.HUNTER, 1, true))
+	-- По сети — ни одного имени, кроме автора в его же подписи.
+	T.ok(#wires >= 5, "правки ушли: " .. #wires)
+	for _, wire in ipairs(wires) do
+		T.no(wire:find("Вера", 1, true) or wire:find("Гость", 1, true), "в пакете нет имён")
+	end
 end)
 
 T.test("groups: снятое объявление — записанному строка в чат", function()
