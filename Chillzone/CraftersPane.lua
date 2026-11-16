@@ -213,11 +213,12 @@ local function Row(i)
 	r.button = Button(r, L.CRAFT_WHISPER, ACTION_W - 4, "row whisper", function()
 		if r.it then Whisper(r.it.card.name) end
 	end)
-	-- Имя, профессии и «Шепнуть» стоят от верха строки: в строке с витриной они там же, где без неё.
+	-- «Шепнуть» и давность — по середине строки, и с витриной тоже; имя и профессии стоят от верха
+	-- строки: в строке с витриной они там же, где без неё.
 	r.button:SetHeight(20)
-	r.button:SetPoint("RIGHT", r, "TOPRIGHT", -4, -ROW_H / 2)
+	r.button:SetPoint("RIGHT", -4, 0)
 	r.status = FS(r, "GameFontHighlightSmall", "CENTER")
-	r.status:SetPoint("RIGHT", r, "TOPRIGHT", -4, -ROW_H / 2)
+	r.status:SetPoint("RIGHT", -4, 0)
 	r.status:SetWidth(ACTION_W - 4)
 	r.name = FS(r, "GameFontHighlight")
 	r.name:SetPoint("TOPLEFT", 6, -5)
