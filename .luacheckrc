@@ -41,6 +41,7 @@ read_globals = {
 	"C_LFGList",
 	"C_Map",
 	"C_PartyInfo",
+	"C_SkillInfo",
 	"C_Spell",
 	"C_TradeSkillUI",
 	"C_Timer",
