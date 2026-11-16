@@ -974,6 +974,8 @@ local function Env(c)
 	end
 	env.ChatFrame1EditBox = NewFrame(c, "ChatFrame1EditBox")
 	env.ChatFrame2EditBox = NewFrame(c, "ChatFrame2EditBox")
+	-- Открытое поле чата игры: c.activeChat (обычно nil — поле закрыто).
+	env.ChatEdit_GetActiveWindow = function() return c.activeChat end
 	env.DEFAULT_CHAT_FRAME = { editBox = env.ChatFrame1EditBox, AddMessage = function(_, text) c.printed[#c.printed + 1] = text end }
 	-- Вкладки чата: 1 — основное окно, 2 — журнал боя; ещё вкладки заводит Client:ChatWindow.
 	env.ChatFrame1 = env.DEFAULT_CHAT_FRAME

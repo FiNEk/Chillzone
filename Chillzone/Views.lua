@@ -331,14 +331,15 @@ end
 local ACTIVE_WINDOW = 3600 -- «писал за последний час»
 local ROLE_ORDER = { leader = 0, officer = 1, member = 2, active = 3 }
 
--- Строка канала для окна: [время] [Имя] <Гильдия>: текст. Имя — ссылка player.
+-- Строка канала для окна: [время] [Имя] <Гильдия>: текст. Имя — ссылка player, текст
+-- «[Профессия: Имя Фамилия]» знакомого мастера — ссылка на него (ChatLinks.Crafts).
 -- Гильдия автора строки из канала игры может быть не подтверждена (e.g пусто): серое <?>.
 function Views.ChatLine(e, channel, showTime)
 	local link = "|Hplayer:" .. (U.TellName(e.s) or "?") .. "|h[" .. Views.Name(e.s, e.c) .. "]|h"
 	local guild = ""
 	if not ns.Chat.GUILD_CHANNELS[channel] then guild = " " .. GREY .. "<" .. (e.g and ns.Chat.GuildTag(e.g) or "?") .. ">|r" end
 	local stamp = (showTime and date) and (GREY .. date("%H:%M", e.t or 0) .. "|r ") or ""
-	return stamp .. link .. guild .. ": " .. Codec.SanitizeChat(e.x)
+	return stamp .. link .. guild .. ": " .. ns.ChatLinks.Crafts(Codec.SanitizeChat(e.x))
 end
 
 local function ByRole(a, b)
@@ -1105,6 +1106,7 @@ local function CraftTip(card, presence)
 		if card.note ~= "" then tt:AddLine(Codec.Plain(card.note), 0.8, 0.8, 0.8, true) end
 		if not card.own then tt:AddLine(L.CRAFT_TIP_AGE:format(Views.Ago(ns.ServerTime() - card.at)), 0.6, 0.6, 0.6) end
 		tt:AddLine(card.own and L.CRAFT_TIP_OPEN_OWN or L.CRAFT_TIP_OPEN, 0.5, 0.83, 0.76, true)
+		tt:AddLine(L.CRAFT_TIP_LINK, 0.5, 0.83, 0.76, true)
 		if not card.own then tt:AddLine(L.TIP_MENU, 0.5, 0.83, 0.76) end
 	end
 end

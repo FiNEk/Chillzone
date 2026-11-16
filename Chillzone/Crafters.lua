@@ -279,6 +279,52 @@ function Crafters.Count()
 	return #Crafters.Cards() + (Crafters.Own() and 1 or 0)
 end
 
+---------------------------------------------------------------------------
+-- Ссылка на мастера в чате. Свою ссылку |H в строке чата сервер не пропустит, поэтому в чат
+-- уходит обычный текст «[Профессия: Имя Фамилия]»: без аддона он виден как есть, а клиент с
+-- аддоном делает из него ссылку (ChatLinks.Crafts), если такой мастер с этой профессией есть в
+-- его каталоге. Текст ничего не доказывает: щелчок по ссылке только открывает подписанную карточку.
+---------------------------------------------------------------------------
+local LINK_MAX = 120 -- текст между скобками длиннее — не ссылка
+local profByName -- [свёрнутое название профессии] = номер
+
+-- Видимая карточка мастера name с профессией prof или nil: своя — только размещённая, чужая — как в
+-- Crafters.Cards (гильдия в объединении, автор не в игноре).
+function Crafters.Find(name, prof)
+	local key = U.Key(type(name) == "string" and U.Trim(name) or nil)
+	if not key or not prof then return nil end
+	local card
+	if key == ns.myKey then
+		card = Crafters.Own()
+	else
+		card = cards and cards[key]
+		if card and (not U.IsMemberGuild(card.guild) or ns.store.ignore[key]) then card = nil end
+	end
+	if card and HasProf(card, prof) then return card end
+end
+
+-- Текст ссылки на профессию prof мастера card или nil.
+function Crafters.LinkText(card, prof)
+	if type(card) ~= "table" or type(card.name) ~= "string" or not HasProf(card, prof) then return nil end
+	return "[" .. Crafters.ProfName(prof) .. ": " .. Codec.Plain(U.Display(card.name)) .. "]"
+end
+
+-- Мастер по тексту между скобками: карточка и номер профессии или nil.
+function Crafters.FromLink(inner)
+	if type(inner) ~= "string" or #inner > LINK_MAX then return nil end
+	local profName, name = inner:match("^(.-): (.+)$")
+	if not profName then return nil end
+	if not profByName then
+		profByName = {}
+		for _, id in ipairs(Crafters.PROFS) do
+			if L.CRAFT_PROF and L.CRAFT_PROF[id] then profByName[U.Fold(L.CRAFT_PROF[id])] = id end
+		end
+	end
+	local prof = profByName[U.Fold(U.Trim(profName))]
+	local card = prof and Crafters.Find(name, prof)
+	if card then return card, prof end
+end
+
 -- Согильдиец, которого нет в свежем ростере, ушёл из гильдии: его карточка не показывается.
 ns.On("ROSTER", function()
 	if not cards or not ns.Roster.Fresh() then return end
