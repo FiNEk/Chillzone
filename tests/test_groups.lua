@@ -935,6 +935,73 @@ local function Logged(cl, text)
 	return n
 end
 
+T.test("groups: строку о группе можно повторить в общем чате, не чаще паузы", function()
+	local w, c = Build()
+	local C = c.A.ns.Config
+	local function Lines(viewer, text)
+		local n = 0
+		for _, m in ipairs(viewer.ns.Chat.History("A")) do
+			if tostring(m.x):find(text, 1, true) then n = n + 1 end
+		end
+		return n
+	end
+	local function Announce(cl)
+		local ok, why, wait
+		cl:Hardware(function() ok, why, wait = cl.ns.Groups.Announce() end)
+		return ok, why, wait
+	end
+	T.eq(select(2, c.A.ns.Groups.Announce()), "gone", "без объявления повторять нечего")
+	c.A:Hardware(function() T.ok(c.A.ns.Groups.Raise(Spec({ announce = true }))) end)
+	w:Run(30)
+	T.eq(Lines(c.V, "Мёртвые копи"), 1, "строка при размещении")
+	T.eq(Lines(c.V, "Нужны: лекарь, 2 бойца."), 1)
+
+	-- Пауза считается и от строки при размещении.
+	local ok, why, wait = Announce(c.A)
+	T.no(ok, "сразу повторить нельзя")
+	T.eq(why, "repeat")
+	T.ok(wait > C.GROUPS_ANNOUNCE_GAP - 40 and wait <= C.GROUPS_ANNOUNCE_GAP - 30, "ждать остаток паузы: " .. tostring(wait))
+	w:Run(30)
+	T.eq(Lines(c.V, "Мёртвые копи"), 1, "отказ ничего не отправил")
+
+	-- Повтор собирается заново: «Нужны» — как сейчас.
+	c.A.ns.Groups.SetNeed("d", 1)
+	w:Run(C.GROUPS_ANNOUNCE_GAP)
+	T.ok(Announce(c.A), "после паузы — можно")
+	w:Run(30)
+	T.eq(Lines(c.V, "Мёртвые копи"), 2, "повтор дошёл до другой гильдии")
+	T.eq(Lines(c.K, "Мёртвые копи"), 2, "и до своей")
+	T.eq(Lines(c.V, "Нужны: лекарь, боец."), 1, "в повторе нынешние роли")
+	T.eq(Logged(c.A, "группы: строка о своём объявлении повторена в общем чате"), 1)
+	T.eq(select(2, Announce(c.A)), "repeat", "второй повтор снова ждёт паузу")
+
+	-- Пауза переживает /reload: время строки лежит в сохранениях персонажа.
+	local db = c.A.ns.db
+	c.A:Logout()
+	local again = w:Client({ first = "Арагорн", surname = "Светлый", guild = "Чиллзон", rank = 1, class = "WARRIOR", level = 24, db = db, reload = true })
+	T.ok(again.ns.Groups.Mine(), "объявление восстановлено")
+	T.eq(select(2, Announce(again)), "repeat", "после /reload пауза та же")
+
+	-- Группа без свободных мест о себе не пишет.
+	w:Run(C.GROUPS_ANNOUNCE_GAP)
+	T.ok(again.ns.Groups.Lower())
+	T.ok(again.ns.Groups.Raise(Spec({ cap = 2 })))
+	w:Run(30)
+	T.eq(again.ns.Groups.AnnounceWait(), 0, "без отметки при размещении пауза не началась")
+	T.ok(c.V.ns.Groups.Apply(Key(again), { t = 0, h = 1, d = 0 }))
+	w:Run(15)
+	T.ok(again.ns.Groups.Sign(Key(c.V)))
+	T.eq(select(2, Announce(again)), "full", "все места заняты")
+
+	-- «Ищу группу» тоже можно повторить; без отметки при размещении — сразу.
+	c.B:Hardware(function() T.ok(c.B.ns.Groups.Raise({ mode = "P", title = "куда позовут", roles = { t = 0, h = 1, d = 0 } })) end)
+	w:Run(30)
+	T.eq(Lines(c.K, "Хочу: куда позовут"), 0)
+	T.ok(Announce(c.B))
+	w:Run(30)
+	T.eq(Lines(c.K, "Хочу: куда позовут"), 1, "строка «ищу группу» дошла")
+end)
+
 T.test("groups: журнал показывает, что объявление дошло, снято или пропало", function()
 	local w, c = Build()
 	T.ok(c.A.ns.Groups.Raise(Spec()))
@@ -1619,6 +1686,14 @@ T.test("groups pane: форма со свободным названием, пр
 	T.eq(mine.min, 15)
 	T.same(mine.roles, { t = 0, h = 2, d = 3 })
 	T.ok(f.own:IsShown(), "после размещения — панель своей группы")
+	-- Повтор строки в общий чат: отметка в форме стоит по умолчанию, строка ушла при размещении,
+	-- и сразу повторить рано — сказано, сколько ждать, и то же в подсказке кнопки.
+	T.ok(c.B.ns.Groups.AnnounceWait() > 0, "строка ушла при размещении")
+	T.eq(f.own.announce:GetText(), L.GROUPS_REPEAT, "кнопка повтора на панели")
+	c.B:Hardware(function() f.own.announce:Click() end)
+	local soon = L.GROUPS_WHY_REPEAT_MIN:format(5)
+	T.eq(c.B:Saw(soon), 1, "рано: сказано, сколько ждать")
+	T.ok(Tip(c.B, f.own.announce):find(soon, 1, true), "и в подсказке кнопки")
 	w:Run(30)
 	T.eq(Seen(c.A, c.B).title, "Идём куда глаза глядят")
 

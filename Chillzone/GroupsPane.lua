@@ -20,6 +20,7 @@
 local ADDON, ns = ...
 
 local L = ns.L
+local C = ns.Config
 local Codec = ns.Codec
 local Views = ns.Views
 local Groups = ns.Groups
@@ -744,14 +745,27 @@ local function BuildOwn()
 	TextTip(own.callAll, L.GROUPS_CALL_ALL, L.GROUPS_CALL_ALL_TIP)
 	own.hint = Label(own, 0, 92, L.GROUPS_MINE_PLAYER_HINT, "GameFontDisableSmall")
 	own.hint:SetWidth(SIDE_W)
-	local edit = Button(own, L.GROUPS_EDIT, 150, "edit", function()
+	-- Три кнопки внизу во всю ширину панели: 104 + 4 + 112 + 4 + 104 = SIDE_W.
+	local edit = Button(own, L.GROUPS_EDIT, 104, "edit", function()
 		local mine = Groups.Mine()
 		if mine then OpenForm(mine.mode) end
 	end)
 	edit:SetPoint("BOTTOMLEFT", 0, 2)
-	local lower = Button(own, L.GROUPS_LOWER, 110, "lower", function() Groups.Lower() end)
+	-- Строка в общий чат — из щелчка: так она уходит и в канал игры (Chat.Send).
+	local announce = Button(own, L.GROUPS_REPEAT, 112, "announce", function()
+		local ok, why, arg = Groups.Announce()
+		if not ok and why ~= "chat" then Say(why, arg) end
+	end)
+	announce:SetPoint("BOTTOMLEFT", edit, "BOTTOMRIGHT", 4, 0)
+	Tip(announce, function(tt)
+		tt:AddLine(L.GROUPS_REPEAT, 1, 0.82, 0)
+		tt:AddLine(L.GROUPS_REPEAT_TIP:format(math.floor(C.GROUPS_ANNOUNCE_GAP / 60)), 1, 1, 1, true)
+		local wait = Groups.AnnounceWait()
+		if wait > 0 then tt:AddLine(Views.GroupWhy("repeat", wait), 1, 0.5, 0.5, true) end
+	end)
+	local lower = Button(own, L.GROUPS_LOWER, 104, "lower", function() Groups.Lower() end)
 	lower:SetPoint("BOTTOMRIGHT", 0, 2)
-	own.edit, own.lower = edit, lower
+	own.edit, own.announce, own.lower = edit, announce, lower
 end
 
 local function RenderApplicant(r, it)
