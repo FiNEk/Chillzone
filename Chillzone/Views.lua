@@ -712,6 +712,11 @@ function Views.GroupWhy(why, arg)
 		if arg >= 90 then return L.GROUPS_WHY_WAIT_MIN:format(math.ceil(arg / 60)) end
 		return L.GROUPS_WHY_WAIT:format(arg)
 	end
+	if why == "repeat" then
+		arg = arg or 0
+		if arg >= 90 then return L.GROUPS_WHY_REPEAT_MIN:format(math.ceil(arg / 60)) end
+		return L.GROUPS_WHY_REPEAT:format(arg)
+	end
 	return rawget(L, "GROUPS_WHY_" .. tostring(why):upper()) or L.GROUPS_WHY_FAILED
 end
 

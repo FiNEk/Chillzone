@@ -55,7 +55,9 @@ local applied = {}
 local lastApply = {} -- [ключ автора] = когда я просился к нему
 local lastHeard = {} -- [ключ просящего] = когда он просился ко мне
 
-local saved -- ns.char.groups: моё объявление, заявки ко мне, мои записи и роли переживают /reload
+-- ns.char.groups: моё объявление, заявки ко мне, мои записи, роли и время последней строки в
+-- общий чат (announced, по часам сервера) переживают /reload
+local saved
 local mine -- моё объявление: { mode, id, kind, title, note, roles = { t, h, d }, cap, min }
 -- Заявки ко мне по порядку: { key, name, guild, class, level, roles, note, at, state, took }.
 -- state: "new" — ждёт ответа, "signed" — записан, "invited" — записан и позван; took — роль,
@@ -543,9 +545,11 @@ local function Normalize(spec)
 	}
 end
 
--- Строка для общего чата: её видят и те, кто не открывал вкладку.
+-- Строка для общего чата: её видят и те, кто не открывал вкладку. Отправляется из нажатия:
+-- строка /cz1 уходит и в канал игры (Chat.Send). true — ушла; время запоминается на персонажа,
+-- от него считается пауза до повтора.
 local function Announce(l)
-	if not ns.Chat then return end
+	if not ns.Chat then return false end
 	local text
 	if l.mode == "G" then
 		local need = Groups.RoleText(l.roles, true)
@@ -556,7 +560,30 @@ local function Announce(l)
 		text = L.GROUPS_ANNOUNCE_P:format(who, Groups.RoleText(l.roles))
 			.. (l.title ~= "" and (" " .. L.GROUPS_ANNOUNCE_WANT:format(l.title)) or "")
 	end
-	ns.Chat.Send("A", text .. " " .. L.GROUPS_ANNOUNCE_TAIL)
+	if not ns.Chat.Send("A", text .. " " .. L.GROUPS_ANNOUNCE_TAIL) then return false end
+	if saved then saved.announced = ns.ServerTime() end
+	return true
+end
+
+-- Сколько секунд до следующей строки о своём объявлении в общий чат (0 — можно сейчас).
+function Groups.AnnounceWait()
+	local at = saved and saved.announced
+	if type(at) ~= "number" then return 0 end
+	return math.max(0, math.min(C.GROUPS_ANNOUNCE_GAP, math.ceil(at + C.GROUPS_ANNOUNCE_GAP - ns.ServerTime())))
+end
+
+-- Ещё раз написать о своём объявлении в общий чат: строка с нынешними «Нужны», не чаще раза в
+-- GROUPS_ANNOUNCE_GAP. Вызывается только из нажатия. Причины отказа: "gone" — объявления нет,
+-- "full" — мест в группе не осталось, "repeat" и секунды — пауза не прошла, "chat" — строку не
+-- отправил Chat.Send, причину он уже сказал сам.
+function Groups.Announce()
+	if not mine then return false, "gone" end
+	if mine.mode == "G" and Size() >= mine.cap then return false, "full" end
+	local wait = Groups.AnnounceWait()
+	if wait > 0 then return false, "repeat", wait end
+	if not Announce(mine) then return false, "chat" end
+	ns.Log("группы: строка о своём объявлении повторена в общем чате")
+	return true
 end
 
 -- Разместить объявление или поправить своё. spec: { mode = "G" | "P", kind, title, note,
@@ -1098,6 +1125,7 @@ local function Restore()
 	ns.char.groups = type(ns.char.groups) == "table" and ns.char.groups or {}
 	saved = ns.char.groups
 	saved.roles = type(saved.roles) == "table" and saved.roles or {}
+	if type(saved.announced) ~= "number" then saved.announced = nil end
 	local m = saved.mine
 	local valid = type(m) == "table" and (m.mode == "G" or m.mode == "P") and type(m.id) == "number"
 		and type(m.title) == "string" and type(m.roles) == "table" and ns.ServerTime() < m.id + C.GROUPS_LIFE
