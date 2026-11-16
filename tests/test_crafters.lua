@@ -697,6 +697,124 @@ T.test("crafters: после /reload карточка не уходит рань
 	NoErrors(again, "после /reload")
 end)
 
+-- Окно кожевничества: изучены 2149 и 2152.
+local function Leather()
+	return { id = 165, skill = 80, max = 150, recipes = { [2149] = true, [2152] = true } }
+end
+
+T.test("crafters: профессия, от которой отказались, уходит из своих и из карточки", function()
+	local w, c = Build()
+	local Cr = c.A.ns.Crafters
+	c.A.skills = { [95] = 120, [164] = 150, [165] = 80 }
+	Learn(c.A, Smith())
+	c.A:CloseProfession()
+	Learn(c.A, Leather())
+	Cr.SetPost(164, true)
+	Cr.SetPost(165, true)
+	T.ok(Cr.Post("кую и шью"))
+	w:Run(30)
+	T.eq(#c.V.ns.Crafters.Get(Key(c.A)).profs, 2)
+	T.ok(c.V.ns.Crafters.Want(Key(c.A), 165))
+	w:Run(20)
+	T.ok(c.V.ns.Crafters.Recipes(Key(c.A), 165), "список кожевника загружен")
+	-- Отказ от кожевничества: из своих оно уходит сразу, у остальных — правкой после паузы.
+	c.A:Unlearn(165)
+	w:Run(2)
+	T.eq(#Cr.MyProfs(), 1)
+	T.eq(Cr.MyProfs()[1].id, 164)
+	T.eq(#Cr.Own().profs, 1)
+	T.no(Cr.Recipes(Key(c.A), 165), "своего списка нет")
+	T.eq(Logged(c.A, "мастера: профессии Кожевничество у персонажа больше нет: она убрана из своих"), 1)
+	T.ok(Cr.Posted())
+	T.ok(Cr.Dirty(), "правка ждёт отправки")
+	w:Run(c.A.ns.Config.CRAFT_UPDATE_GAP)
+	T.no(Cr.Dirty())
+	for _, viewer in ipairs({ c.K, c.V, c.B }) do
+		local e = viewer.ns.Crafters.Get(Key(c.A))
+		T.eq(#e.profs, 1, viewer:Name() .. ": одна профессия")
+		T.eq(e.profs[1].id, 164)
+	end
+	T.no(c.V.ns.Crafters.Recipes(Key(c.A), 165), "чужой список ушёл вместе с профессией")
+	-- Последняя профессия карточки: карточка снимается.
+	c.A:Unlearn(164)
+	w:Run(30)
+	T.eq(#Cr.MyProfs(), 0)
+	T.no(Cr.Posted())
+	T.no(Cr.Own(true))
+	for _, viewer in ipairs({ c.K, c.V, c.B }) do
+		T.no(viewer.ns.Crafters.Get(Key(c.A)), viewer:Name() .. ": карточка снята")
+	end
+	T.eq(Logged(c.A, "мастера: своя карточка снята"), 1)
+	-- Отметка осталась: изученная снова профессия возвращается с ней.
+	c.A.skills[164] = 1
+	Learn(c.A, Smith(1))
+	T.eq(#Cr.MyProfs(), 1)
+	T.ok(Cr.MyProfs()[1].post)
+	T.no(Cr.Posted(), "сама карточка не размещается")
+	for _, cl in pairs(c) do NoErrors(cl, cl:Name()) end
+	T.eq(#c.A:Leaks(), 0, "глобалов нет")
+end)
+
+T.test("crafters: профессия не убирается, пока игра не сказала, что её нет", function()
+	local w, c = Build()
+	local A, Cr = c.A, c.A.ns.Crafters
+	Learn(A, Smith())
+	-- Список навыков пуст — игра его ещё не загрузила; навык 0 по номеру тогда не ответ.
+	A:Fire("SKILL_LINES_CHANGED")
+	w:Run(120)
+	T.eq(#Cr.MyProfs(), 1, "список пуст")
+	-- Раздел свёрнут, незнакомое игра по номеру не называет: ответа нет.
+	A.skills, A.skillsCollapsed, A.skillsUnknown = { [95] = 120 }, true, "nil"
+	A:Fire("SKILL_LINES_CHANGED")
+	w:Run(120)
+	T.eq(#Cr.MyProfs(), 1, "раздел свёрнут")
+	-- Раздел развёрнут: профессии нет в полном списке.
+	A.skillsCollapsed = false
+	A:Fire("SKILL_LINES_CHANGED")
+	w:Run(2)
+	T.eq(#Cr.MyProfs(), 0, "нет в полном списке")
+	-- Навык 0 по номеру — ответ и при свёрнутом разделе. Без события профессию убирает минутная
+	-- проверка.
+	A.skills[164] = 150
+	Learn(A, Smith())
+	T.eq(#Cr.MyProfs(), 1)
+	A.skills[164], A.skillsCollapsed, A.skillsUnknown = nil, true, nil
+	w:Run(65)
+	T.eq(#Cr.MyProfs(), 0, "навык 0 по номеру")
+	T.eq(Logged(A, "у персонажа больше нет"), 2)
+	-- Без C_SkillInfo ничего не убирается.
+	A.skills[164] = 150
+	Learn(A, Smith())
+	A.env.C_SkillInfo = nil
+	A.skills[164] = nil
+	w:Run(65)
+	T.eq(#Cr.MyProfs(), 1, "без C_SkillInfo")
+	NoErrors(A, "Арагорн")
+end)
+
+T.test("crafters: от профессии отказались без аддона — после входа она уходит, карточка снимается", function()
+	local w, c = Build()
+	c.A.skills = { [95] = 120, [164] = 150 }
+	Master(c.A)
+	local db = c.A.ns.db
+	c.A:Logout()
+	local again = w:Client({
+		first = "Арагорн", surname = "Светлый", guild = "Чиллзон", rank = 1, class = "WARRIOR", level = 24,
+		db = db, reload = true, skills = { [95] = 120 },
+	})
+	local Cr = again.ns.Crafters
+	w:Run(10)
+	T.eq(#Cr.MyProfs(), 0, "профессия ушла из своих")
+	T.ok(Cr.Posted(), "снятие ждёт срока после входа")
+	T.ok(c.V.ns.Crafters.Get(Key(again)))
+	w:Run(again.ns.Config.CRAFT_FIRST_MAX + 30)
+	T.no(Cr.Posted())
+	for _, viewer in ipairs({ c.K, c.V, c.B }) do
+		T.no(viewer.ns.Crafters.Get(Key(again)), viewer:Name() .. ": карточка снята")
+	end
+	NoErrors(again, "после входа")
+end)
+
 -- Окно кузнечного дела, где изучено больше рецептов, чем помещается на витрину; 16988 — нет.
 local function BigSmith()
 	return Smith(150, {

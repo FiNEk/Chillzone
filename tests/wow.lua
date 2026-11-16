@@ -597,6 +597,21 @@ local function NewFrame(c, name)
 	return setmetatable(f, { __index = function(_, k) return methods[k] or NOOP end })
 end
 
+-- Список навыков персонажа, как его отдаёт C_SkillInfo.GetSkillLineInfo: раздел и строки по
+-- номерам. Без c.skills список пуст (игра его ещё не загрузила), у свёрнутого раздела строк нет.
+local function SkillList(c)
+	if not c.skills then return {} end
+	local out = { { name = "Навыки", isHeader = true, isCollapsed = c.skillsCollapsed == true } }
+	if c.skillsCollapsed then return out end
+	local ids = {}
+	for id in pairs(c.skills) do ids[#ids + 1] = id end
+	table.sort(ids)
+	for _, id in ipairs(ids) do
+		out[#out + 1] = { skillID = id, name = "?", isHeader = false, rank = c.skills[id], maxRank = 300 }
+	end
+	return out
+end
+
 -- Окружение клиента: всё, к чему аддон обращается как к глобалам.
 local function Env(c)
 	local w = c.world
@@ -1003,6 +1018,19 @@ local function Env(c)
 		IsTradeSkillGuildMember = function() return false end,
 		IsNPCCrafting = function() return c.profession ~= nil and c.profession.npc == true end,
 	}
+	-- Навыки персонажа (Crafters.lua): c.skills = { [номер линии навыка] = навык }, список — SkillList.
+	-- По номеру незнакомого навыка игра отвечает строкой с навыком 0, а при c.skillsUnknown = "nil" —
+	-- ничем. Client:Unlearn отказывается от профессии.
+	env.C_SkillInfo = {
+		GetNumSkillLines = function() return #SkillList(c) end,
+		GetSkillLineInfo = function(i) return SkillList(c)[i] end,
+		GetSkillLineInfoByID = function(id)
+			local rank = c.skills and c.skills[id]
+			if rank then return { skillID = id, name = "?", isHeader = false, rank = rank, maxRank = 300 } end
+			if c.skillsUnknown == "nil" then return nil end
+			return { skillID = id, name = "?", isHeader = false, rank = 0, maxRank = 0 }
+		end,
+	}
 	env.C_Spell = { GetSpellName = function(id) return Wow.RECIPE_NAMES[id] end }
 	c.items = {} -- предметы, названия которых клиент уже догрузил
 	c.itemLoads = 0
@@ -1049,6 +1077,7 @@ function World:Client(opts)
 		faction = opts.faction or "Alliance", guild = opts.guild, rank = opts.rank or 3, class = opts.class or "MAGE",
 		level = opts.level or 60, zone = opts.zone or "Штормград", online = true, clockSkew = opts.clockSkew,
 		chatFilterAPI = opts.chatFilterAPI, noTradeSkill = opts.noTradeSkill, interface = opts.interface,
+		skills = opts.skills,
 		handlers = {}, filters = {}, printed = {}, joined = {}, joinedById = {},
 		named = {}, hooks = {}, bindings = {},
 	}, Client)
@@ -1101,6 +1130,12 @@ end
 function Client:CloseProfession()
 	self.profession = nil
 	self:Fire("TRADE_SKILL_CLOSE")
+end
+
+-- Отказаться от профессии (линии навыка id) в окне навыков персонажа.
+function Client:Unlearn(id)
+	self.skills[id] = nil
+	self:Fire("SKILL_LINES_CHANGED")
 end
 
 function Client:Guid()

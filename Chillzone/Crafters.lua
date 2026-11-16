@@ -420,6 +420,68 @@ local function Soon()
 	end)
 end
 
+---------------------------------------------------------------------------
+-- Профессия, от которой персонаж отказался
+---------------------------------------------------------------------------
+-- Навыки персонажа на Forever отдаёт C_SkillInfo, как их читает окно персонажа: по номеру линии
+-- навыка (он же номер профессии в C_TradeSkillUI) и списком строк с заголовками разделов.
+-- «Профессии нет» — только по явному ответу, когда список навыков загружен: навык 0 по номеру или
+-- профессии нет в полном списке (без свёрнутых разделов, строки с номерами). Пока игра так не
+-- ответила, ничего не убирается: убранную профессию вернёт только новое чтение её окна.
+local function SkillInfo()
+	return type(C_SkillInfo) == "table" and C_SkillInfo or nil
+end
+
+-- Секретное значение игры — не ответ.
+local function Secret(v)
+	return type(issecretvalue) == "function" and issecretvalue(v)
+end
+
+local function Number(v)
+	if not Secret(v) then return tonumber(v) end
+end
+
+-- Список навыков: { seen = { [номер] = true } с навыком больше 0, loaded — список не пуст,
+-- full — в нём нет свёрнутых разделов и каждая строка называет свой номер и навык }.
+local function SkillLines()
+	local S, lines = SkillInfo(), { seen = {}, loaded = false, full = false }
+	if not S or type(S.GetNumSkillLines) ~= "function" or type(S.GetSkillLineInfo) ~= "function" then return lines end
+	local ok, n = pcall(S.GetNumSkillLines)
+	n = ok and Number(n) or 0
+	local full, numbered = true, false
+	for i = 1, n do
+		local okl, info = pcall(S.GetSkillLineInfo, i)
+		if not okl or type(info) ~= "table" or Secret(info.isHeader) or Secret(info.isCollapsed) then
+			full = false
+		elseif info.isHeader then
+			if info.isCollapsed then full = false end
+		else
+			local id, rank = Number(info.skillID), Number(info.rank)
+			if not id or not rank then
+				full = false
+			else
+				numbered = true
+				if rank > 0 then lines.seen[id] = true end
+			end
+		end
+	end
+	lines.loaded, lines.full = n > 0, full and numbered
+	return lines
+end
+
+-- Есть ли у персонажа профессия: true, false или nil — игра не ответила.
+local function Has(id, lines)
+	local S, rank = SkillInfo(), nil
+	if S and type(S.GetSkillLineInfoByID) == "function" then
+		local ok, info = pcall(S.GetSkillLineInfoByID, id)
+		rank = ok and type(info) == "table" and Number(info.rank) or nil
+	end
+	if (rank and rank > 0) or lines.seen[id] then return true end
+	if not lines.loaded then return nil end
+	if rank or lines.full then return false end
+	return nil
+end
+
 -- Свои прочитанные профессии по порядку: { id, skill, max, n, hash, readAt, post }.
 function Crafters.MyProfs()
 	local out = {}
@@ -509,6 +571,38 @@ function Crafters.SetShow(prof, id, on)
 	saved.show = keep
 	Changed()
 	return true
+end
+
+-- Профессии, от которых персонаж отказался (Has), уходят из своих, а с ними из карточки и из
+-- ответов на запросы рецептов. Отметка и витрина остаются, как у снятой с карточки профессии:
+-- изученная снова профессия вернётся с ними при чтении окна. Правка карточки уходит как обычно
+-- (Tick), а размещённую карточку, в которой не осталось профессий, Tick снимает (saved.lost).
+function Crafters.Prune()
+	if not saved or not next(saved.profs) then return end
+	local lines, gone = SkillLines(), {}
+	for id in pairs(saved.profs) do
+		if Has(id, lines) == false then gone[#gone + 1] = id end
+	end
+	if #gone == 0 then return end
+	table.sort(gone, function(a, b) return Crafters.ProfOrder(a) < Crafters.ProfOrder(b) end)
+	local had = saved.posted and #Chosen() > 0
+	for _, id in ipairs(gone) do
+		saved.profs[id] = nil
+		ns.Log("мастера: профессии %s у персонажа больше нет: она убрана из своих", Crafters.ProfName(id))
+	end
+	if had and #Chosen() == 0 then saved.lost = true end
+	Changed()
+end
+
+-- Навыки меняются пачкой событий: проверка одна на пачку.
+local pendingSkills = false
+local function SkillsChanged()
+	if pendingSkills then return end
+	pendingSkills = true
+	ns.After(1, "crafters skills", function()
+		pendingSkills = false
+		Crafters.Prune()
+	end)
 end
 
 -- Что в карточке, кроме времени, класса и уровня: смена — правка, а не повтор.
@@ -626,7 +720,7 @@ end
 -- «Снять»: карточка пропадает у остальных сразу.
 function Crafters.Withdraw()
 	if not saved or not saved.posted then return false end
-	saved.posted, saved.sentSig = false, nil
+	saved.posted, saved.sentSig, saved.lost = false, nil, nil
 	local guild = ns.MyGuild()
 	local msg = guild and ns.IsMember() and Codec.EncodeCraft({ mode = "X", st = ns.ServerTime(), guild = guild })
 	local inner = msg and Codec.WrapCraft(msg)
@@ -1082,10 +1176,17 @@ local function Tick()
 	if now - lastClean >= 60 then
 		lastClean = now
 		if Clean() then Changed() end
+		Crafters.Prune()
 	end
 	if not saved or not saved.posted or sealing or now < firstAt then return end
 	-- В блокировке сообщение застряло бы в очереди: карточка уйдёт после неё.
-	if ns.Comm.InLockdown() or not ns.IsMember() or not ns.Security.MyCertificate() or #Chosen() == 0 then return end
+	if ns.Comm.InLockdown() or not ns.IsMember() or not ns.Security.MyCertificate() then return end
+	if #Chosen() == 0 then
+		-- Персонаж отказался от всех профессий карточки (Prune): остальные её больше не видят.
+		if saved.lost then Crafters.Withdraw() end
+		return
+	end
+	saved.lost = nil
 	local since = ns.ServerTime() - (saved.sentAt or 0)
 	if since < -3600 then since = math.huge end -- часы ушли назад
 	if Signature() ~= saved.sentSig then
@@ -1148,6 +1249,7 @@ local function Restore()
 	saved.show = show
 	saved.note = type(saved.note) == "string" and saved.note or ""
 	saved.posted = saved.posted == true
+	saved.lost = saved.posted and saved.lost == true or nil
 	saved.sentAt = tonumber(saved.sentAt)
 	if type(saved.sentSig) ~= "string" then saved.sentSig = nil end
 	local store = ns.store.crafters
@@ -1192,6 +1294,8 @@ ns.On("LOGIN", function()
 		pcall(ns.RegisterEvent, event, function() if shown then Soon() end end)
 	end
 	pcall(ns.RegisterEvent, "GET_ITEM_INFO_RECEIVED", ItemLoaded)
+	-- Отказ от профессии меняет список навыков; без события профессию уберёт минутная проверка (Tick).
+	pcall(ns.RegisterEvent, "SKILL_LINES_CHANGED", SkillsChanged)
 end)
 
 ns.Status(function()
