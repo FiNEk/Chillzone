@@ -597,17 +597,41 @@ local function NewFrame(c, name)
 	return setmetatable(f, { __index = function(_, k) return methods[k] or NOOP end })
 end
 
--- Список навыков персонажа, как его отдаёт C_SkillInfo.GetSkillLineInfo: раздел и строки по
--- номерам. Без c.skills список пуст (игра его ещё не загрузила), у свёрнутого раздела строк нет.
+-- Линии навыков профессий. В списке C_SkillInfo они стоят в разделе «Профессии» и дважды: под
+-- номером профессии и под номером её линии (на Forever: Кулинария 185 и 2939), здесь — номер + 10000.
+local PROFESSION_LINES = {
+	[164] = true, [165] = true, [171] = true, [197] = true, [202] = true, [333] = true, [755] = true,
+	[773] = true, [186] = true, [185] = true, [129] = true, [356] = true, [182] = true, [393] = true,
+}
+
+-- Список навыков персонажа, как его отдаёт C_SkillInfo.GetSkillLineInfo: разделы «Профессии» и
+-- «Навыки», у заголовков свой номер и навык 0. Без c.skills список пуст (игра его ещё не загрузила);
+-- c.skillsCollapsed = { [название раздела] = true } — свёрнутые разделы, их строк в списке нет.
 local function SkillList(c)
 	if not c.skills then return {} end
-	local out = { { name = "Навыки", isHeader = true, isCollapsed = c.skillsCollapsed == true } }
-	if c.skillsCollapsed then return out end
+	local folded = c.skillsCollapsed or {}
 	local ids = {}
 	for id in pairs(c.skills) do ids[#ids + 1] = id end
 	table.sort(ids)
-	for _, id in ipairs(ids) do
-		out[#out + 1] = { skillID = id, name = "?", isHeader = false, rank = c.skills[id], maxRank = 300 }
+	local out = {}
+	for _, section in ipairs({ { 11, "Профессии", true }, { 6, "Навыки", false } }) do
+		local head, title, profs = section[1], section[2], section[3]
+		local rows = {}
+		for _, id in ipairs(ids) do
+			if (PROFESSION_LINES[id] == true) == profs then
+				local name, rank = "навык " .. id, c.skills[id]
+				rows[#rows + 1] = { skillID = id, name = name, isHeader = false, rank = rank, maxRank = 300 }
+				if profs then
+					rows[#rows + 1] = { skillID = id + 10000, name = name, isHeader = false, rank = rank, maxRank = 300 }
+				end
+			end
+		end
+		if #rows > 0 then
+			out[#out + 1] = { skillID = head, name = title, isHeader = true, isCollapsed = folded[title] == true, rank = 0 }
+			if not folded[title] then
+				for _, row in ipairs(rows) do out[#out + 1] = row end
+			end
+		end
 	end
 	return out
 end
@@ -1019,16 +1043,16 @@ local function Env(c)
 		IsNPCCrafting = function() return c.profession ~= nil and c.profession.npc == true end,
 	}
 	-- Навыки персонажа (Crafters.lua): c.skills = { [номер линии навыка] = навык }, список — SkillList.
-	-- По номеру незнакомого навыка игра отвечает строкой с навыком 0, а при c.skillsUnknown = "nil" —
-	-- ничем. Client:Unlearn отказывается от профессии.
+	-- По номеру незнакомого навыка (и второй строки профессии) игра отвечает nil, как на Forever, а при
+	-- c.skillsUnknown = "zero" — строкой с навыком 0. Client:Unlearn отказывается от профессии.
 	env.C_SkillInfo = {
 		GetNumSkillLines = function() return #SkillList(c) end,
 		GetSkillLineInfo = function(i) return SkillList(c)[i] end,
 		GetSkillLineInfoByID = function(id)
 			local rank = c.skills and c.skills[id]
-			if rank then return { skillID = id, name = "?", isHeader = false, rank = rank, maxRank = 300 } end
-			if c.skillsUnknown == "nil" then return nil end
-			return { skillID = id, name = "?", isHeader = false, rank = 0, maxRank = 0 }
+			if rank then return { skillID = id, name = "навык " .. id, isHeader = false, rank = rank, maxRank = 300 } end
+			if c.skillsUnknown == "zero" then return { skillID = id, name = "?", isHeader = false, rank = 0, maxRank = 0 } end
+			return nil
 		end,
 	}
 	env.C_Spell = { GetSpellName = function(id) return Wow.RECIPE_NAMES[id] end }

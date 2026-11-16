@@ -424,10 +424,14 @@ end
 -- Профессия, от которой персонаж отказался
 ---------------------------------------------------------------------------
 -- Навыки персонажа на Forever отдаёт C_SkillInfo, как их читает окно персонажа: по номеру линии
--- навыка (он же номер профессии в C_TradeSkillUI) и списком строк с заголовками разделов.
--- «Профессии нет» — только по явному ответу, когда список навыков загружен: навык 0 по номеру или
--- профессии нет в полном списке (без свёрнутых разделов, строки с номерами). Пока игра так не
--- ответила, ничего не убирается: убранную профессию вернёт только новое чтение её окна.
+-- навыка (он же номер профессии в C_TradeSkillUI) и списком строк с заголовками разделов. Проверено
+-- в игре: о незнакомом навыке GetSkillLineInfoByID отвечает nil, о знакомом — таблицей с навыком;
+-- у заголовков разделов в списке тоже есть номер и навык 0, а профессия стоит в списке дважды —
+-- под своим номером и под номером своей линии (Кулинария 185 и 2939, Рыбная ловля 356 и 2943).
+-- «Профессии нет» — только по явному ответу, когда список навыков загружен: навык 0 по номеру,
+-- nil по номеру, если на видные строки списка игра по номеру отвечает верно, или профессии нет в
+-- полном списке. Пока игра так не ответила, ничего не убирается: убранную профессию вернёт только
+-- новое чтение её окна.
 local function SkillInfo()
 	return type(C_SkillInfo) == "table" and C_SkillInfo or nil
 end
@@ -441,14 +445,25 @@ local function Number(v)
 	if not Secret(v) then return tonumber(v) end
 end
 
+-- Навык по номеру линии: число; nil — игра такого навыка у персонажа не знает; false — ответа нет.
+local function Rank(S, id)
+	if not S or type(S.GetSkillLineInfoByID) ~= "function" then return false end
+	local ok, info = pcall(S.GetSkillLineInfoByID, id)
+	if not ok then return false end
+	if info == nil then return nil end
+	return type(info) == "table" and Number(info.rank) or false
+end
+
 -- Список навыков: { seen = { [номер] = true } с навыком больше 0, loaded — список не пуст,
--- full — в нём нет свёрнутых разделов и каждая строка называет свой номер и навык }.
+-- full — в нём нет свёрнутых разделов и каждая строка называет свой номер и навык, sure — на
+-- каждую видную строку с навыком игра и по номеру называет навык, значит её nil по номеру — «нет» }.
+-- Вторая строка с тем же названием (линия профессии) не сверяется: о ней ответ по номеру не нужен.
 local function SkillLines()
-	local S, lines = SkillInfo(), { seen = {}, loaded = false, full = false }
+	local S, lines = SkillInfo(), { seen = {}, loaded = false, full = false, sure = false }
 	if not S or type(S.GetNumSkillLines) ~= "function" or type(S.GetSkillLineInfo) ~= "function" then return lines end
 	local ok, n = pcall(S.GetNumSkillLines)
 	n = ok and Number(n) or 0
-	local full, numbered = true, false
+	local full, numbered, sure, agreed, names = true, false, true, 0, {}
 	for i = 1, n do
 		local okl, info = pcall(S.GetSkillLineInfo, i)
 		if not okl or type(info) ~= "table" or Secret(info.isHeader) or Secret(info.isCollapsed) then
@@ -456,29 +471,32 @@ local function SkillLines()
 		elseif info.isHeader then
 			if info.isCollapsed then full = false end
 		else
-			local id, rank = Number(info.skillID), Number(info.rank)
+			local id, rank, name = Number(info.skillID), Number(info.rank), info.name
 			if not id or not rank then
 				full = false
 			else
 				numbered = true
-				if rank > 0 then lines.seen[id] = true end
+				if rank > 0 then
+					lines.seen[id] = true
+					if not Secret(name) and type(name) == "string" and not names[name] then
+						names[name] = true
+						local byID = Rank(S, id)
+						if byID and byID > 0 then agreed = agreed + 1 else sure = false end
+					end
+				end
 			end
 		end
 	end
-	lines.loaded, lines.full = n > 0, full and numbered
+	lines.loaded, lines.full, lines.sure = n > 0, full and numbered, sure and agreed > 0
 	return lines
 end
 
 -- Есть ли у персонажа профессия: true, false или nil — игра не ответила.
 local function Has(id, lines)
-	local S, rank = SkillInfo(), nil
-	if S and type(S.GetSkillLineInfoByID) == "function" then
-		local ok, info = pcall(S.GetSkillLineInfoByID, id)
-		rank = ok and type(info) == "table" and Number(info.rank) or nil
-	end
+	local rank = Rank(SkillInfo(), id)
 	if (rank and rank > 0) or lines.seen[id] then return true end
 	if not lines.loaded then return nil end
-	if rank or lines.full then return false end
+	if rank or lines.full or (rank == nil and lines.sure) then return false end
 	return nil
 end
 

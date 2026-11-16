@@ -759,29 +759,50 @@ T.test("crafters: профессия не убирается, пока игра 
 	local w, c = Build()
 	local A, Cr = c.A, c.A.ns.Crafters
 	Learn(A, Smith())
-	-- Список навыков пуст — игра его ещё не загрузила; навык 0 по номеру тогда не ответ.
+	-- Список навыков пуст — игра его ещё не загрузила; nil по номеру тогда не ответ.
 	A:Fire("SKILL_LINES_CHANGED")
 	w:Run(120)
 	T.eq(#Cr.MyProfs(), 1, "список пуст")
-	-- Раздел свёрнут, незнакомое игра по номеру не называет: ответа нет.
-	A.skills, A.skillsCollapsed, A.skillsUnknown = { [95] = 120 }, true, "nil"
+	-- Все разделы свёрнуты: сверить ответ по номеру не с чем.
+	local both = { ["Профессии"] = true, ["Навыки"] = true }
+	A.skills, A.skillsCollapsed = { [95] = 120, [185] = 6 }, both
 	A:Fire("SKILL_LINES_CHANGED")
 	w:Run(120)
-	T.eq(#Cr.MyProfs(), 1, "раздел свёрнут")
-	-- Раздел развёрнут: профессии нет в полном списке.
-	A.skillsCollapsed = false
+	T.eq(#Cr.MyProfs(), 1, "всё свёрнуто")
+	-- По номеру игра не называет и видные навыки: её nil — не ответ.
+	A.skillsCollapsed = { ["Профессии"] = true }
+	local S = A.env.C_SkillInfo
+	local byID = S.GetSkillLineInfoByID
+	S.GetSkillLineInfoByID = function() return nil end
+	A:Fire("SKILL_LINES_CHANGED")
+	w:Run(120)
+	T.eq(#Cr.MyProfs(), 1, "ответ по номеру расходится со списком")
+	-- По номеру видные навыки названы верно: nil — профессии нет, хотя её раздел свёрнут.
+	S.GetSkillLineInfoByID = byID
 	A:Fire("SKILL_LINES_CHANGED")
 	w:Run(2)
-	T.eq(#Cr.MyProfs(), 0, "нет в полном списке")
-	-- Навык 0 по номеру — ответ и при свёрнутом разделе. Без события профессию убирает минутная
-	-- проверка.
+	T.eq(#Cr.MyProfs(), 0, "свёрнут раздел профессий")
+	-- Свёрнут другой раздел, а в разделе профессий кулинария стоит дважды: вторую строку по номеру
+	-- игра не называет, и это не мешает. Без события профессию убирает минутная проверка.
 	A.skills[164] = 150
 	Learn(A, Smith())
 	T.eq(#Cr.MyProfs(), 1)
-	A.skills[164], A.skillsCollapsed, A.skillsUnknown = nil, true, nil
+	A.skills[164], A.skillsCollapsed = nil, { ["Навыки"] = true }
+	w:Run(65)
+	T.eq(#Cr.MyProfs(), 0, "свёрнут другой раздел")
+	-- Раздел профессий развёрнут: её нет в полном списке.
+	A.skills[164] = 150
+	Learn(A, Smith())
+	A.skills[164], A.skillsCollapsed = nil, nil
+	w:Run(65)
+	T.eq(#Cr.MyProfs(), 0, "нет в полном списке")
+	-- Навык 0 по номеру — ответ и без сверки.
+	A.skills[164] = 150
+	Learn(A, Smith())
+	A.skills[164], A.skillsCollapsed, A.skillsUnknown = nil, both, "zero"
 	w:Run(65)
 	T.eq(#Cr.MyProfs(), 0, "навык 0 по номеру")
-	T.eq(Logged(A, "у персонажа больше нет"), 2)
+	T.eq(Logged(A, "у персонажа больше нет"), 4)
 	-- Без C_SkillInfo ничего не убирается.
 	A.skills[164] = 150
 	Learn(A, Smith())
