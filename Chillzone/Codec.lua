@@ -24,7 +24,7 @@
 -- Онлайн: OQ~guild~fp · OL~guild~fp~st~i~n~имя:класс:уровень[:1],...  (шёпотом напрямую, без реле; 1 — есть аддон)
 -- Отчёт напрямую: RQ~guild~fp~st · RA~guild~<S1 с R1>  (шёпотом напрямую, без реле; st — base36 времени отчёта
 --         у спрашивающего, 0 — нет; RA — отчёт гильдии ответившего, подписанный им самим; 0.13.1 и более ранние версии их не знают)
--- Группы: G1~mode~id~guild~class~level~kind~t.h.d~size~cap~min~every~title~note   (после 0.13.1)
+-- Группы: G1~mode~id~guild~class~level~kind~t.h.d~size~cap~min~every~title~note[~comp]   (после 0.13.1)
 --           mode   G — собирают группу, P — игрок ищет группу, X — объявление снято
 --                  (у X только G1~X~id~guild)
 --           id     серверное время размещения: по нему заявка находит объявление
@@ -34,6 +34,10 @@
 --                  мест, min — уровень от (0 — любой)
 --           every  через сколько минут автор повторит объявление
 --           title  и note — свободный текст автора без "~" и "|"
+--           comp   только у G, после 0.17.1: кто уже в группе — CCRn через запятую, без имён: код
+--                  класса (-- — неизвестен), роль T, H, D (- — не указана) и сколько таких; всего
+--                  не больше 40. Больше GROUP_COMP байт — только роли, классы "--". Прежние
+--                  версии поле не читают: их шаблон кончается примечанием.
 --         Подписывается и идёт как чат: S1 по GUILD своей гильдии и через реле (режим P).
 --         Через реле — ещё и второй подписью в конверте строки чата (после 0.14.0):
 --           M1~A~guild~G1~...   guild — та же, что внутри G1. Реле и репортёры 0.13.1 и
@@ -560,6 +564,7 @@ Codec.GROUP_NOTE = 100
 Codec.GROUP_APPLY_NOTE = 80
 Codec.GROUP_CAP = 40 -- мест в рейде
 Codec.GROUP_EVERY_MAX = 60
+Codec.GROUP_COMP = 60 -- байт на состав с классами; длиннее — только роли, остальное отдаётся примечанию
 local GROUP_TIME_MAX = 4102444800 -- 2100 год: серверное время размещения
 
 local function IsTail(b)
@@ -600,8 +605,65 @@ local function groupId(v)
 	return (n and n >= 1 and n <= GROUP_TIME_MAX) and n or nil
 end
 
--- l: { mode, id, guild, class, level, kind, roles = { t, h, d }, size, cap, min, every, title, note }.
--- nil — нет номера, гильдии или (у группы) названия. Примечание укорачивается, чтобы всё
+-- Состав группы: роли на проводе и порядок записей — танки, лекари, бойцы, без роли.
+local COMP_ROLE = { t = "T", h = "H", d = "D" }
+local COMP_ROLE_OF = { T = "t", H = "h", D = "d" }
+local COMP_RANK = { T = 1, H = 2, D = 3, ["-"] = 4 }
+
+-- Состав { { class, role, count } } (count по умолчанию 1: можно по записи на человека) — строкой
+-- "WAT1,PRH1,MAD2" в постоянном порядке: роль, затем класс. Одинаковые класс и роль складываются,
+-- всего не больше GROUP_CAP. coarse — без классов, только роли. "" — никого.
+function Codec.EncodeComp(list, coarse)
+	local by, keys, total = {}, {}, 0
+	for _, m in ipairs(type(list) == "table" and list or {}) do
+		local n = math.min(bounded(m.count or 1, 0, Codec.GROUP_CAP), Codec.GROUP_CAP - total)
+		if n > 0 then
+			local class = not coarse and classCode(m.class) or ""
+			local key = (class ~= "" and class or "--") .. (COMP_ROLE[m.role] or "-")
+			if not by[key] then
+				by[key] = 0
+				keys[#keys + 1] = key
+			end
+			by[key], total = by[key] + n, total + n
+		end
+	end
+	table.sort(keys, function(a, b)
+		local ra, rb = COMP_RANK[a:sub(3, 3)], COMP_RANK[b:sub(3, 3)]
+		if ra ~= rb then return ra < rb end
+		return a < b
+	end)
+	for i, key in ipairs(keys) do keys[i] = key .. by[key] end
+	return table.concat(keys, ",")
+end
+
+-- Состав для G1: с классами, если умещается в GROUP_COMP байт, иначе только роли.
+function Codec.GroupComp(list)
+	local s = Codec.EncodeComp(list)
+	if #s > Codec.GROUP_COMP then s = Codec.EncodeComp(list, true) end
+	return s
+end
+
+-- Состав из строки EncodeComp: { { class, role, count } } (class и role — nil, если неизвестны) и
+-- сколько всего. nil — пусто или испорчено: повтор пары, неверная запись, больше GROUP_CAP.
+function Codec.DecodeComp(s)
+	if type(s) ~= "string" or s == "" or #s > 255 then return nil end
+	local out, seen, total = {}, {}, 0
+	for entry in (s .. ","):gmatch("([^,]*),") do
+		local class, role, n = entry:match("^(%u%u)([THD%-])(%d%d?)$")
+		if not class then class, role, n = entry:match("^(%-%-)([THD%-])(%d%d?)$") end
+		n = tonumber(n)
+		if not class or not n or n < 1 or seen[class .. role] then return nil end
+		seen[class .. role] = true
+		total = total + n
+		if total > Codec.GROUP_CAP then return nil end
+		out[#out + 1] = { class = classFile(class), role = COMP_ROLE_OF[role], count = n }
+	end
+	return out, total
+end
+
+-- l: { mode, id, guild, class, level, kind, roles = { t, h, d }, size, cap, min, every, title, note,
+-- comp }. nil — нет номера, гильдии или (у группы) названия. comp — состав, как у EncodeComp, только
+-- у группы; длиннее GROUP_COMP байт он уходит без классов. Примечание укорачивается, чтобы всё
 -- сообщение уместилось в 255 байт.
 function Codec.EncodeGroup(l)
 	local guild = clean(l.guild)
@@ -615,12 +677,15 @@ function Codec.EncodeGroup(l)
 		bounded(l.level, 0, 255), Codec.GROUP_KINDS[l.kind] and l.kind or "O", encRoles(l.roles),
 		bounded(l.size, 1, Codec.GROUP_CAP), bounded(l.cap, 0, Codec.GROUP_CAP), bounded(l.min, 0, 255),
 		bounded(l.every, 1, Codec.GROUP_EVERY_MAX))
-	local note = Codec.GroupText(l.note, math.min(Codec.GROUP_NOTE, 255 - #head - #title - 1))
-	return head .. title .. "~" .. note
+	local comp = l.mode == "G" and Codec.GroupComp(l.comp) or ""
+	if comp ~= "" then comp = "~" .. comp end
+	local note = Codec.GroupText(l.note, math.min(Codec.GROUP_NOTE, 255 - #head - #title - 1 - #comp))
+	return head .. title .. "~" .. note .. comp
 end
 
 -- Таблица как у EncodeGroup или nil. Незнакомый вид места читается как «прочее», поля после
--- примечания не мешают: их добавят следующие версии.
+-- состава не мешают: их добавят следующие версии. Испорченный состав отбрасывается, объявление
+-- остаётся; без состава comp нет.
 function Codec.DecodeGroup(s)
 	if type(s) ~= "string" or #s > 255 then return nil end
 	local mode, rawId, rest = s:match("^G1~([GPX])~(%d+)~(.+)$")
@@ -631,8 +696,8 @@ function Codec.DecodeGroup(s)
 		if not guild or LongGuild(guild) then return nil end
 		return { mode = "X", id = id, guild = guild }
 	end
-	local guild, class, level, kind, t, h, d, size, cap, min, every, title, note = rest:match(
-		"^([^~|]+)~(%u?%u?)~(%d%d?%d?)~(%u)~(%d%d?)%.(%d%d?)%.(%d%d?)~(%d%d?)~(%d%d?)~(%d%d?%d?)~(%d%d?)~([^~]*)~([^~]*)")
+	local guild, class, level, kind, t, h, d, size, cap, min, every, title, note, after = rest:match(
+		"^([^~|]+)~(%u?%u?)~(%d%d?%d?)~(%u)~(%d%d?)%.(%d%d?)%.(%d%d?)~(%d%d?)~(%d%d?)~(%d%d?%d?)~(%d%d?)~([^~]*)~([^~]*)()")
 	if not guild or LongGuild(guild) then return nil end
 	title = Codec.GroupText(title, Codec.GROUP_TITLE)
 	if title == "" and mode == "G" then return nil end
@@ -642,6 +707,7 @@ function Codec.DecodeGroup(s)
 		size = bounded(size, 1, Codec.GROUP_CAP), cap = bounded(cap, 0, Codec.GROUP_CAP),
 		min = bounded(min, 0, 255), every = bounded(every, 1, Codec.GROUP_EVERY_MAX),
 		title = title, note = Codec.GroupText(note, Codec.GROUP_NOTE),
+		comp = mode == "G" and Codec.DecodeComp(rest:match("^~([^~]*)", after)) or nil,
 	}
 end
 
