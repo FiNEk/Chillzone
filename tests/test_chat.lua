@@ -493,7 +493,7 @@ end)
 T.test("окно: время у строк учитывается и в чате игры", function()
 	local _, c = SlashClient()
 	local tab = c:ChatWindow(3, "Чиллзон")
-	local stamp = "|cff999999" .. c.env.date("%H:%M", c.ns.ServerTime()) .. "|r "
+	local stamp = "|cff999999" .. c.env.date("%H:%M:%S", c.ns.ServerTime()) .. "|r "
 	for _, tier in ipairs({ "A", "C", "L" }) do
 		c.ns.UI.OpenChat(tier)
 		local messages = c.ns.ChatPane.frames.messages
@@ -516,6 +516,38 @@ T.test("окно: время у строк учитывается и в чате
 	local line = c.printed[#c.printed]
 	T.eq(line:sub(1, #stamp), stamp, "у истории осталось время")
 	T.no(line:find(stamp, #stamp + 1, true), "время не дублируется")
+	T.eq(#c.ns.db.errors, 0)
+end)
+
+T.test("окно: время у строк в формате времени чата игры", function()
+	local _, c = SlashClient()
+	local chat, date, now = c.ns.Chat, c.env.date, c.ns.ServerTime()
+	local function Grey(text) return "|cff999999" .. text .. "|r " end
+	T.eq(chat.Stamp(now), Grey(date("%H:%M:%S", now)), "без настройки игры — с секундами")
+	c.cvars = { showTimestamps = "none" }
+	T.eq(chat.Stamp(now), Grey(date("%H:%M:%S", now)), "время в игре выключено — с секундами")
+	c.cvars.showTimestamps = "%H:%M "
+	T.eq(chat.Stamp(now), Grey(date("%H:%M", now)), "формат игры, её пробел в конце не нужен")
+	c.cvars.showTimestamps = "[%H:%M:%S] "
+	T.eq(chat.Stamp(now), Grey(date("[%H:%M:%S]", now)))
+
+	-- %p игра переводит сама, поэтому время пишет её BetterDate.
+	c.cvars.showTimestamps = "%I:%M %p "
+	c.env.BetterDate = function(fmt, t) return date((fmt:gsub("%%p", "XX")), t) end
+	T.eq(chat.Stamp(now), Grey(date("%I:%M XX", now)))
+	c.env.BetterDate = function() error("формат не разобран") end
+	T.eq(chat.Stamp(now), Grey(date("%H:%M:%S", now)), "ошибка формата — с секундами")
+	c.env.BetterDate = nil
+
+	-- Копия в чате игры — по часам компьютера, как строки игры; окно Chillzone и история — по времени строки.
+	c.cvars.showTimestamps = "%H:%M:%S "
+	c.ns.char.chatTime = true
+	c.env.time = function() return now + 7 end
+	c.ns.UI.OpenChat("A")
+	chat.Show("A", "Чиллзон", c:Name(), "MAGE", "часы компьютера")
+	T.eq(c.printed[#c.printed]:sub(1, #Grey(date("%H:%M:%S", now + 7))), Grey(date("%H:%M:%S", now + 7)), "чат игры")
+	local messages = c.ns.ChatPane.frames.messages
+	T.eq(messages.lines[#messages.lines]:sub(1, #Grey(date("%H:%M:%S", now))), Grey(date("%H:%M:%S", now)), "окно Chillzone")
 	T.eq(#c.ns.db.errors, 0)
 end)
 

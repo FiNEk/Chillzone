@@ -649,6 +649,8 @@ local function Env(c)
 	env.GetServerTime = function() return SERVER0 + math.floor(w.now) + (c.clockSkew or 0) end
 	env.time = env.GetServerTime
 	env.date = os.date
+	-- Настройки игры клиента: c.cvars = { showTimestamps = "%H:%M " } и т. п.
+	env.GetCVar = function(name) return c.cvars and c.cvars[name] end
 	env.wipe = function(t) for k in pairs(t) do t[k] = nil end return t end
 	env.tinsert = table.insert
 	env.C_Timer = {

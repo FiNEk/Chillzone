@@ -338,7 +338,7 @@ function Views.ChatLine(e, channel, showTime)
 	local link = "|Hplayer:" .. (U.TellName(e.s) or "?") .. "|h[" .. Views.Name(e.s, e.c) .. "]|h"
 	local guild = ""
 	if not ns.Chat.GUILD_CHANNELS[channel] then guild = " " .. GREY .. "<" .. (e.g and ns.Chat.GuildTag(e.g) or "?") .. ">|r" end
-	local stamp = (showTime and date) and (GREY .. date("%H:%M", e.t or 0) .. "|r ") or ""
+	local stamp = showTime and ns.Chat.Stamp(e.t) or ""
 	return stamp .. link .. guild .. ": " .. ns.ChatLinks.Crafts(Codec.SanitizeChat(e.x))
 end
 
