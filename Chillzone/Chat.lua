@@ -405,12 +405,35 @@ function Chat.Remember(channel, guild, sender, class, text, flags)
 	return e
 end
 
+-- Время у строк пишется форматом времени чата игры (CVar showTimestamps, например «%H:%M:%S »),
+-- чтобы копии в чате игры не отличались от строк игры. Если в игре время выключено — с секундами.
+local TIME_FORMAT = "%H:%M:%S"
+
+function Chat.TimeFormat()
+	local get = (C_CVar and C_CVar.GetCVar) or GetCVar
+	local value = type(get) == "function" and get("showTimestamps")
+	value = type(value) == "string" and value:gsub("%s+$", "") or ""
+	if value == "" or value == "none" then return TIME_FORMAT end
+	return value
+end
+
+-- Серое время и пробел перед строкой; t — секунды эпохи. %p игра переводит в BetterDate,
+-- им же она пишет время своих строк. Формат, который не разобрать, заменяется TIME_FORMAT.
+function Chat.Stamp(t)
+	if not date then return "" end
+	local better = rawget(_G, "BetterDate")
+	local ok, text = pcall(type(better) == "function" and better or date, Chat.TimeFormat(), t or 0)
+	if not ok or type(text) ~= "string" then text = date(TIME_FORMAT, t or 0) end
+	return "|cff999999" .. text .. "|r "
+end
+
 -- guild nil — гильдия автора не подтверждена: вместо тега серое <?>.
 function Chat.Show(tier, guild, sender, class, text, flags)
 	Chat.stats.shown = Chat.stats.shown + 1
 	local frames = (not ns.char or ns.char.chatMirror ~= false) and Chat.Frames() or {}
 	if #frames > 0 then
-		local stamp = (ns.char and ns.char.chatTime and date) and ("|cff999999" .. date("%H:%M", ns.ServerTime()) .. "|r ") or ""
+		-- Часы компьютера, как у строк игры: с секундами расхождение с часами сервера заметно.
+		local stamp = (ns.char and ns.char.chatTime) and Chat.Stamp(time and time() or ns.ServerTime()) or ""
 		local line = stamp .. Chat.Format(tier, guild, sender, class, text)
 		WriteToFrames(frames, line, Chat.Color(tier))
 	end
@@ -1028,7 +1051,7 @@ ns.Command("history", function(arg)
 	local frames = Chat.Frames()
 	for i = math.max(1, #list - 19), #list do
 		local e = list[i]
-		local line = "|cff999999" .. (date and date("%H:%M", e.t) or "") .. "|r " .. Chat.Format(tier, e.g, e.s, e.c, e.x)
+		local line = Chat.Stamp(e.t) .. Chat.Format(tier, e.g, e.s, e.c, e.x)
 		WriteToFrames(frames, line, Chat.Color(tier))
 	end
 end, L.HELP_HISTORY)

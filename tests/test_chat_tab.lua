@@ -653,7 +653,7 @@ T.test("chat tab: несколько вкладок Chattynator получают
 	T.same(ns.Chat.SelectedWindows(), { "Торговля", "Гильдия" })
 	ns.char.chatTime = true
 	ns.Chat.Show("A", "Чиллзон", "Автор Чата", "MAGE", "Во все выбранные")
-	local line = "|cff999999" .. env.date("%H:%M", ns.ServerTime()) .. "|r "
+	local line = "|cff999999" .. env.date("%H:%M:%S", ns.ServerTime()) .. "|r "
 		.. ns.Chat.Format("A", "Чиллзон", "Автор Чата", "MAGE", "Во все выбранные")
 	T.same(delivered, { { 2, 1, line }, { 1, 2, line } })
 	T.eq(h.client:Saw("Во все выбранные"), 0)
@@ -740,7 +740,7 @@ T.test("chat tab: защиты Chattynator сохраняют строку пр�
 		ns.Chat.Show("A", "Чиллзон", "Автор Чата", "MAGE", text)
 	end
 	Show("Ошибка одной вкладки")
-	local stamp = "|cff999999" .. env.date("%H:%M", ns.ServerTime()) .. "|r "
+	local stamp = "|cff999999" .. env.date("%H:%M:%S", ns.ServerTime()) .. "|r "
 	local line = stamp .. ns.Chat.Format("A", "Чиллзон", "Автор Чата", "MAGE", "Ошибка одной вкладки")
 	T.same(fallback, { { line, ns.Chat.Color("A") } }, "в основное окно приходит вся строка с цветом и временем")
 	T.ok(ns.Chat.ToggleWindow("Торговля"))
@@ -789,7 +789,7 @@ T.test("chat tab: время видно в специальной вкладке
 	ns.char.chatTime = true
 	ns.Chat.Show("A", "Чиллзон", "Автор Чата", "MAGE", "Из истории")
 	h:Mount(1)
-	local prefix = "|cff999999" .. env.date("%H:%M", ns.ServerTime()) .. "|r "
+	local prefix = "|cff999999" .. env.date("%H:%M:%S", ns.ServerTime()) .. "|r "
 	T.eq(h.messages.lines[1]:sub(1, #prefix), prefix)
 	ns.Chat.Show("A", "Чиллзон", "Автор Чата", "MAGE", "Новая строка")
 	T.eq(h.messages.lines[2]:sub(1, #prefix), prefix)
@@ -1267,7 +1267,7 @@ T.test("chat tab: кнопка отмечает вкладку и сохраня
 
 	ns.Chat.Show("A", "Чиллзон", "Автор Чата", "MAGE", "Проверка новой вкладки")
 	T.eq(#h.tab.lines, 1, "строка видна во вкладке один раз")
-	local prefix = "|cff999999" .. env.date("%H:%M", ns.ServerTime()) .. "|r "
+	local prefix = "|cff999999" .. env.date("%H:%M:%S", ns.ServerTime()) .. "|r "
 	T.eq(h.tab.lines[1]:sub(1, #prefix), prefix)
 	T.ok(h.tab.lines[1]:find("Проверка новой вкладки", 1, true))
 	T.eq(h.client:Saw("Проверка новой вкладки"), 1, "основное окно получает строку как раньше")

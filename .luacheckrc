@@ -33,6 +33,7 @@ read_globals = {
 
 	-- C_* и перечисления
 	"C_AddOns",
+	"C_CVar",
 	"C_ChatInfo",
 	"C_GuildInfo",
 	"C_Item",
@@ -66,6 +67,7 @@ read_globals = {
 	"GetChannelList",
 	"GetChannelName",
 	"GetChatWindowInfo",
+	"GetCVar",
 	"GetCursorInfo",
 	"GetCursorPosition",
 	"GetGuildInfo",

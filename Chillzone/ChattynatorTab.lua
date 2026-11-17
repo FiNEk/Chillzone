@@ -59,9 +59,7 @@ local function AddLine(messages, entry)
 	local line = Chat.Format("A", entry.g, entry.s, entry.c, entry.x, function(body)
 		return FormatEmotes(body, messages)
 	end)
-	if ns.char and ns.char.chatTime and date then
-		line = "|cff999999" .. date("%H:%M", entry.t) .. "|r " .. line
-	end
+	if ns.char and ns.char.chatTime then line = Chat.Stamp(entry.t) .. line end
 	messages:AddMessage(line, Chat.Color("A"))
 end
 
