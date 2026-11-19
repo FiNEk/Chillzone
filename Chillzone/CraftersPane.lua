@@ -1,7 +1,9 @@
 -- Chillzone: вкладка «Мастера профессий». Слева каталог мастеров объединения с поиском и фильтром по
 -- профессии, справа — своё ремесло (прочитанные профессии, примечание, своя карточка) или
 -- карточка выбранного мастера со списком его рецептов. Строки готовит Views.lua, логика — в
--- Crafters.lua. Витрина мастера — ряд значков под строкой профессий в каталоге (строка мастера с
+-- Crafters.lua. Специализация профессии видна вместо её названия в строке каталога и на кнопке
+-- профессии в карточке, все специализации — в подсказках и в «Моём ремесле». Витрина мастера — ряд
+-- значков под строкой профессий в каталоге (строка мастера с
 -- витриной выше на этот ряд) и рецепты первыми в карточке; свою витрину игрок отмечает звёздочками
 -- в своей карточке, а кнопка «Витрина» открывает её и до размещения — черновиком, который там же и
 -- размещается.
@@ -871,11 +873,12 @@ local function RenderCard(view)
 	card.name:SetText(view.name)
 	card.line:SetText(view.line)
 	card.note:SetText(view.note or "")
-	-- «Алхимия 1/75», если все профессии помещаются в ширину панели, иначе только «1/75».
+	-- «Алхимия 1/75» (со специализацией — «Мастер клинков 300/300», как в каталоге), если все профессии
+	-- помещаются в ширину панели, иначе только «1/75»; название и специализации — в подсказке.
 	local full = 0
 	for i, p in ipairs(view.profs) do
 		local chip = CardChip(i)
-		chip:SetLabel(Views.CraftIcon(p.id, 14) .. " " .. ns.Crafters.ProfName(p.id) .. " " .. Views.CraftSkill(p))
+		chip:SetLabel(Views.CraftIcon(p.id, 14) .. " " .. Views.CraftTitle(p) .. " " .. Views.CraftSkill(p))
 		full = full + chip.w + 4
 	end
 	local x = 0
@@ -885,7 +888,7 @@ local function RenderCard(view)
 		if full - 4 > SIDE_W then chip:SetLabel(Views.CraftIcon(p.id, 14) .. " " .. Views.CraftSkill(p)) end
 		chip.tip = function(tt)
 			tt:AddLine(ns.Crafters.ProfName(p.id), 1, 0.82, 0)
-			tt:AddLine(L.CRAFT_TIP_PROF:format(ns.Crafters.ProfName(p.id), p.skill, p.max, p.n), 1, 1, 1, true)
+			Views.CraftProfTip(tt, p)
 			tt:AddLine(L.CRAFT_TIP_LINK, 0.5, 0.83, 0.76, true)
 		end
 		chip:ClearAllPoints()

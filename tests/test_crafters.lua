@@ -161,6 +161,93 @@ T.test("crafters codec: клиент 0.16.0 читает первые три р�
 	T.eq(#d.profs, 2)
 end)
 
+T.test("crafters codec: специализации — третьим полем профессии", function()
+	local Codec = codec()
+	local c = card()
+	c.profs[1].specs = { 9787, 17039 }
+	local msg = Codec.EncodeCraft(c)
+	T.ok(msg:find("~164:150:225:12:0a1z::9787.17039,186:75:150:3:zz00~", 1, true), "без витрины её поле пустое: " .. msg)
+	T.same(Codec.DecodeCraft(msg), c)
+	c.profs[1].show, c.profs[2].specs = { 2660 }, { 10656 }
+	msg = Codec.EncodeCraft(c)
+	T.ok(msg:find("~164:150:225:12:0a1z:2660:9787.17039,186:75:150:3:zz00::10656~", 1, true), "после витрины: " .. msg)
+	T.same(Codec.DecodeCraft(msg), c)
+	-- Не больше двух на профессию, без повторов и неподходящих номеров. Какой профессии номер
+	-- принадлежит, кодек не проверяет: это дело Crafters.
+	c.profs[1].specs = { 9787, 9787, 0, 12345678, 17039, 9788 }
+	T.same(Codec.DecodeCraft(Codec.EncodeCraft(c)).profs[1].specs, { 9787, 17039 })
+	local base = "W1~C~1794412800~Чиллзон~DR~22~"
+	local d = Codec.DecodeCraft(base .. "164:150:225:12:0a1z::9787.x:новое,186:1:75:2:0000:7:~заметка")
+	T.eq(#d.profs, 2, "карточка читается")
+	T.same(d.profs[1].specs, { 9787 }, "мусор после номера и поле следующей версии не мешают")
+	T.no(Codec.DecodeCraft(base .. "164:150:225:12:0a1z::x.9787~").profs[1].specs, "начало не число — специализаций нет")
+	T.no(d.profs[1].show)
+	T.same(d.profs[2].show, { 7 })
+	T.no(d.profs[2].specs, "пустое поле — специализаций нет")
+	T.eq(d.note, "заметка")
+end)
+
+-- Клиенты 0.15.0–0.18.1 разбирают профессию так (образец из Codec.lua вышедших версий): витрина —
+-- числа после хеша до первого знака не из [0-9.]. Специализации они не видят, остальное читают.
+T.test("crafters codec: вышедшие версии читают карточку со специализациями", function()
+	local Codec = codec()
+	local c = card()
+	c.profs[1].specs = { 9787, 17039 }
+	c.profs[2].show, c.profs[2].specs = { 2149, 2152 }, { 10658 }
+	local msg = Codec.EncodeCraft(c)
+	local guild, class, level, list, note = msg:match("^W1~C~%d+~([^~|]+)~(%u?%u?)~(%d%d?%d?)~([^~]+)~([^~]*)")
+	T.eq(guild, c.guild)
+	T.eq(class, "DR")
+	T.eq(level, "22")
+	T.eq(note, c.note, "примечание цело")
+	local old = {}
+	for entry in (list .. ","):gmatch("([^,]*),") do
+		local id, skill, cap, n, hash, extra = entry:match("^(%d+):(%d+):(%d+):(%d+):(%w+)(.*)$")
+		T.ok(id and skill and cap and n and hash, "профессия читается: " .. entry)
+		local show = {}
+		for v in (extra:match("^:([%d.]+)") or ""):gmatch("[^.]+") do show[#show + 1] = tonumber(v) end
+		old[#old + 1] = { id = tonumber(id), hash = hash, show = show }
+	end
+	T.same(old, {
+		{ id = 164, hash = "0a1z", show = {} },
+		{ id = 186, hash = "zz00", show = { 2149, 2152 } },
+	}, "специализации не попали ни в витрину, ни в хеш")
+end)
+
+T.test("crafters codec: специализации умещаются, в крайнем случае выбрасываются", function()
+	local Codec = codec()
+	-- Самая длинная карточка из игры (см. витрину) и две профессии со специализациями: витрина и
+	-- специализации целы, короче только примечание.
+	local c = card()
+	c.guild, c.profs = ("Щ"):rep(24), {}
+	for i, id in ipairs({ 164, 202, 185, 129 }) do
+		c.profs[i] = { id = id, skill = 300, max = 300, n = 800, hash = "zzzz" }
+	end
+	c.profs[1].show, c.profs[1].specs = { 1302601, 1302602, 1302603, 1302604, 1302605 }, { 9787, 17039 }
+	c.profs[2].show, c.profs[2].specs = { 1302606, 1302607, 1302608, 1302609 }, { 20222 }
+	c.note = ("я"):rep(30)
+	local msg = Codec.EncodeCraft(c)
+	T.ok(msg and #msg <= 255, "уместилось: " .. tostring(msg and #msg))
+	local d = Codec.DecodeCraft(msg)
+	T.eq(#d.profs[1].show + #d.profs[2].show, 9, "витрина цела")
+	T.same(d.profs[1].specs, { 9787, 17039 })
+	T.same(d.profs[2].specs, { 20222 })
+	T.ok(#d.note > 0 and #d.note < 60, "примечание укорочено: " .. #d.note)
+	-- Карточка, какой в игре не бывает, не умещается и без витрины: специализации выбрасываются, а
+	-- карточка всё равно уходит.
+	c.profs = {}
+	for i, id in ipairs({ 164, 165, 171, 197, 202 }) do
+		c.profs[i] = { id = 9999000 + id, skill = 999, max = 999, n = 9999, hash = "zzzz", specs = { 9999901, 9999902 } }
+	end
+	c.profs[1].show = { 9999991 }
+	msg = Codec.EncodeCraft(c)
+	T.ok(msg and #msg <= 255, "уместилось: " .. tostring(msg and #msg))
+	d = Codec.DecodeCraft(msg)
+	T.eq(#d.profs, 5)
+	T.no(d.profs[1].specs, "специализаций нет")
+	T.same(d.profs[1].show, { 9999991 }, "витрина осталась")
+end)
+
 T.test("crafters codec: карточка ходит в конверте строки чата", function()
 	local Codec = codec()
 	local msg = Codec.EncodeCraft(card())
@@ -694,6 +781,81 @@ T.test("crafters: после /reload карточка не уходит рань
 	T.eq(again.ns.Crafters.Own().profs[1].id, 164)
 	T.same(again.ns.Crafters.Recipes(Key(again), 164), { 2660, 2661, 2662 })
 	T.ok(c.V.ns.Crafters.Get(Key(again)), "у остальных карточка осталась")
+	NoErrors(again, "после /reload")
+end)
+
+T.test("crafters: специализации читаются из заклинаний игры и уходят в карточке", function()
+	local w, c = Build()
+	local Cr = c.A.ns.Crafters
+	-- Оружейник и гоблинский инженер: окно инженерного дела не открывали, его специализации в
+	-- карточку не идут.
+	c.A.spells = { [9787] = true, [20222] = true }
+	Master(c.A)
+	T.same(Cr.MyProfs()[1].specs, { 9787 })
+	T.eq(Logged(c.A, "мастера: специализации профессии Кузнечное дело: Оружейник"), 1)
+	T.same(c.V.ns.Crafters.Get(Key(c.A)).profs[1].specs, { 9787 }, "через реле")
+	T.same(c.K.ns.Crafters.Get(Key(c.A)).profs[1].specs, { 9787 }, "своей гильдии")
+	-- Путь внутри пути выучен у наставника, окно профессии не открывали: правка уходит после паузы.
+	local wires = Capture(c.A)
+	c.A:LearnSpell(17039)
+	w:Run(2)
+	T.same(Cr.MyProfs()[1].specs, { 9787, 17039 })
+	T.ok(Cr.Dirty(), "есть правка")
+	T.eq(Logged(c.A, "мастера: специализации профессии Кузнечное дело: Оружейник, Мастер клинков"), 1)
+	w:Run(c.A.ns.Config.CRAFT_UPDATE_GAP + 10)
+	T.eq(#wires, 1, "правка ушла")
+	T.same(c.V.ns.Crafters.Get(Key(c.A)).profs[1].specs, { 9787, 17039 })
+	T.eq(Logged(c.V, "мастера: карточка Арагорн Светлый <Чиллзон> обновлена (реле)"), 1)
+	-- Событие без перемен — ни записи, ни правки.
+	c.A:Fire("SPELLS_CHANGED")
+	w:Run(2)
+	T.eq(Logged(c.A, "мастера: специализации профессии"), 2)
+	T.no(Cr.Dirty())
+	NoErrors(c.A, "Арагорн")
+	NoErrors(c.V, "Вера")
+end)
+
+T.test("crafters: специализации — только по ответу игры и только своей профессии, переживают /reload", function()
+	local w, c = Build()
+	local Cr = c.A.ns.Crafters
+	c.A.spells = { [9788] = true }
+	Learn(c.A, Smith())
+	T.same(Cr.MyProfs()[1].specs, { 9788 })
+	-- Игра о заклинаниях не отвечает: ни проверка, ни новое чтение окна специализацию не убирают.
+	local known = c.A.env.IsPlayerSpell
+	c.A.env.IsPlayerSpell = nil
+	Cr.CheckSpecs()
+	c.A:CloseProfession()
+	Learn(c.A, Smith())
+	T.same(Cr.MyProfs()[1].specs, { 9788 }, "осталась")
+	-- Игра ответила «нет»: минутная проверка её убирает.
+	c.A.env.IsPlayerSpell = known
+	c.A.spells = {}
+	w:Run(61)
+	T.no(Cr.MyProfs()[1].specs)
+	T.eq(Logged(c.A, "мастера: специализации профессии Кузнечное дело: нет"), 1)
+	-- В чужой карточке специализация другой профессии и незнакомая этой версии не видны.
+	local key = Feed(c.A, { profs = {
+		{ id = 164, skill = 300, max = 300, n = 1, hash = "0001", specs = { 20222, 9787 } },
+		{ id = 202, skill = 300, max = 300, n = 1, hash = "0002", specs = { 99999 } },
+		{ id = 186, skill = 1, max = 75, n = 1, hash = "0003", specs = { 9788 } },
+	} })
+	local e = Cr.Get(key)
+	T.same(e.profs[1].specs, { 9787 })
+	T.no(e.profs[2].specs)
+	T.no(e.profs[3].specs)
+	-- Сохранения: свои и чужие специализации на месте, лишнее выбрасывается.
+	c.A.spells = { [9787] = true, [17039] = true }
+	Cr.CheckSpecs()
+	c.A.ns.char.crafts.profs[164].specs = { 17039, 20222, "x", 9787 }
+	c.A.ns.store.crafters.cards[key].profs[1].specs = { 20222, 9788 }
+	local db = c.A.ns.db
+	c.A:Logout()
+	local again = w:Client({ first = "Арагорн", surname = "Светлый", guild = "Чиллзон", rank = 1, class = "WARRIOR", level = 24,
+		db = db, reload = true, noSpells = true })
+	w:Run(65)
+	T.same(again.ns.Crafters.MyProfs()[1].specs, { 9787, 17039 }, "свои по порядку, без чужой и мусора")
+	T.same(again.ns.Crafters.Get(key).profs[1].specs, { 9788 })
 	NoErrors(again, "после /reload")
 end)
 
@@ -1378,6 +1540,58 @@ T.test("crafters pane: профессии в строке и в карточке
 	T.ok(f.cardChips[1].label:GetText():find("Кузнечное дело 150/225", 1, true), "одна — с названием")
 	T.no(f.cardChips[2]:IsShown())
 	NoErrors(c.V, "Вера")
+end)
+
+T.test("crafters pane: специализации в строке, подсказке, карточке, поиске и своём ремесле", function()
+	local w, c = Build()
+	c.A.spells = { [9787] = true, [17039] = true }
+	Learn(c.A, Smith())
+	c.A:CloseProfession()
+	Learn(c.A, { id = 165, skill = 80, max = 150, recipes = { [2149] = true } })
+	c.A.ns.Crafters.SetPost(164, true)
+	c.A.ns.Crafters.SetPost(165, true)
+	T.ok(c.A.ns.Crafters.Post("кую и шью"))
+	w:Run(30)
+	c.V:Slash("/chillzone", "crafters")
+	local P, f = c.V.ns.CraftersPane, c.V.ns.CraftersPane.frames
+	local row = PaneRow(c.V, c.A)
+	local sub = row.sub:GetText()
+	T.ok(sub:find("Мастер клинков 150/225", 1, true), "самая узкая специализация вместо названия: " .. sub)
+	T.no(sub:find("Кузнечное дело", 1, true))
+	T.ok(sub:find("Кожевничество 80/150", 1, true), "без специализации — название")
+	local tip = Tip(c.V, row)
+	T.ok(tip:find("Кузнечное дело: навык 150 из 225, рецептов 3", 1, true), tip)
+	T.ok(tip:find("Специализация: Оружейник, Мастер клинков", 1, true), tip)
+	T.eq(select(2, tip:gsub("Специализация:", "")), 1, "у кожевничества строки нет")
+	-- Поиск: по любой специализации мастера, чужая не подходит.
+	P.Search("оружейник")
+	T.ok(PaneRow(c.V, c.A), "по пути")
+	P.Search("клинков")
+	T.ok(PaneRow(c.V, c.A), "по пути внутри пути")
+	P.Search("гоблинский")
+	T.no(PaneRow(c.V, c.A), "чужая специализация")
+	P.Search("")
+	-- Карточка: подсказка профессии называет все её специализации.
+	PaneRow(c.V, c.A):Click()
+	w:Run(1)
+	T.ok(f.card:IsShown())
+	tip = Tip(c.V, f.cardChips[1])
+	T.ok(tip:find("Специализация: Оружейник, Мастер клинков", 1, true), tip)
+	T.no(Tip(c.V, f.cardChips[2]):find("Специализация", 1, true))
+	-- Одна профессия помещается на кнопке с названием — специализации.
+	w:Run(c.A.ns.Config.CRAFT_POST_GAP)
+	c.A.ns.Crafters.SetPost(165, false)
+	T.ok(c.A.ns.Crafters.Post())
+	w:Run(30)
+	P.Render()
+	T.ok(f.cardChips[1].label:GetText():find("Мастер клинков 150/225", 1, true), f.cardChips[1].label:GetText())
+	-- Своё ремесло: название профессии и все специализации.
+	c.A:Slash("/chillzone", "crafters")
+	local label = c.A.ns.CraftersPane.frames.profs[1].label:GetText()
+	T.ok(label:find("Кузнечное дело", 1, true) and label:find("Оружейник, Мастер клинков", 1, true), label)
+	T.no(c.A.ns.CraftersPane.frames.profs[2].label:GetText():find("—", 1, true), "у кожевничества их нет")
+	NoErrors(c.V, "Вера")
+	NoErrors(c.A, "Арагорн")
 end)
 
 T.test("crafters pane: каталог, поиск по рецептам и карточка мастера", function()

@@ -1102,9 +1102,7 @@ local function CraftTip(card, presence)
 		if card.class and L.CLASS[card.class] then who = who .. ", " .. L.CLASS[card.class] end
 		tt:AddLine(who, 0.8, 0.8, 0.8)
 		tt:AddLine(" ")
-		for _, p in ipairs(card.profs) do
-			tt:AddLine(Views.CraftIcon(p.id) .. " " .. L.CRAFT_TIP_PROF:format(ns.Crafters.ProfName(p.id), p.skill, p.max, p.n), 1, 1, 1)
-		end
+		for _, p in ipairs(card.profs) do Views.CraftProfTip(tt, p, true) end
 		local show = {}
 		for i, s in ipairs(Views.CraftShowcase(card)) do show[i] = Codec.Plain(Views.RecipeName(s.id)) end
 		if #show > 0 then tt:AddLine(L.CRAFT_SHOW_LINE:format(table.concat(show, ", ")), 1, 0.82, 0, true) end
@@ -1114,6 +1112,28 @@ local function CraftTip(card, presence)
 		tt:AddLine(L.CRAFT_TIP_LINK, 0.5, 0.83, 0.76, true)
 		if not card.own then tt:AddLine(L.TIP_MENU, 0.5, 0.83, 0.76) end
 	end
+end
+
+-- Профессия p в строке каталога и на её кнопке в карточке: самая узкая специализация («Мастер
+-- клинков», значок рядом — профессии), без неё — название профессии.
+function Views.CraftTitle(p)
+	local top = ns.Crafters.SpecTop(p)
+	return top and ns.Crafters.SpecName(top) or ns.Crafters.ProfName(p.id)
+end
+
+-- Все специализации профессии p через запятую («Оружейник, Мастер клинков») или nil.
+function Views.CraftSpecs(p)
+	if not p.specs then return nil end
+	local names = {}
+	for i, id in ipairs(p.specs) do names[i] = ns.Crafters.SpecName(id) end
+	return table.concat(names, ", ")
+end
+
+-- Строки подсказки о профессии p: навык и рецепты, под ними — специализации.
+function Views.CraftProfTip(tt, p, icon)
+	tt:AddLine((icon and (Views.CraftIcon(p.id) .. " ") or "") .. L.CRAFT_TIP_PROF:format(ns.Crafters.ProfName(p.id), p.skill, p.max, p.n), 1, 1, 1)
+	local specs = Views.CraftSpecs(p)
+	if specs then tt:AddLine(L.CRAFT_TIP_SPEC:format(specs), 1, 0.82, 0, true) end
 end
 
 -- Навык профессии «1/75»; предела может не быть.
@@ -1129,7 +1149,8 @@ end
 
 -- Одна строка каталога. action "whisper" — мастер в игре или был недавно; иначе status — давность.
 -- show — его витрина (Views.CraftShowcase): ряд значков под строкой профессий.
--- Профессии названы словами: «Алхимия 1/75, 3 рецепта». Число рецептов — только когда профессия
+-- Профессии названы словами: «Алхимия 1/75, 3 рецепта», со специализацией — она вместо названия
+-- («Мастер клинков 300/300», значок — кузнечного дела). Число рецептов — только когда профессия
 -- одна (или выбран фильтр): с несколькими строка не уместилась бы, оно есть в подсказке.
 local function CraftRow(card, prof, presence, found, more)
 	local level = (card.level and card.level > 0) and (", " .. card.level) or ""
@@ -1149,7 +1170,7 @@ local function CraftRow(card, prof, presence, found, more)
 	end
 	local skills = {}
 	for _, p in ipairs(shown) do
-		local text = Views.CraftIcon(p.id) .. " " .. WHITE .. ns.Crafters.ProfName(p.id) .. " " .. Views.CraftSkill(p) .. "|r"
+		local text = Views.CraftIcon(p.id) .. " " .. WHITE .. Views.CraftTitle(p) .. " " .. Views.CraftSkill(p) .. "|r"
 		if #shown == 1 then text = text .. GREY .. ", " .. Views.CraftCount(p.n) .. "|r" end
 		skills[#skills + 1] = text
 	end
@@ -1206,10 +1227,13 @@ function Views.CraftRows(prof, query, levels)
 			if searching then
 				of = of + 1
 				if card.own or Crafters.HasList(card.key, prof) then loaded = loaded + 1 end
-				local named = true -- имя, гильдия, профессии или примечание подходят под слова
+				local named = true -- имя, гильдия, профессии, специализации или примечание подходят под слова
 				if words then
 					local names = {}
-					for _, p in ipairs(card.profs) do names[#names + 1] = Crafters.ProfName(p.id) end
+					for _, p in ipairs(card.profs) do
+						names[#names + 1] = Crafters.ProfName(p.id)
+						for _, id in ipairs(p.specs or {}) do names[#names + 1] = Crafters.SpecName(id) end
+					end
 					named = Fits(SearchKey(card.name .. card.guild .. card.note .. table.concat(names)), words)
 				end
 				-- Уровень — только по рецептам: нужен хотя бы один рецепт в диапазоне, а если мастер
@@ -1425,13 +1449,16 @@ function Views.CraftListState(key, prof)
 	return text
 end
 
--- «Моё ремесло»: { profs = { id, post, label, detail }, hint, status, posted }.
+-- «Моё ремесло»: { profs = { id, post, label, detail }, hint, status, posted }. У профессии со
+-- специализацией они видны после названия: «Кузнечное дело — Оружейник, Мастер клинков».
 function Views.CraftMine()
 	local Crafters = ns.Crafters
 	local profs = {}
 	for _, p in ipairs(Crafters.MyProfs()) do
+		local specs = Views.CraftSpecs(p)
 		profs[#profs + 1] = {
-			id = p.id, post = p.post, label = Views.CraftIcon(p.id) .. " " .. Crafters.ProfName(p.id),
+			id = p.id, post = p.post,
+			label = Views.CraftIcon(p.id) .. " " .. Crafters.ProfName(p.id) .. (specs and (GREY .. " — " .. specs .. "|r") or ""),
 			detail = L.CRAFT_READ:format(p.skill, p.max, p.n, Views.Ago(ns.ServerTime() - (p.readAt or 0))),
 		}
 	end
