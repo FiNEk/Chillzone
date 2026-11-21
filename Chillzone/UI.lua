@@ -510,6 +510,8 @@ local function BuildSettings(parent)
 	end)
 	Check("recruits", L.CHECK_RECRUITS, L.CHECK_RECRUITS_TIP,
 		function() return not ns.Recruit.NoContactMe() end, function(on) ns.Recruit.SetNoContact(not on) end)
+	UI.wishesCheck = Check("wishes", L.CHECK_WISHES, L.CHECK_WISHES_TIP,
+		function() return ns.Wishes.Enabled() end, function(on) ns.Wishes.SetEnabled(on) end)
 	-- Журнал нужен любому игроку, а значок «Управления» есть не у всех: кнопка в правом верхнем углу,
 	-- где справа от «Кругов на карте» пусто. У кого «Управление» есть, она открывает его раздел.
 	local journal = CreateFrame("Button", nil, settings, "UIPanelButtonTemplate")
@@ -582,13 +584,14 @@ end
 -- «Заявки» (общая очередь, RecruitSync.IsOfficer) и «Отладка» (Debug.Allowed) — только главам и
 -- офицерам, «Объединение» — главе объединения и офицерам гильдий вне его, «Кадры» — по правам
 -- Transfer.Rights: звание могли поменять при открытом окне. «Управление» видно, когда из его разделов
--- доступно что-то кроме журнала.
+-- доступно что-то кроме журнала. «Желания» — пока их не выключили в настройках (Wishes.Enabled).
 local function Allowed(key)
 	if key == "requests" then return ns.RecruitSync.IsOfficer() end
 	if key == "transfer" or key == "roster" then return ns.Transfer.Rights() ~= nil end
 	if key == "debug" then return ns.Debug.Allowed() end
 	if key == "union" then return ns.Security.CanManageUnion() or ns.Security.CanRequestUnion() end
 	if key == "manage" then return Allowed("union") or Allowed("transfer") or Allowed("debug") end
+	if key == "wishes" then return ns.Wishes.Enabled() end
 	return true
 end
 
@@ -1337,7 +1340,18 @@ end, L.HELP_MINIMAP)
 ns.Command("census", function() UI.Toggle("census") end, L.HELP_CENSUS)
 ns.Command("groups", function() UI.Toggle("groups") end, L.HELP_GROUPS)
 ns.Command("crafters", function() UI.Toggle("crafters") end, L.HELP_CRAFTERS)
-ns.Command("wishes", function() UI.Toggle("wishes") end, L.HELP_WISHES)
+ns.Command("wishes", function(arg)
+	arg = U.Fold(U.Trim(arg))
+	if arg == "on" or arg == "вкл" then
+		ns.Wishes.SetEnabled(true)
+	elseif arg == "off" or arg == "выкл" then
+		ns.Wishes.SetEnabled(false)
+	elseif not ns.Wishes.Enabled() then
+		ns.Print(L.WISH_OFF)
+	else
+		UI.Toggle("wishes")
+	end
+end, L.HELP_WISHES)
 ns.Command("requests", function()
 	if not ns.RecruitSync.IsOfficer() then
 		ns.Print(L.REQUESTS_ONLY_OFFICERS)
