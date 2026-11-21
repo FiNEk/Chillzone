@@ -10,6 +10,11 @@
 -- карточку раз в Every() минут; время прошлой отправки хранится у персонажа и переживает /reload.
 -- Порядок пакетов автора — по времени и номеру подписи S1: снятый список (X) старым пакетом не
 -- вернётся. По сети идут только номера: названия каждый клиент берёт у игры сам.
+--
+-- Желания выключаются целиком настройкой ns.db.settings.wishes = false, общей для персонажей аккаунта
+-- (Wishes.Enabled): нет вкладки и строки «Нужно:», чужие списки не принимаются, а каталог очищается —
+-- пропущенные за это время снятия не догнать. Свой размещённый список пропадает у остальных (пакет X,
+-- Retract), но у себя остаётся размещённым и после включения уходит снова сам.
 local ADDON, ns = ...
 
 local U = ns.Util
@@ -25,6 +30,7 @@ local cards -- ns.store.wishes.cards: [ключ автора] = карточка
 local closed = {} -- [ключ автора] = { at, seq } снятого списка: старый пакет его не вернёт
 local byItem -- [номер предмета] = { ключи авторов }; nil — пересобрать
 local sealing = false
+local retracting = false -- подписывается снятие своего списка выключенными желаниями
 local lastPost = -1e9
 local firstAt -- после входа свой список проверяется не раньше
 local lastClean = -1e9
@@ -34,6 +40,11 @@ Wishes.stats = { heard = 0, stale = 0 }
 local function Changed()
 	byItem = nil
 	ns.Fire("WISHES")
+end
+
+-- Желания включены: по умолчанию да.
+function Wishes.Enabled()
+	return ns.db.settings.wishes ~= false
 end
 
 ---------------------------------------------------------------------------
@@ -135,6 +146,7 @@ end
 
 function Wishes.Receive(msg, _, dist, ctx)
 	if dist ~= "GUILD" and dist ~= "RELAY" then return end
+	if not Wishes.Enabled() then return end
 	local c = ctx and ctx.authenticated and ctx.certificate
 	if not c or not cards or not ns.IsMember() then return end
 	local w = Codec.DecodeWish(msg)
@@ -460,6 +472,58 @@ function Wishes.Save(text)
 end
 
 ---------------------------------------------------------------------------
+-- Выключение
+---------------------------------------------------------------------------
+-- Каталог выключенных желаний не нужен, а пакеты, пропущенные за это время, не догнать: после
+-- включения он собирается заново из повторов авторов.
+local function Forget()
+	for key in pairs(cards or {}) do cards[key] = nil end
+	closed = {}
+	byItem = nil
+end
+
+-- Свой список ещё виден остальным: он ушёл в сеть и не просрочен.
+local function Out()
+	return Wishes.Posted() and saved.sentSig ~= nil and ns.ServerTime() - (saved.sentAt or 0) <= C.WISH_KEEP
+end
+
+-- Выключенные желания: свой список пропадает у остальных пакетом X, а у себя остаётся размещённым.
+-- Отправленной подписи после снятия нет, поэтому после включения Tick отправит его снова, как
+-- правку. Без сертификата, в блокировке и пока идёт подпись — со следующей проверкой (Tick).
+local function Retract()
+	if not Out() or sealing or retracting then return end
+	local guild = ns.MyGuild()
+	if not guild or not ns.IsMember() or ns.Comm.InLockdown() or not ns.Security.MyCertificate() then return end
+	retracting = true
+	local ok = Seal(Codec.EncodeWish({ mode = "X", st = ns.ServerTime(), guild = guild }), true, function(wire, _, failed)
+		retracting = false
+		if wire then
+			saved.sentSig = nil
+			ns.Log("желания: свой список снят у остальных: желания выключены")
+		else
+			ns.Log("желания: свой список не снят: %s", tostring(failed))
+		end
+	end)
+	if not ok then retracting = false end
+end
+
+-- Настройка «Списки желаний» и /chillzone wishes on|off.
+function Wishes.SetEnabled(on)
+	on = on and true or false
+	local was = Wishes.Enabled()
+	if on then ns.db.settings.wishes = nil else ns.db.settings.wishes = false end
+	ns.Print(on and L.WISH_ON or L.WISH_OFF)
+	if on == was then return end
+	ns.Log(on and "желания: включены" or "желания: выключены")
+	if not on then
+		Forget()
+		Retract()
+	end
+	Changed()
+	ns.Fire("SETTINGS")
+end
+
+---------------------------------------------------------------------------
 -- Подсказка предмета: «Нужно: Имя, Имя и ещё 3»
 ---------------------------------------------------------------------------
 function Wishes.ShowTooltip()
@@ -473,9 +537,9 @@ end
 
 local RANK = { own = 0, online = 1, recent = 2, away = 3, offline = 4 }
 
--- Строка подсказки для предмета или nil: никому не нужен или подсказка выключена.
+-- Строка подсказки для предмета или nil: никому не нужен, подсказка или желания выключены.
 function Wishes.TipLine(item)
-	if not saved or not Wishes.ShowTooltip() then return nil end
+	if not saved or not Wishes.Enabled() or not Wishes.ShowTooltip() then return nil end
 	local who = Wishes.Who(item)
 	if #who == 0 then return nil end
 	local ranked = {}
@@ -550,11 +614,16 @@ end
 ---------------------------------------------------------------------------
 local function Tick()
 	local now = ns.Now()
+	-- Выключены: остаётся снять свой список, если его ещё видят, — и после входа другим персонажем.
+	if not Wishes.Enabled() then
+		if now >= firstAt then Retract() end
+		return
+	end
 	if now - lastClean >= 60 then
 		lastClean = now
 		if Clean() then Changed() end
 	end
-	if not Wishes.Posted() or sealing or now < firstAt then return end
+	if not Wishes.Posted() or sealing or retracting or now < firstAt then return end
 	-- В блокировке сообщение застряло бы в очереди: список уйдёт после неё.
 	if ns.Comm.InLockdown() or not ns.IsMember() or not ns.Security.MyCertificate() then return end
 	local since = ns.ServerTime() - (saved.sentAt or 0)
@@ -598,6 +667,8 @@ local function Restore()
 		if type(key) ~= "string" or not Valid(card, key) then cards[key] = nil end
 	end
 	Clean()
+	-- Каталог мог остаться в сохранениях этого мира с тех пор, когда желания были включены.
+	if not Wishes.Enabled() then Forget() end
 	byItem = nil
 end
 
@@ -611,6 +682,7 @@ ns.On("LOGIN", function()
 end)
 
 ns.Status(function()
+	if not Wishes.Enabled() then return L.WISH_STATUS_OFF end
 	local own = Wishes.Posted() and L.WISH_STATUS_POSTED:format(#saved.items) or L.WISH_STATUS_NONE
 	return L.WISH_STATUS:format(#Wishes.Cards(), own)
 end)
