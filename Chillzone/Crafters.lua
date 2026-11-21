@@ -5,8 +5,12 @@
 -- изученных рецептов. Чужое окно (по ссылке, гильдейское, у НИП) и чтение в бою пропускаются.
 -- Чтение и проверка чужого окна портированы из Olympus Crafters.lua (ReadModern, External).
 --
--- Карточка W1 — отмеченные профессии с навыком, числом рецептов и хешем списка, витрина (до
--- CRAFT_SHOW своих рецептов, которые видны в строке каталога и первыми в карточке), примечание. Она
+-- Специализации профессий (бронник и оружейник, мастер клинков у оружейника, гномский и гоблинский
+-- инженер, школы кожевничества) — заклинания игры: аддон спрашивает о них IsPlayerSpell при чтении
+-- окна профессии и когда меняются заклинания персонажа. Номера и пути — Crafters.SPECS.
+--
+-- Карточка W1 — отмеченные профессии с навыком, числом рецептов, хешем списка и специализациями,
+-- витрина (до CRAFT_SHOW своих рецептов, которые видны в строке каталога и первыми в карточке), примечание. Она
 -- подписывается и расходится только в конверте строки чата (Codec.WrapCraft): S1 по GUILD своей
 -- гильдии и через реле остальным (режим P). Реле, репортёры и чат 0.14.2 и старше пересылают
 -- конверт как строку чата и молча его отбрасывают, поэтому Security.lua новый вид не нужен.
@@ -51,6 +55,66 @@ for i, id in ipairs(Crafters.PROFS) do ORDER[id] = i end
 -- из карточек старых версий, которые её ещё рассылают.
 local function Known(id)
 	return ORDER[id] ~= nil
+end
+
+-- Специализации по номеру заклинания игры, в порядке показа: prof — профессия, parent — путь,
+-- внутри которого эта специализация (мастер клинков бывает только у оружейника). Названия —
+-- L.CRAFT_SPEC. Номера те же, что на Wowhead Forever; так их читает и аддон Mastercraft для Forever.
+Crafters.SPECS = {
+	{ id = 9788, prof = 164 }, -- бронник
+	{ id = 9787, prof = 164 }, -- оружейник
+	{ id = 17039, prof = 164, parent = 9787 }, -- мастер клинков
+	{ id = 17040, prof = 164, parent = 9787 }, -- мастер молотов
+	{ id = 17041, prof = 164, parent = 9787 }, -- мастер топоров
+	{ id = 20219, prof = 202 }, -- гномский инженер
+	{ id = 20222, prof = 202 }, -- гоблинский инженер
+	{ id = 10656, prof = 165 }, -- кожевник драконьей чешуи
+	{ id = 10658, prof = 165 }, -- кожевник стихий
+	{ id = 10660, prof = 165 }, -- кожевник племён
+}
+local SPEC = {} -- [заклинание] = { id, prof, parent, order }
+for i, s in ipairs(Crafters.SPECS) do
+	SPEC[s.id] = { id = s.id, prof = s.prof, parent = s.parent, order = i }
+end
+
+-- Специализации профессии prof из списка list: только её, без повторов, по порядку SPECS, не больше
+-- Codec.CRAFT_SPECS; nil — ни одной. Так проверяются и свои, и из чужих карточек, и из сохранений.
+local function SpecsOf(prof, list)
+	if type(list) ~= "table" then return nil end
+	local seen, out = {}, {}
+	for _, id in ipairs(list) do
+		local s = type(id) == "number" and SPEC[id]
+		if s and s.prof == prof and not seen[id] then
+			seen[id] = true
+			out[#out + 1] = id
+		end
+	end
+	table.sort(out, function(a, b) return SPEC[a].order < SPEC[b].order end)
+	for i = #out, Codec.CRAFT_SPECS + 1, -1 do out[i] = nil end
+	return #out > 0 and out or nil
+end
+
+-- Строка для сравнения списков специализаций.
+local function SpecKey(list)
+	return table.concat(list or {}, ".")
+end
+
+function Crafters.SpecName(id)
+	return (L.CRAFT_SPEC and L.CRAFT_SPEC[id]) or L.CRAFT_SPEC_UNKNOWN:format(tonumber(id) or 0)
+end
+
+-- Самая узкая специализация профессии p (мастер клинков, а не оружейник) или nil.
+function Crafters.SpecTop(p)
+	local specs = type(p) == "table" and p.specs or nil
+	if not specs then return nil end
+	local parents = {}
+	for _, id in ipairs(specs) do
+		local s = SPEC[id]
+		if s and s.parent then parents[s.parent] = true end
+	end
+	for i = #specs, 1, -1 do
+		if not parents[specs[i]] then return specs[i] end
+	end
 end
 
 local saved -- ns.char.crafts: свои профессии, отметки, примечание, своя карточка
@@ -222,7 +286,10 @@ function Crafters.Receive(msg, _, dist, ctx)
 	end
 	local profs = {}
 	for _, p in ipairs(w.profs) do
-		if Known(p.id) then profs[#profs + 1] = p end
+		if Known(p.id) then
+			p.specs = SpecsOf(p.id, p.specs) -- чужая или незнакомая этой версии специализация не видна
+			profs[#profs + 1] = p
+		end
 	end
 	if #profs == 0 then
 		-- Только рыбная ловля и прочее не из каталога: прежняя карточка автора больше не верна,
@@ -392,6 +459,64 @@ local function External()
 	return false
 end
 
+-- Секретное значение игры — не ответ.
+local function Secret(v)
+	return type(issecretvalue) == "function" and issecretvalue(v)
+end
+
+-- Знает ли персонаж заклинание: true, false или nil — игра не ответила. Спрашиваем IsPlayerSpell,
+-- запасные пути — C_SpellBook.IsSpellKnown и IsSpellKnown; «да» любого из них — да.
+local function KnowsSpell(id)
+	local book = type(C_SpellBook) == "table" and C_SpellBook.IsSpellKnown or nil
+	local replied = false
+	for _, fn in ipairs({ IsPlayerSpell or false, book or false, IsSpellKnown or false }) do
+		if type(fn) == "function" then
+			local ok, v = pcall(fn, id)
+			if ok and not Secret(v) and type(v) == "boolean" then
+				if v then return true end
+				replied = true
+			end
+		end
+	end
+	if replied then return false end
+end
+
+-- Специализации профессии prof, которые знает персонаж: список по порядку SPECS или nil — у
+-- профессии их не бывает, их нет или игра не ответила. Второе значение — игра ответила.
+local function ReadSpecs(prof)
+	local out, replied = {}, false
+	for _, s in ipairs(Crafters.SPECS) do
+		if s.prof == prof then
+			local known = KnowsSpell(s.id)
+			if known ~= nil then replied = true end
+			if known then out[#out + 1] = s.id end
+		end
+	end
+	return SpecsOf(prof, out), replied
+end
+
+local function LogSpecs(prof, specs)
+	local names = {}
+	for i, id in ipairs(specs or {}) do names[i] = Crafters.SpecName(id) end
+	ns.Log("мастера: специализации профессии %s: %s", Crafters.ProfName(prof), #names > 0 and table.concat(names, ", ") or "нет")
+end
+
+-- Заклинания персонажа изменились (или минутная проверка): специализации прочитанных профессий
+-- сверяются с игрой. Правка размещённой карточки уходит как обычно (Tick).
+function Crafters.CheckSpecs()
+	if not saved then return end
+	local changed = false
+	for id, p in pairs(saved.profs) do
+		local specs, replied = ReadSpecs(id)
+		if replied and SpecKey(specs) ~= SpecKey(p.specs) then
+			p.specs = specs
+			LogSpecs(id, specs)
+			changed = true
+		end
+	end
+	if changed then Changed() end
+end
+
 -- Читать рецепты эта версия игры умеет: есть C_TradeSkillUI.
 function Crafters.CanRead()
 	local T = TradeSkill()
@@ -444,12 +569,16 @@ function Crafters.Opened()
 	local packed, n = Codec.PackIds(p.ids, C.CRAFT_RECIPES_MAX)
 	local hash = Codec.IdsHash(packed)
 	local old = saved.profs[p.id]
-	saved.profs[p.id] = { id = p.id, skill = p.skill, max = p.max, n = n, ids = packed, hash = hash, readAt = ns.ServerTime() }
+	-- Игра не ответила о заклинаниях — прежние специализации остаются.
+	local specs, replied = ReadSpecs(p.id)
+	if not replied and old then specs = old.specs end
+	saved.profs[p.id] = { id = p.id, skill = p.skill, max = p.max, n = n, ids = packed, hash = hash, readAt = ns.ServerTime(), specs = specs }
 	if unpacked[ns.myKey] then unpacked[ns.myKey][p.id] = nil end
 	Crafters.stats.read = Crafters.stats.read + 1
 	if not old or old.hash ~= hash or old.skill ~= p.skill or old.max ~= p.max then
 		ns.Log("мастера: прочитана профессия %s: навык %d/%d, рецептов %d", Crafters.ProfName(p.id), p.skill, p.max, n)
 	end
+	if SpecKey(specs) ~= SpecKey(old and old.specs) then LogSpecs(p.id, specs) end
 	if not old and not saved.post[p.id] and not saved.hinted[p.id] then
 		saved.hinted[p.id] = true
 		ns.Print(L.CRAFT_HINT:format(Crafters.ProfName(p.id)))
@@ -480,11 +609,6 @@ end
 -- новое чтение её окна.
 local function SkillInfo()
 	return type(C_SkillInfo) == "table" and C_SkillInfo or nil
-end
-
--- Секретное значение игры — не ответ.
-local function Secret(v)
-	return type(issecretvalue) == "function" and issecretvalue(v)
 end
 
 local function Number(v)
@@ -546,11 +670,14 @@ local function Has(id, lines)
 	return nil
 end
 
--- Свои прочитанные профессии по порядку: { id, skill, max, n, hash, readAt, post }.
+-- Свои прочитанные профессии по порядку: { id, skill, max, n, hash, readAt, post, specs }.
 function Crafters.MyProfs()
 	local out = {}
 	for id, p in pairs(saved and saved.profs or {}) do
-		out[#out + 1] = { id = id, skill = p.skill, max = p.max, n = p.n, hash = p.hash, readAt = p.readAt, post = saved.post[id] == true }
+		out[#out + 1] = {
+			id = id, skill = p.skill, max = p.max, n = p.n, hash = p.hash, readAt = p.readAt, post = saved.post[id] == true,
+			specs = p.specs,
+		}
 	end
 	table.sort(out, function(a, b) return Crafters.ProfOrder(a.id) < Crafters.ProfOrder(b.id) end)
 	return out
@@ -669,12 +796,25 @@ local function SkillsChanged()
 	end)
 end
 
+-- Заклинания меняются пачкой событий (SPELLS_CHANGED бывает часто): проверка одна на пачку.
+local pendingSpells = false
+local function SpellsChanged()
+	if pendingSpells then return end
+	pendingSpells = true
+	ns.After(1, "crafters spells", function()
+		pendingSpells = false
+		Crafters.CheckSpecs()
+	end)
+end
+
 -- Что в карточке, кроме времени, класса и уровня: смена — правка, а не повтор.
 local function Signature()
 	local parts = { tostring(ns.MyGuild()), saved.note or "" }
 	for _, p in ipairs(Chosen()) do
 		local entry = ("%d:%d:%d:%d:%s"):format(p.id, p.skill, p.max, p.n, p.hash)
 		if p.show then entry = entry .. ":" .. table.concat(p.show, ".") end
+		-- Без специализаций подпись та же, что у прежних версий: обновление правки не вызывает.
+		if p.specs then entry = entry .. "/" .. SpecKey(p.specs) end
 		parts[#parts + 1] = entry
 	end
 	return table.concat(parts, "~")
@@ -1241,6 +1381,7 @@ local function Tick()
 		lastClean = now
 		if Clean() then Changed() end
 		Crafters.Prune()
+		Crafters.CheckSpecs()
 	end
 	if not saved or not saved.posted or sealing or now < firstAt then return end
 	-- В блокировке сообщение застряло бы в очереди: карточка уйдёт после неё.
@@ -1278,6 +1419,7 @@ local function Valid(card, key)
 			if type(id) == "number" and #show < C.CRAFT_SHOW then show[#show + 1] = id end
 		end
 		p.show = #show > 0 and show or nil
+		p.specs = SpecsOf(p.id, p.specs)
 		if Known(p.id) then profs[#profs + 1] = p end
 	end
 	-- Рыбная ловля, сохранённая прежней версией, выбрасывается; без остального карточки нет.
@@ -1299,6 +1441,7 @@ local function Restore()
 		else
 			p.skill, p.max, p.n = tonumber(p.skill) or 0, tonumber(p.max) or 0, tonumber(p.n) or 0
 			p.readAt = tonumber(p.readAt) or 0
+			p.specs = SpecsOf(id, p.specs)
 		end
 	end
 	for id in pairs(saved.post) do
@@ -1360,6 +1503,10 @@ ns.On("LOGIN", function()
 	pcall(ns.RegisterEvent, "GET_ITEM_INFO_RECEIVED", ItemLoaded)
 	-- Отказ от профессии меняет список навыков; без события профессию уберёт минутная проверка (Tick).
 	pcall(ns.RegisterEvent, "SKILL_LINES_CHANGED", SkillsChanged)
+	-- Специализацию учат у наставника: меняются заклинания. Без события её найдёт минутная проверка.
+	for _, event in ipairs({ "SPELLS_CHANGED", "LEARNED_SPELL_IN_TAB" }) do
+		pcall(ns.RegisterEvent, event, SpellsChanged)
+	end
 end)
 
 ns.Status(function()

@@ -1070,6 +1070,11 @@ local function Env(c)
 		end,
 	}
 	env.C_Spell = { GetSpellName = function(id) return Wow.RECIPE_NAMES[id] end }
+	-- Заклинания персонажа (специализации профессий в Crafters.lua): c.spells = { [номер] = true }.
+	-- c.noSpells — игра о заклинаниях не отвечает (IsPlayerSpell нет). Client:LearnSpell учит.
+	if not c.noSpells then
+		env.IsPlayerSpell = function(id) return c.spells ~= nil and c.spells[id] == true end
+	end
 	c.items = {} -- предметы, названия которых клиент уже догрузил
 	c.itemLoads = 0
 	local function ItemInfo(id)
@@ -1115,7 +1120,7 @@ function World:Client(opts)
 		faction = opts.faction or "Alliance", guild = opts.guild, rank = opts.rank or 3, class = opts.class or "MAGE",
 		level = opts.level or 60, zone = opts.zone or "Штормград", online = true, clockSkew = opts.clockSkew,
 		chatFilterAPI = opts.chatFilterAPI, noTradeSkill = opts.noTradeSkill, interface = opts.interface,
-		skills = opts.skills, hideRealm = opts.hideRealm,
+		skills = opts.skills, spells = opts.spells, noSpells = opts.noSpells, hideRealm = opts.hideRealm,
 		handlers = {}, filters = {}, printed = {}, joined = {}, joinedById = {},
 		named = {}, hooks = {}, bindings = {},
 	}, Client)
@@ -1174,6 +1179,14 @@ end
 function Client:Unlearn(id)
 	self.skills[id] = nil
 	self:Fire("SKILL_LINES_CHANGED")
+end
+
+-- Выучить заклинание у наставника (on = false — забыть): игра сообщает об этом событиями.
+function Client:LearnSpell(id, on)
+	self.spells = self.spells or {}
+	self.spells[id] = on ~= false or nil
+	self:Fire("LEARNED_SPELL_IN_TAB", id, 1)
+	self:Fire("SPELLS_CHANGED")
 end
 
 function Client:Guid()
