@@ -179,8 +179,32 @@ function ns.Faction()
 	return (f == "Horde" or f == "Alliance") and f or "Neutral"
 end
 
+-- Группа, в которой персонаж уже жил, когда игра не назвала реалм: запомненная при входе с
+-- известным реалмом, иначе группа его ключа подписи (самого свежего для этой фракции).
+-- Второе — для сохранений до этой правки: тогда группу ещё не запоминали.
+local function SavedGroup(db, key, faction)
+	local char = db.chars and db.chars[key]
+	if type(char) == "table" and type(char.group) == "string" and char.group ~= "" and char.group ~= "?" then
+		return char.group, "персонажа"
+	end
+	local suffix, best, newest = ":" .. faction .. ":" .. key, nil, nil
+	for scope, saved in pairs(type(db.securityKeys) == "table" and db.securityKeys or {}) do
+		if type(scope) == "string" and #scope > #suffix and scope:sub(-#suffix) == suffix then
+			local group = scope:sub(1, -#suffix - 1)
+			local sequence = type(saved) == "table" and tonumber(saved.sequence) or 0
+			if group ~= "?" and (not newest or sequence > newest) then best, newest = group, sequence end
+		end
+	end
+	if best then return best, "ключа подписи" end
+end
+
 -- Кто я: полное имя, ключ, реалм, группа реалмов. На Forever выясняется, делит ли
 -- игра имена (splitNames), — от этого зависят все сравнения имён.
+-- Группа — ключ хранилища (realms[группа][фракция]) и ключа подписи, и она же входит в каждую
+-- подпись. С 19–20.11.2026 Forever при входе отдаёт пустые GetNormalizedRealmName и GetRealmName:
+-- группа «?» заводила пустое хранилище и новый ключ, и клиент выпадал из доверия своей гильдии.
+-- Без реалма группа берётся из сохранений (SavedGroup), иначе — группа главной гильдии;
+-- ns.groupFrom — откуда она взята (nil — по реалму).
 function ns.Identify()
 	ns.realm = U.CurrentRealm()
 	local name, realm
@@ -189,8 +213,30 @@ function ns.Identify()
 	if split then ns.splitNames = true end
 	ns.me = full
 	ns.myKey = U.Key(full)
-	ns.group = U.GroupOf(ns.realm)
 	ns.faction = ns.Faction()
+	ns.group, ns.groupFrom = U.GroupOf(ns.realm), nil
+	if ns.realm == "?" then
+		local saved, from = SavedGroup(ns.db or {}, ns.myKey, ns.faction)
+		ns.group, ns.groupFrom = saved or ns.Config.HOME_GROUP, from or "группы главной гильдии"
+	end
+end
+
+-- Хранилище и ключи группы «?» от входов без реалма до этой правки. Подписи в них ни с кем не
+-- сходятся (группа входит в подпись), а хранилище подменяло настоящее.
+local function DropUnknownGroup(db)
+	if ns.group == "?" then return end
+	local store = db.realms["?"] ~= nil
+	db.realms["?"] = nil
+	local dropped = 0
+	for scope in pairs(db.securityKeys or {}) do
+		if type(scope) == "string" and scope:sub(1, 2) == "?:" then
+			db.securityKeys[scope] = nil
+			dropped = dropped + 1
+		end
+	end
+	if store or dropped > 0 then
+		ns.Log("удалены данные группы «?» от входов без реалма: хранилище %s, ключей %d", store and "да" or "нет", dropped)
+	end
 end
 
 function ns.IsMe(name)
@@ -206,11 +252,14 @@ ns.RegisterEvent("PLAYER_LOGIN", function()
 	local db = ns.db
 	db.chars[ns.myKey] = Defaults(db.chars[ns.myKey] or {}, CHAR_DEFAULTS)
 	ns.char = db.chars[ns.myKey]
+	if not ns.groupFrom then ns.char.group = ns.group end
 	db.realms[ns.group] = db.realms[ns.group] or {}
 	db.realms[ns.group][ns.faction] = Defaults(db.realms[ns.group][ns.faction] or {}, STORE_DEFAULTS)
 	ns.store = db.realms[ns.group][ns.faction]
 	ns.loginAt = ns.Now()
 	ns.Log("---- %s, v%s, реалм %s, группа %s, %s, splitNames=%s ----", ns.me, ns.VERSION, ns.realm, ns.group, ns.faction, tostring(ns.splitNames))
+	if ns.groupFrom then ns.Log("игра не назвала реалм: группа %s взята из %s", ns.group, ns.groupFrom) end
+	DropUnknownGroup(db)
 	ns.Fire("LOGIN")
 end)
 
