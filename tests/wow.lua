@@ -691,8 +691,9 @@ local function Env(c)
 	env.IsInGroup = function() return c.party ~= nil end
 	env.IsInRaid = function() return c.party ~= nil and c.raid == true end
 	env.UnitIsGroupLeader = function() return c.party ~= nil and c.partyLeader ~= false end
-	env.GetNormalizedRealmName = function() return c.realm end
-	env.GetRealmName = function() return c.realm end
+	-- c.hideRealm — игра не называет реалм, как Forever с 19–20.11.2026: пустые ответы при входе.
+	env.GetNormalizedRealmName = function() if c.hideRealm then return nil end return c.realm end
+	env.GetRealmName = function() if c.hideRealm then return "" end return c.realm end
 	-- Версия интерфейса: по умолчанию классическая, как у Forever; c.interface — другой клиент.
 	env.GetBuildInfo = function() return "1.15.7", "60000", "Jan 1 2026", c.interface or 11507 end
 	env.UnitFactionGroup = function() return c.faction end
@@ -1119,7 +1120,7 @@ function World:Client(opts)
 		faction = opts.faction or "Alliance", guild = opts.guild, rank = opts.rank or 3, class = opts.class or "MAGE",
 		level = opts.level or 60, zone = opts.zone or "Штормград", online = true, clockSkew = opts.clockSkew,
 		chatFilterAPI = opts.chatFilterAPI, noTradeSkill = opts.noTradeSkill, interface = opts.interface,
-		skills = opts.skills, spells = opts.spells, noSpells = opts.noSpells,
+		skills = opts.skills, spells = opts.spells, noSpells = opts.noSpells, hideRealm = opts.hideRealm,
 		handlers = {}, filters = {}, printed = {}, joined = {}, joinedById = {},
 		named = {}, hooks = {}, bindings = {},
 	}, Client)
@@ -1264,7 +1265,8 @@ end
 function World:Reload(old)
 	old:Logout(true)
 	local c = self:Client({ first = old.first, surname = old.surname, realm = old.realm, faction = old.faction,
-		guild = old.guild, rank = old.rank, class = old.class, level = old.level, db = old.ns.db, reload = true })
+		guild = old.guild, rank = old.rank, class = old.class, level = old.level, db = old.ns.db, reload = true,
+		hideRealm = old.hideRealm })
 	c.joined, c.joinedById, c.nextChan = old.joined, old.joinedById, old.nextChan
 	c.channelDeaf, c.channelRefused = old.channelDeaf, old.channelRefused
 	c.channelDisabled, c.channelNotAllowed = old.channelDisabled, old.channelNotAllowed -- /reload не помогает
