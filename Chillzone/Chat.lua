@@ -711,6 +711,13 @@ ns.Activity.Probe(function()
 	if sealing > 0 and ns.Now() - sealingAt < SEAL_SHOW then return { kind = "work", text = L.ACT_CHAT } end
 end)
 
+-- Байт текста в одной части строки: длиннее — строка уходит несколькими частями, а в канал
+-- игры каждая часть идёт отдельной строкой из бюджета сервера.
+function Chat.PartBudget(guild)
+	local _, class = UnitClass("player")
+	return math.min(C.CHAT_PART, Codec.ChatBudget(guild or ns.MyGuild() or "", Codec.CLASS_CODE[class or ""] or ""))
+end
+
 function Chat.Send(tier, text)
 	if not ns.me then return false end
 	local guild = ns.MyGuild()
@@ -746,8 +753,7 @@ function Chat.Send(tier, text)
 		return false
 	end
 	local _, class = UnitClass("player")
-	local budget = math.min(C.CHAT_PART, Codec.ChatBudget(guild, Codec.CLASS_CODE[class or ""] or ""))
-	local parts, cut = Codec.SplitChat(text, budget, C.CHAT_PARTS)
+	local parts, cut = Codec.SplitChat(text, Chat.PartBudget(guild), C.CHAT_PARTS)
 	-- Строка идёт в канал целиком или не идёт: сервер пропускает Channel.Budget() строк игрока
 	-- за окно, лишние молча теряет. Не хватает бюджета на все части — строка уходит только
 	-- подписанным путём, а без сертификата — отказ до отправки: текст остаётся в поле ввода.
