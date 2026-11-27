@@ -764,7 +764,21 @@ local function Env(c)
 		end,
 		GetNumWhoResults = function() return math.min(50, #(c.whoResults or {})), #(c.whoResults or {}) end,
 		GetWhoInfo = function(i) return c.whoResults[i] end,
+		-- Чёрный список игры: c.ignores — имена так, как их отдаёт GetIgnoreName. На Forever это
+		-- «Имя Фамилия», и IsIgnored("Имя Фамилия") — true (проверено в игре 2026-11-27); другие
+		-- формы тесты задают сами. IsIgnored сравнивает имя с записью байт в байт,
+		-- IsIgnoredByGuid — по c.ignoredGuids. Менять список — Client:Ignore.
+		GetNumIgnores = function() return #c.ignores end,
+		GetIgnoreName = function(i) return c.ignores[i] end,
+		IsIgnored = function(name)
+			for _, n in ipairs(c.ignores) do
+				if n == name then return true end
+			end
+			return false
+		end,
+		IsIgnoredByGuid = function(guid) return c.ignoredGuids[guid] == true end,
 	}
+	c.ignores, c.ignoredGuids = {}, {}
 	env.SendWho = function(query) return env.C_FriendList.SendWho(query) end
 	env.GetNumWhoResults = function() return env.C_FriendList.GetNumWhoResults() end
 	env.GetWhoInfo = function(i)
@@ -1191,6 +1205,15 @@ end
 
 function Client:Guid()
 	return "Player-" .. self.first .. "-" .. self.surname
+end
+
+-- Добавить имя в чёрный список игры (off — убрать), как /ignore: игра сообщает событием.
+function Client:Ignore(name, off)
+	for i = #self.ignores, 1, -1 do
+		if self.ignores[i] == name then table.remove(self.ignores, i) end
+	end
+	if not off then self.ignores[#self.ignores + 1] = name end
+	self:Fire("IGNORELIST_UPDATE")
 end
 
 -- Вызвать пост-хуки, поставленные аддоном через hooksecurefunc(name, ...).

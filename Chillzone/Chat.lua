@@ -589,6 +589,81 @@ function Chat.Channels()
 end
 
 ---------------------------------------------------------------------------
+-- Игнор: свой список аддона (/chillzone ignore) и чёрный список игры
+---------------------------------------------------------------------------
+-- Чёрный список игры читается целиком и сравнивается по U.Key: так совпадают «Имя Фамилия»,
+-- «Имя-Фамилия» из событий и имя с реалмом. Он перечитывается по IGNORELIST_UPDATE и когда
+-- меняется число записей. Вдобавок спрашиваем саму игру — IsIgnored по имени для шёпота и
+-- IsIgnoredByGuid по GUID строки канала: имя в списке игра может записать иначе, чем мы.
+-- Сервер строки через реле не фильтрует: их отправитель — реле или репортёр, а не автор.
+local gameIgnore, gameIgnoreCount = {}, -1
+local ignoreSig = ""
+
+local function Call(fn, ...)
+	if type(fn) ~= "function" then return nil end
+	local ok, res = pcall(fn, ...)
+	if ok then return res end
+	return nil
+end
+
+local function GameIgnore()
+	local F = C_FriendList
+	if type(F) ~= "table" then return gameIgnore end
+	local n = tonumber(Call(F.GetNumIgnores)) or 0
+	if n == gameIgnoreCount then return gameIgnore end
+	local set = {}
+	for i = 1, n do
+		local name = Call(F.GetIgnoreName, i)
+		local key = not IsSecret(name) and U.Key(name)
+		if key then set[key] = true end
+	end
+	gameIgnore, gameIgnoreCount = set, n
+	return set
+end
+
+-- Автор в игноре: в своём списке аддона или в чёрном списке игры. guid — из события канала.
+function Chat.Ignored(name, guid)
+	if IsSecret(name) then return false end
+	local key = U.Key(name)
+	if not key then return false end
+	if ns.store and ns.store.ignore[key] then return true end
+	if GameIgnore()[key] then return true end
+	local F = C_FriendList
+	if type(F) ~= "table" then return false end
+	if Call(F.IsIgnored, U.TellName(name)) == true then return true end
+	return guid ~= nil and not IsSecret(guid) and Call(F.IsIgnoredByGuid, guid) == true
+end
+
+-- Строки канала для показа: в общих каналах — без авторов в игноре. Из истории они не
+-- удаляются: снятый игнор возвращает строки. Чат гильдии не трогаем: он приходит из событий
+-- игры и показывается так же, как в её окнах чата.
+function Chat.Lines(channel)
+	local list = Chat.History(channel)
+	if Chat.GUILD_CHANNELS[channel] then return list end
+	local out = {}
+	for _, e in ipairs(list) do
+		if not Chat.Ignored(e.s) then out[#out + 1] = e end
+	end
+	return out
+end
+
+-- Игнор изменился: окна перерисовывают историю (событие IGNORE). IGNORELIST_UPDATE может прийти
+-- и без правки (например, после ShowFriends), поэтому список сравнивается с прежним, чтобы не
+-- сбивать прокрутку окна зря.
+function Chat.IgnoreChanged()
+	gameIgnoreCount = -1
+	local keys = {}
+	for k in pairs(GameIgnore()) do keys[#keys + 1] = k end
+	table.sort(keys)
+	local sig = table.concat(keys, "\n")
+	if sig == ignoreSig then return end
+	ignoreSig = sig
+	ns.Fire("IGNORE")
+end
+
+ns.RegisterEvent("IGNORELIST_UPDATE", Chat.IgnoreChanged)
+
+---------------------------------------------------------------------------
 -- Приём
 ---------------------------------------------------------------------------
 local function Bucket(key, now)
@@ -621,7 +696,7 @@ function Chat.Receive(msg, sender, dist, ctx)
 	if not d or ns.IsMe(sender) or not ns.IsMember() then return end
 	if not U.IsMemberGuild(d.guild) then return end
 	local key = U.Key(sender)
-	if not key or (ns.store and ns.store.ignore[key]) then return end
+	if not key or Chat.Ignored(sender) then return end
 	local mine = U.GuildKey(ns.MyGuild())
 	local theirs = U.GuildKey(d.guild)
 	if dist == "GUILD" and theirs ~= mine then return end -- по GUILD пишут только согильдийцы
@@ -681,7 +756,7 @@ function Chat.ReceivePlain(text, sender, guid)
 		return
 	end
 	heard[key] = true
-	if ns.store and ns.store.ignore[key] then return end
+	if Chat.Ignored(sender, guid) then return end
 	if not ns.char.chatOn then return end
 	Chat.paths.channel = Chat.paths.channel + 1
 	if Merged(key, body, "channel", now) then
@@ -1039,6 +1114,7 @@ ns.Command("ignore", function(arg)
 		ns.store.ignore[k] = U.Display(arg)
 		ns.Print(L.IGNORE_ON, arg)
 	end
+	ns.Fire("IGNORE")
 end, L.HELP_IGNORE)
 
 ns.Command("history", function(arg)
@@ -1047,7 +1123,7 @@ ns.Command("history", function(arg)
 		ns.Print(L.CHAT_NO_RIGHTS, L["TIER_" .. tier])
 		return
 	end
-	local list = ns.store.chat[tier]
+	local list = Chat.Lines(tier)
 	local frames = Chat.Frames()
 	for i = math.max(1, #list - 19), #list do
 		local e = list[i]
