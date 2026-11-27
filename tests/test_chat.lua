@@ -325,6 +325,82 @@ T.test("окно: без дубля в чат игры строка только
 	T.eq(c.V:Saw("только окно"), 1, "у других дубль включён")
 end)
 
+T.test("игнор: чёрный список игры скрывает автора в окне и истории, снятие возвращает строки", function()
+	local w, c = Build()
+	local B, K = c.B, c.K
+	c.G:Slash("/cz1", "до игнора")
+	w:Run(30)
+	T.eq(B:Saw("до игнора"), 1)
+	B.ns.UI.OpenChat("A")
+	local lines = function() return B.ns.ChatPane.frames.messages.lines end
+	T.eq(Has(lines(), "до игнора"), 1, "строка в окне")
+	B:Ignore("Глеб Гордый")
+	T.eq(Has(lines(), "до игнора"), 0, "старая строка пропала из окна")
+	T.eq(HistoryHas(B, "A", "до игнора"), 1, "из истории не удалена")
+	K:Ignore("Глеб Гордый")
+	c.G:Slash("/cz1", "общая строка в игноре")
+	w:Run(5)
+	c.G:Slash("/cz3", "главам от игнорируемого")
+	w:Run(30)
+	T.eq(B:Saw("общая строка в игноре"), 0, "/cz1 не показана")
+	T.eq(HistoryHas(B, "A", "общая строка в игноре"), 0, "и не сохранена")
+	T.eq(Has(lines(), "общая строка в игноре"), 0)
+	T.eq(K:Saw("главам от игнорируемого"), 0, "/cz3 не показана")
+	T.eq(c.A:Saw("общая строка в игноре"), 1, "у других видно")
+	T.eq(c.V:Saw("главам от игнорируемого"), 1, "у других видно")
+	B:Slash("/chillzone", "history 1")
+	T.eq(B:Saw("до игнора"), 1, "history — без строк игнорируемого")
+	B:Ignore("Глеб Гордый", true)
+	T.eq(Has(lines(), "до игнора"), 1, "снятый игнор вернул строку в окно")
+	B:Slash("/chillzone", "history 1")
+	T.eq(B:Saw("до игнора"), 2, "и в history")
+	c.G:Slash("/cz1", "после игнора")
+	w:Run(30)
+	T.eq(B:Saw("после игнора"), 1)
+	Errors(c)
+end)
+
+T.test("игнор: имя из событий, имя с реалмом, ответ игры и свой список аддона", function()
+	local w, c = Build()
+	local B = c.B
+	local F = B.env.C_FriendList
+	local isIgnored = F.IsIgnored
+	-- Игра своим IsIgnored имя не узнаёт: хватает записи в списке в любом из видов имени.
+	F.IsIgnored = function() return false end
+	for i, name in ipairs({ "Глеб-Гордый", "Глеб Гордый-CAMWOWUS2Realm3PvE", "глеб гордый" }) do
+		B:Ignore(name)
+		c.G:Slash("/cz1", "вид имени " .. i)
+		w:Run(30)
+		T.eq(B:Saw("вид имени " .. i), 0, name)
+		B:Ignore(name, true)
+	end
+	-- Список не читается вовсе, а IsIgnored знает имя для шёпота.
+	F.IsIgnored = isIgnored
+	F.GetNumIgnores = function() return 0 end
+	B.ignores = { "Глеб Гордый" }
+	c.G:Slash("/cz1", "по ответу игры")
+	w:Run(30)
+	T.eq(B:Saw("по ответу игры"), 0, "IsIgnored")
+	B.ignores = {}
+	-- Список пришёл без правки: окно не перерисовывается и прокрутку не сбивает.
+	B.ns.UI.OpenChat("A")
+	local reloads = 0
+	local reload = B.ns.ChatPane.Reload
+	B.ns.ChatPane.Reload = function(...) reloads = reloads + 1; return reload(...) end
+	B:Fire("IGNORELIST_UPDATE")
+	T.eq(reloads, 0, "тот же список — окно не трогаем")
+	-- Свой список аддона тоже сразу убирает строки из окна.
+	c.G:Slash("/cz1", "строка для своего списка")
+	w:Run(30)
+	T.eq(Has(B.ns.ChatPane.frames.messages.lines, "строка для своего списка"), 1)
+	B:Slash("/chillzone", "ignore Глеб Гордый")
+	T.eq(reloads, 1)
+	T.eq(Has(B.ns.ChatPane.frames.messages.lines, "строка для своего списка"), 0, "/chillzone ignore")
+	B:Slash("/chillzone", "ignore Глеб Гордый")
+	T.eq(Has(B.ns.ChatPane.frames.messages.lines, "строка для своего списка"), 1, "повтор снял игнор")
+	Errors(c)
+end)
+
 T.test("окно: теги гильдий используют выбранный регистр", function()
 	local _, c = SlashClient()
 	local guilds = {

@@ -222,7 +222,7 @@ end
 function ChatPane.Reload()
 	if not messages then return end
 	messages:Clear()
-	local hist = Chat.History(current)
+	local hist = Chat.Lines(current)
 	for i = math.max(1, #hist - MAX_LINES + 1), #hist do AddLine(hist[i]) end
 	if messages.ScrollToBottom then messages:ScrollToBottom() end
 	if empty then empty:SetShown(#hist == 0) end
@@ -859,6 +859,10 @@ local function Dirty()
 end
 ns.On("DATA", Dirty)
 ns.On("ROSTER", Dirty)
+-- Игнор изменился: строки автора пропадают из открытого общего канала (или возвращаются).
+ns.On("IGNORE", function()
+	if not Chat.GUILD_CHANNELS[current] then ChatPane.Reload() end
+end)
 ns.On("PEERS", function() peopleDirty = true end)
 ns.On("GUILD_CHANGED", function()
 	if shown then ChatPane.Select(current) end

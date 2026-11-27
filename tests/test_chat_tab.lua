@@ -800,6 +800,21 @@ T.test("chat tab: время видно в специальной вкладке
 	T.eq(#ns.db.errors, 0)
 end)
 
+T.test("chat tab: игнор убирает строки автора из специальной вкладки Chattynator", function()
+	local h, ns = BuildChattynator()
+	ns.char.chatMirror = false
+	ns.Chat.Show("A", "Чиллзон Север", "Борис Быстрый", "WARRIOR", "Строка Бориса")
+	ns.Chat.Show("A", "Чиллзон", "Автор Чата", "MAGE", "Своя строка")
+	h:Mount(1)
+	T.eq(#h.messages.lines, 2)
+	h.client:Ignore("Борис Быстрый")
+	T.eq(#h.messages.lines, 1, "строка игнорируемого пропала")
+	T.ok(h.messages.lines[1]:find("Своя строка", 1, true))
+	h.client:Ignore("Борис Быстрый", true)
+	T.eq(#h.messages.lines, 2, "снятый игнор вернул строку")
+	T.eq(#ns.db.errors, 0)
+end)
+
 T.test("chat tab: метка союза фокусирует ввод в штатной вкладке", function()
 	local h, ns = Build()
 	ns.ChatTab.Open()

@@ -69,7 +69,7 @@ local function Render(panel, warning)
 	if warning then
 		messages:AddMessage(warning)
 	else
-		for _, entry in ipairs(Chat.History("A")) do AddLine(messages, entry) end
+		for _, entry in ipairs(Chat.Lines("A")) do AddLine(messages, entry) end
 	end
 	messages:ScrollToBottom()
 	panel.dirty, panel.readWarning = false, warning
@@ -195,6 +195,7 @@ ns.On("CHAT", function(channel, entry)
 	end
 end)
 ns.On("SETTINGS", function() Refresh() end)
+ns.On("IGNORE", function() Refresh() end)
 ns.On("GUILD_CHANGED", function() Refresh() end)
 -- Продление решения о составе союза не должно сбрасывать прокрутку открытой вкладки.
 ns.On("UNION", function() Refresh(true) end)
