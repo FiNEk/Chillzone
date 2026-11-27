@@ -19,7 +19,7 @@ local PIN_EDGE = 2
 -- требуют отдельного запаса: выбранный размер публичный API не сообщает.
 local OPENMAP_RADIUS = 9
 local PIN_GAP = 2
-local pool, active = {}, {}
+local pool, active, every = {}, {}, {}
 local queued = false
 local drawn = false
 local offsetsShifted = false
@@ -94,8 +94,11 @@ end
 
 local function CreatePin()
 	local anchor = CreateFrame("Frame", nil, UIParent)
+	-- Виден только на метке карты: её показывает сама библиотека.
+	anchor:Hide()
 	anchor:SetSize(20, 20)
 	anchor:EnableMouse(false)
+	every[#every + 1] = anchor
 	local p = CreateFrame("Frame", nil, anchor)
 	anchor.circle = p
 	p:SetPoint("CENTER", anchor, "CENTER", 0, 0)
@@ -150,6 +153,23 @@ local function ContainerOf(mapID)
 	return containerOf[mapID]
 end
 
+-- Круг, который не стоит на метке карты, висит прямо на UIParent: так его оставляет HBD,
+-- снимая метку. OpenMap в бою переносит значки HBD на свой слой карты, а по закрытию карты
+-- и в конце боя возвращает прежнему родителю (OwnView.lua, GiveBackIcons): ставит в центр
+-- и показывает. Для круга без метки это центр экрана, где он и оставался после закрытия
+-- карты. Вне карты круг не нужен, такой прячется. Пул тоже: его круг мог побывать на слое.
+local function HideStray()
+	for _, anchor in ipairs(every) do
+		if anchor:IsShown() and anchor:GetParent() == UIParent then anchor:Hide() end
+	end
+end
+
+-- Сразу и в следующем кадре: порядок обработчиков игры между аддонами не задан.
+local function HideStraySoon()
+	HideStray()
+	ns.After(0, "map stray", HideStray)
+end
+
 local function Clear()
 	if drawn and Pins then Pins:RemoveAllWorldMapIcons(Map) end
 	drawn = false
@@ -159,6 +179,7 @@ local function Clear()
 		pool[#pool + 1] = active[i]
 		active[i] = nil
 	end
+	HideStray()
 end
 
 local function Place(mapID, x, y, flag, key, count, guilds, size)
@@ -237,6 +258,7 @@ local function HookWorldMap()
 		UpdateOffsets()
 	end
 	frame:HookScript("OnShow", Shown)
+	frame:HookScript("OnHide", function() ns.SafeCall("map hidden", HideStraySoon) end)
 	-- Только у видимой карты; меняем якорь круга лишь при изменении масштаба
 	-- или режима OpenMap. Перерегистрация меток при каждом зуме не нужна.
 	frame:HookScript("OnUpdate", ns.Perf.Wrap("map offsets", UpdateOffsets))
@@ -252,6 +274,8 @@ end)
 -- Blizzard_WorldMap может загрузиться уже после входа. Повторные события
 -- других аддонов не добавляют второй обработчик к тому же окну.
 ns.RegisterEvent("ADDON_LOADED", HookWorldMap)
+-- OpenMap возвращает значки и в конце боя при открытой карте.
+ns.RegisterEvent("PLAYER_REGEN_ENABLED", HideStraySoon)
 
 ns.On("DATA", Map.Refresh)
 ns.On("GUILD_CHANGED", Map.Refresh)

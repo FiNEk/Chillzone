@@ -622,3 +622,90 @@ T.test("map: обычная карта и неисправный OpenMap ост�
 		T.ok(entry.anchor.circle:IsVisible(), "пул повторно показывает дочерний кружок")
 	end
 end)
+
+-- OpenMap в бою переносит значки HBD на свой слой карты, а по закрытию карты и в конце боя
+-- возвращает прежнему родителю: ставит в центр и показывает (OwnView.lua, GiveBackIcons).
+local function OpenMapOwnView(h, anchors)
+	local layer = h.env.CreateFrame("Frame", nil, h.map)
+	local moved = {}
+	for _, anchor in ipairs(anchors) do
+		moved[anchor] = anchor:GetParent()
+		anchor:SetParent(layer)
+		anchor:ClearAllPoints()
+		anchor:SetPoint("CENTER", layer, "CENTER", 0, 0)
+		anchor:Show()
+	end
+	return function()
+		for anchor, parent in pairs(moved) do
+			if anchor:GetParent() == layer then
+				anchor:SetParent(parent)
+				anchor:ClearAllPoints()
+				anchor:SetPoint("CENTER", parent, "CENTER")
+				if parent:IsShown() then anchor:Show() else anchor:Hide() end
+			end
+		end
+	end
+end
+
+-- Метку круга HBD снимает так (OnReleased): прячет и отдаёт UIParent.
+local function Released(h, anchor)
+	anchor:Hide()
+	anchor:SetParent(h.env.UIParent)
+	anchor:ClearAllPoints()
+end
+
+T.test("map: круг, который OpenMap вернул после боя, не остаётся посреди экрана", function()
+	local h = Harness({ noLogin = true })
+	local giveBack
+	-- Поставщики данных карты, среди них OpenMap, узнают о закрытии из её OnHide.
+	h.map:SetScript("OnHide", function() if giveBack then giveBack() end end)
+	h.ns.Fire("LOGIN")
+	h.ns.Data.ZoneCounts = function()
+		return { m42 = { total = 3, guilds = { Chillzone = 3 } }, m43 = { total = 5, guilds = { Ally = 5 } } }
+	end
+	h.ns.Map.RefreshNow()
+	T.eq(#h.pins.entries, 2)
+	local held, loose = h.pins.entries[1], h.pins.entries[2]
+	Released(h, loose.anchor)
+	h.combat = true
+	giveBack = OpenMapOwnView(h, { held.anchor, loose.anchor })
+	T.ok(loose.anchor:IsVisible(), "в бою OpenMap показывает круг на своём слое")
+	h.map:Hide()
+	T.no(loose.anchor:IsShown(), "закрытие карты в бою не оставляет круг на экране")
+	T.eq(held.anchor:GetParent(), held.holder, "круг на метке остаётся на ней")
+	T.ok(held.anchor:IsShown())
+	giveBack = nil
+	h.map:Show()
+	T.ok(held.anchor:IsVisible())
+	T.no(loose.anchor:IsShown())
+
+	-- Конец боя при открытой карте: OpenMap отвечает на событие позже Chillzone.
+	local restore = OpenMapOwnView(h, { held.anchor, loose.anchor })
+	h.combat = false
+	h:Event("PLAYER_REGEN_ENABLED")
+	restore()
+	T.eq(loose.anchor:GetParent(), h.env.UIParent)
+	h:Flush()
+	T.no(loose.anchor:IsShown(), "после боя круг без метки спрятан в следующем кадре")
+	T.ok(held.anchor:IsVisible(), "круг на метке карты не трогается")
+end)
+
+T.test("map: круг из пула, побывавший на слое OpenMap, не показывается при закрытой карте", function()
+	local h = Harness()
+	h.ns.Map.RefreshNow()
+	local entry = h.pins.entries[1]
+	h.combat = true
+	Released(h, entry.anchor)
+	local restore = OpenMapOwnView(h, { entry.anchor })
+	-- Перерисовка в бою: кружок уходит в пул, а на слое OpenMap остаётся.
+	h.ns.Data.ZoneCounts = function() return {} end
+	h.ns.Map.RefreshNow()
+	T.eq(#h.pins.entries, 0)
+	restore()
+	h.combat = false
+	h:Event("PLAYER_REGEN_ENABLED")
+	T.no(entry.anchor:IsShown(), "вернувшийся на UIParent кружок пула спрятан")
+	h.map:Hide()
+	h.ns.Map.SetEnabled(false)
+	T.no(entry.anchor:IsShown())
+end)
