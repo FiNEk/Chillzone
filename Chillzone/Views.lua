@@ -767,21 +767,19 @@ local function GroupRow(e, own)
 		tip = GroupTip(e, own),
 	}
 	local note = e.note ~= "" and (GREY .. " — " .. e.note .. "|r") or ""
+	-- Уровни — в скобках после названия: «Уровень от» автора и рекомендация игры для места.
+	local levels = e.title ~= "" and ns.Groups.Levels(e.title, e.mode == "G" and e.min or 0) or ""
+	levels = levels ~= "" and (GREY .. " (" .. levels .. ")|r") or ""
 	if e.mode == "G" then
 		local need = Views.GroupRoles(e.roles, true)
-		row.sub = WHITE .. e.title .. "|r" .. note
+		row.sub = WHITE .. e.title .. "|r" .. levels .. note
 		row.right = need ~= "" and need or (GREY .. L.GROUPS_NEED_ANY .. "|r")
-		-- У пятёрки вместо уровня — значки состава: вместе они не уместятся. Уровень остаётся в
-		-- подсказке, а кому он мал, тому строка и так пишет «с N уровня». В рейде значков было бы
-		-- слишком много: его состав — только в подсказке.
+		-- У пятёрки рядом с местами — значки состава. В рейде их было бы слишком много: его
+		-- состав — только в подсказке.
 		local icons = e.cap <= ROW_ICONS_CAP and Views.GroupClassIcons(e.comp) or ""
-		if icons ~= "" then
-			row.detail = icons .. " " .. e.size .. "/" .. e.cap
-		else
-			row.detail = e.size .. "/" .. e.cap .. (e.min > 0 and (", " .. L.GROUPS_FROM_LEVEL:format(e.min)) or "")
-		end
+		row.detail = (icons ~= "" and (icons .. " ") or "") .. e.size .. "/" .. e.cap
 	else
-		row.sub = WHITE .. (e.title ~= "" and e.title or L.GROUPS_ANYWHERE) .. "|r" .. note
+		row.sub = WHITE .. (e.title ~= "" and e.title or L.GROUPS_ANYWHERE) .. "|r" .. levels .. note
 		row.right = Views.GroupRoles(e.roles)
 		row.detail = e.class and L.CLASS[e.class] or ""
 	end
@@ -934,7 +932,8 @@ function Views.GroupPicks(query)
 				out[#out + 1] = { header = GOLD .. L["GROUPS_KIND_" .. kind] .. "|r" }
 			end
 			local parts = {}
-			if a.min > 1 then parts[#parts + 1] = L.GROUPS_PICK_LEVEL:format(a.min) end
+			local levels = ns.Groups.LevelRange(a.lo, a.hi)
+			if levels ~= "" then parts[#parts + 1] = levels end
 			if a.cap > 1 then parts[#parts + 1] = L.GROUPS_PICK_CAP:format(a.cap) end
 			out[#out + 1] = { activity = a, name = a.name, right = table.concat(parts, ", ") }
 		end

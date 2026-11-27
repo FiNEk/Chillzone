@@ -30,8 +30,9 @@
 -- G1, как GM в Olympus Groups.lua). В группе игры бывают люди без аддона и вне объединения,
 -- на доску они не просились. Состав меняется вместе с размером, отдельных пакетов нет.
 -- Название объявления — свободный текст: списка мест в аддоне нет,
--- список занятий игры (C_LFGList) служит только подсказкой. Сроки и лимиты портированы
--- из Olympus Groups.lua и Board.lua.
+-- список занятий игры (C_LFGList) служит только подсказкой: название для поля и рекомендуемые
+-- уровни места рядом с названием (Groups.Levels). Сроки и лимиты портированы из Olympus
+-- Groups.lua и Board.lua.
 local ADDON, ns = ...
 
 local U = ns.Util
@@ -545,22 +546,31 @@ local function Normalize(spec)
 	}
 end
 
--- Строка для общего чата: её видят и те, кто не открывал вкладку. Отправляется из нажатия:
--- строка /cz1 уходит и в канал игры (Chat.Send). true — ушла; время запоминается на персонажа,
--- от него считается пауза до повтора.
-local function Announce(l)
-	if not ns.Chat then return false end
-	local text
+local function AnnounceText(l, title)
 	if l.mode == "G" then
 		local need = Groups.RoleText(l.roles, true)
-		text = L.GROUPS_ANNOUNCE_G:format(l.title) .. (need ~= "" and (" " .. L.GROUPS_ANNOUNCE_NEED:format(need)) or "")
-	else
-		local class, level = Me()
-		local who = (L.CLASS[class] or "?") .. ", " .. level
-		text = L.GROUPS_ANNOUNCE_P:format(who, Groups.RoleText(l.roles))
-			.. (l.title ~= "" and (" " .. L.GROUPS_ANNOUNCE_WANT:format(l.title)) or "")
+		return L.GROUPS_ANNOUNCE_G:format(title) .. (need ~= "" and (" " .. L.GROUPS_ANNOUNCE_NEED:format(need)) or "")
+			.. " " .. L.GROUPS_ANNOUNCE_TAIL
 	end
-	if not ns.Chat.Send("A", text .. " " .. L.GROUPS_ANNOUNCE_TAIL) then return false end
+	local class, level = Me()
+	local who = (L.CLASS[class] or "?") .. ", " .. level
+	return L.GROUPS_ANNOUNCE_P:format(who, Groups.RoleText(l.roles))
+		.. (title ~= "" and (" " .. L.GROUPS_ANNOUNCE_WANT:format(title)) or "") .. " " .. L.GROUPS_ANNOUNCE_TAIL
+end
+
+-- Строка для общего чата: её видят и те, кто не открывал вкладку. Отправляется из нажатия:
+-- строка /cz1 уходит и в канал игры (Chat.Send). true — ушла; время запоминается на персонажа,
+-- от него считается пауза до повтора. Уровни идут в скобках после названия, если строка с ними
+-- остаётся одной частью: каждая часть — отдельная строка канала из бюджета сервера.
+local function Announce(l)
+	if not ns.Chat then return false end
+	local text = AnnounceText(l, l.title)
+	local levels = l.title ~= "" and Groups.Levels(l.title, l.mode == "G" and l.min or 0) or ""
+	if levels ~= "" then
+		local full = AnnounceText(l, L.GROUPS_TITLE_LEVELS:format(l.title, levels))
+		if #full <= ns.Chat.PartBudget() or #text > ns.Chat.PartBudget() then text = full end
+	end
+	if not ns.Chat.Send("A", text) then return false end
 	if saved then saved.announced = ns.ServerTime() end
 	return true
 end
@@ -1018,12 +1028,20 @@ local KIND_BY_CATEGORY = { [2] = "D", [114] = "R", [116] = "Q", [118] = "P", [12
 local KIND_ORDER = { D = 1, R = 2, P = 3, Q = 4, O = 5 }
 local catalog -- nil — ещё не читали, false — в этом клиенте списка нет
 
+local function Level(n)
+	return math.max(0, math.min(255, math.floor(tonumber(n) or 0)))
+end
+
+-- Название, места, порог входа и рекомендуемые уровни занятия. Forever (проверено в игре)
+-- порога не называет (minLevel = 0), а рекомендуемые уровни — да: minLevelSuggestion и
+-- maxLevelSuggestion. Без них нижней рекомендацией служит порог.
 local function Activity(api, id)
-	local name, cap, min
+	local name, cap, min, lo, hi
 	if type(api.GetActivityInfoTable) == "function" then
 		local ok, info = pcall(api.GetActivityInfoTable, id)
 		if ok and type(info) == "table" then
 			name, cap, min = info.fullName or info.shortName, info.maxNumPlayers, info.minLevel
+			lo, hi = info.minLevelSuggestion, info.maxLevelSuggestion
 		end
 	end
 	if not name and type(api.GetActivityInfo) == "function" then
@@ -1032,10 +1050,14 @@ local function Activity(api, id)
 	end
 	name = type(name) == "string" and Codec.GroupText(name, Codec.GROUP_TITLE) or ""
 	if name == "" then return nil end
-	return name, math.floor(tonumber(cap) or 0), math.floor(tonumber(min) or 0)
+	min, lo, hi = Level(min), Level(lo), Level(hi)
+	if lo == 0 then lo = min end
+	if hi < lo then hi = 0 end
+	return name, math.floor(tonumber(cap) or 0), min, lo, hi
 end
 
--- { { name, kind, cap, min } } или nil. Читается из игры по первой просьбе.
+-- { { name, kind, cap, min, lo, hi } } или nil. Читается из игры по первой просьбе. min — порог
+-- входа (его форма подставляет в «Уровень от»), lo и hi — рекомендуемые уровни места, 0 — неизвестно.
 function Groups.Catalog()
 	if catalog ~= nil then return catalog or nil end
 	local api = C_LFGList
@@ -1052,10 +1074,10 @@ function Groups.Catalog()
 		local okActivities, activities = pcall(api.GetAvailableActivities, category)
 		if okActivities and type(activities) == "table" then
 			for _, id in ipairs(activities) do
-				local name, cap, min = Activity(api, id)
+				local name, cap, min, lo, hi = Activity(api, id)
 				if name and not seen[kind .. name] then
 					seen[kind .. name] = true
-					out[#out + 1] = { name = name, kind = kind, cap = cap, min = min }
+					out[#out + 1] = { name = name, kind = kind, cap = cap, min = min, lo = lo, hi = hi }
 				end
 			end
 		end
@@ -1063,11 +1085,48 @@ function Groups.Catalog()
 	if #out == 0 then return nil end -- данные могли ещё не прийти: спросим в следующий раз
 	table.sort(out, function(a, b)
 		if a.kind ~= b.kind then return KIND_ORDER[a.kind] < KIND_ORDER[b.kind] end
-		if a.min ~= b.min then return a.min < b.min end
+		if a.lo ~= b.lo then return a.lo < b.lo end
 		return a.name < b.name
 	end)
 	catalog = out
 	return out
+end
+
+local places, placesOf -- [название без регистра] = занятие; строится по готовому списку
+
+-- Занятие из списка игры с точно таким названием (регистр не важен) или nil. Название
+-- объявления — свободный текст: «Ульдаман, только сундуки» с местом не сопоставляется.
+function Groups.Place(title)
+	local list = Groups.Catalog()
+	if not list or type(title) ~= "string" or title == "" then return nil end
+	if placesOf ~= list then
+		places, placesOf = {}, list
+		for _, a in ipairs(list) do
+			local key = U.Fold(a.name)
+			if not places[key] then places[key] = a end
+		end
+	end
+	return places[U.Fold(title)]
+end
+
+-- Уровни текстом: «ур. 40-47», «ур. 60», «от 45 ур.»; "" — уровней нет. Дефис, а не тире:
+-- длинного тире «–» в шрифте игры нет.
+function Groups.LevelRange(from, to)
+	from, to = Level(from), Level(to)
+	if from == 0 then return "" end
+	if to > from then return L.GROUPS_LEVELS:format(from, to) end
+	if to == from then return L.GROUPS_LEVEL_ONE:format(from) end
+	return L.GROUPS_FROM_LEVEL:format(from)
+end
+
+-- Уровни объявления рядом с названием. Нижняя граница — «Уровень от» автора, если он его
+-- задал, иначе рекомендация игры для места; верхняя — рекомендация игры. Получатель берёт
+-- место из своего списка игры: в G1 верхней границы нет, формат обмена тот же.
+function Groups.Levels(title, min)
+	local place = Groups.Place(title)
+	local from = Level(min)
+	if from == 0 and place then from = place.lo end
+	return Groups.LevelRange(from, place and place.hi or 0)
 end
 
 ---------------------------------------------------------------------------

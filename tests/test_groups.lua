@@ -517,11 +517,14 @@ T.test("groups: состав — классы и роли без имён, пр�
 	T.same(e.comp, { { class = "WARRIOR", role = "t", count = 1 }, { class = "DRUID", role = "h", count = 1 } },
 		"Вера — лекарем: эту роль она заняла")
 
-	-- Строка доски: значки классов вместо уровня, в подсказке — классы по ролям.
+	-- Строка доски: значки классов рядом с местами, уровень — после названия, в подсказке —
+	-- классы по ролям.
 	local row = RowOf(c.B, c.A)
 	T.ok(row.detail:find("UI-CharacterCreate-Classes", 1, true), "значок класса в строке: " .. row.detail)
 	T.eq(row.detail:sub(-4), " 2/5")
-	T.no(row.detail:find(L.GROUPS_FROM_LEVEL:format(18), 1, true), "уровень ушёл в подсказку")
+	T.no(row.detail:find(L.GROUPS_FROM_LEVEL:format(18), 1, true), "уровня рядом с местами нет")
+	T.ok(row.sub:find("Мёртвые копи|r|cff999999 (" .. L.GROUPS_FROM_LEVEL:format(18) .. ")", 1, true),
+		"уровень после названия: " .. row.sub)
 	local tip = RowTip(row)
 	T.ok(tip:find(L.GROUPS_TIP_MIN:format(18), 1, true), "уровень в подсказке")
 	T.ok(tip:find(c.B.ns.Views.RoleIcon("t") .. " " .. L.CLASS.WARRIOR, 1, true), "танк — воин")
@@ -558,11 +561,12 @@ T.test("groups: состав — классы и роли без имён, пр�
 	T.same(Seen(c.B, c.A).comp, {
 		{ class = "DRUID", role = "h", count = 1 }, { class = "HUNTER", count = 1 }, { class = "WARRIOR", count = 1 },
 	})
-	-- Рейд: значков в строке нет, уровень на месте, состав — в подсказке.
+	-- Рейд: значков в строке нет, уровень после названия, состав — в подсказке.
 	T.ok(c.A.ns.Groups.Raise(Spec({ kind = "R", cap = 10, roles = { t = 1, h = 1, d = 3 } })))
 	w:Run(40)
 	row = RowOf(c.B, c.A)
-	T.eq(row.detail, "3/10, " .. L.GROUPS_FROM_LEVEL:format(18))
+	T.eq(row.detail, "3/10")
+	T.ok(row.sub:find("(" .. L.GROUPS_FROM_LEVEL:format(18) .. ")", 1, true), row.sub)
 	T.ok(RowTip(row):find(L.CLASS.HUNTER, 1, true))
 	-- По сети — ни одного имени, кроме автора в его же подписи.
 	T.ok(#wires >= 5, "правки ушли: " .. #wires)
@@ -1858,7 +1862,8 @@ T.test("groups pane: поиск в списке занятий игры", functi
 	T.ok(picker.hint:IsShown(), "подсказка в пустом поле")
 	T.no(picker.none:IsShown())
 	T.same(Shown(), all, "без запроса — весь список")
-	T.eq(f.pickerRows[2].right:GetText(), L.GROUPS_PICK_LEVEL:format(39) .. ", " .. L.GROUPS_PICK_CAP:format(5))
+	-- Рекомендуемых уровней в этом списке нет: нижней рекомендацией служит порог.
+	T.eq(f.pickerRows[2].right:GetText(), L.GROUPS_FROM_LEVEL:format(39) .. ", " .. L.GROUPS_PICK_CAP:format(5))
 
 	picker.scroll:SetVerticalScroll(40)
 	Search("ЗУЛ")
@@ -1950,4 +1955,95 @@ T.test("groups pane: поиск в списке занятий игры", functi
 	T.ok(f.idle:IsShown(), "после окна — снова роли и кнопки")
 	T.no(picker:IsShown())
 	NoErrors(c.B, "автор")
+end)
+
+-- Список игры, как на Forever (проверено в игре): порога входа нет (minLevel = 0), а
+-- рекомендуемые уровни места есть.
+local function ForeverActivities()
+	local info = {
+		[1986] = { "Крепость Крол'док", 40, 47 },
+		[1603] = { "Стратхольм (боковые врата)", 58, 60 },
+		[1984] = { "Чертоги танов", 13, 20 },
+	}
+	return {
+		GetAvailableCategories = function() return { 2 } end,
+		GetAvailableActivities = function(category) return category == 2 and { 1986, 1603, 1984 } or {} end,
+		GetActivityInfoTable = function(id)
+			local a = info[id]
+			if a then
+				return { fullName = a[1], categoryID = 2, maxNumPlayers = 5, minLevel = 0,
+					minLevelSuggestion = a[2], maxLevelSuggestion = a[3] }
+			end
+		end,
+	}
+end
+
+T.test("groups: уровни места из списка игры — в списке, на доске и в общем чате", function()
+	local w, c = Build()
+	for _, cl in ipairs({ c.A, c.K, c.V }) do cl.env.C_LFGList = ForeverActivities() end
+	local G, L = c.V.ns.Groups, c.V.ns.L
+	local function Line(viewer, text)
+		for _, m in ipairs(viewer.ns.Chat.History("A")) do
+			if tostring(m.x):find(text, 1, true) then return true end
+		end
+		return false
+	end
+	local function Range(a, b) return L.GROUPS_LEVELS:format(a, b) .. ", " .. L.GROUPS_PICK_CAP:format(5) end
+
+	-- Список: по рекомендуемым уровням, справа — диапазон. Порога входа нет, и «Уровень от»
+	-- форма не подставит.
+	local picks = {}
+	for _, it in ipairs(c.A.ns.Views.GroupPicks("")) do
+		if it.activity then picks[#picks + 1] = it.name .. " | " .. it.right end
+	end
+	T.same(picks, {
+		"Чертоги танов | " .. Range(13, 20),
+		"Крепость Крол'док | " .. Range(40, 47),
+		"Стратхольм (боковые врата) | " .. Range(58, 60),
+	})
+	T.eq(c.A.ns.Groups.Place("Крепость Крол'док").min, 0)
+
+	-- Уровни рядом с названием.
+	T.eq(G.Levels("Крепость Крол'док", 0), L.GROUPS_LEVELS:format(40, 47), "рекомендация игры целиком")
+	T.eq(G.Levels("крепость КРОЛ'ДОК", 0), L.GROUPS_LEVELS:format(40, 47), "регистр не важен")
+	T.eq(G.Levels("Крепость Крол'док", 45), L.GROUPS_LEVELS:format(45, 47), "нижняя граница — «Уровень от» автора")
+	T.eq(G.Levels("Крепость Крол'док", 50), L.GROUPS_FROM_LEVEL:format(50), "порог выше рекомендации — только он")
+	T.eq(G.Levels("Стратхольм (боковые врата)", 60), L.GROUPS_LEVEL_ONE:format(60))
+	T.eq(G.Levels("Крепость Крол'док, только сундуки", 0), "", "свободный текст с местом не сопоставляется")
+	T.eq(G.Levels("Мёртвые копи", 18), L.GROUPS_FROM_LEVEL:format(18), "места нет в списке — только порог автора")
+	T.eq(G.Levels("Мёртвые копи", 0), "")
+
+	-- Строка в общий чат и доска: уровни в скобках после названия. В G1 их нет: каждый
+	-- получатель берёт место из своего списка игры.
+	local wires = Capture(c.A)
+	c.A:Hardware(function() T.ok(c.A.ns.Groups.Raise(Spec({ title = "Крепость Крол'док", min = 0, announce = true }))) end)
+	w:Run(30)
+	local text = L.GROUPS_ANNOUNCE_G:format(L.GROUPS_TITLE_LEVELS:format("Крепость Крол'док", L.GROUPS_LEVELS:format(40, 47)))
+	T.eq(text, "Собираю группу: Крепость Крол'док (ур. 40-47).")
+	T.ok(Line(c.V, text), "строка с уровнями дошла до другой гильдии")
+	T.ok(Line(c.K, text), "и до своей")
+	local sub = RowOf(c.V, c.A).sub
+	T.ok(sub:find("Крепость Крол'док|r|cff999999 (" .. L.GROUPS_LEVELS:format(40, 47) .. ")|r", 1, true), sub)
+	T.ok(#wires >= 1, "объявление ушло")
+	for _, wire in ipairs(wires) do T.no(wire:find("40-47", 1, true), "в G1 уровней места нет") end
+	T.no(RowOf(c.B, c.A).sub:find("(", 1, true), "у Бориса списка игры нет — скобок нет")
+	T.ok(c.A.ns.Groups.Raise(Spec({ title = "Крепость Крол'док", min = 45 })))
+	w:Run(40)
+	sub = RowOf(c.V, c.A).sub
+	T.ok(sub:find("(" .. L.GROUPS_LEVELS:format(45, 47) .. ")", 1, true), "правка порога — в строке доски: " .. sub)
+
+	-- С уровнями строка не умещается в одну часть, а без них умещается — уровни не пишутся:
+	-- каждая часть — отдельная строка канала из бюджета сервера.
+	local short = L.GROUPS_ANNOUNCE_G:format("Крепость Крол'док") .. " "
+		.. L.GROUPS_ANNOUNCE_NEED:format(c.A.ns.Groups.RoleText(c.A.ns.Groups.Mine().roles, true)) .. " "
+		.. L.GROUPS_ANNOUNCE_TAIL
+	local budget = c.A.ns.Chat.PartBudget
+	c.A.ns.Chat.PartBudget = function() return #short end
+	w:Run(c.A.ns.Config.GROUPS_ANNOUNCE_GAP)
+	c.A:Hardware(function() T.ok(c.A.ns.Groups.Announce()) end)
+	c.A.ns.Chat.PartBudget = budget
+	w:Run(30)
+	T.ok(Line(c.V, short), "строка без уровней одной частью")
+	NoErrors(c.A, "автор")
+	NoErrors(c.V, "получатель")
 end)
