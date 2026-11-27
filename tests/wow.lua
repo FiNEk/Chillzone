@@ -764,8 +764,9 @@ local function Env(c)
 		end,
 		GetNumWhoResults = function() return math.min(50, #(c.whoResults or {})), #(c.whoResults or {}) end,
 		GetWhoInfo = function(i) return c.whoResults[i] end,
-		-- Чёрный список игры: c.ignores — имена так, как их отдаёт GetIgnoreName (форму задаёт
-		-- тест, на Forever она не проверена). IsIgnored сравнивает имя с записью байт в байт,
+		-- Чёрный список игры: c.ignores — имена так, как их отдаёт GetIgnoreName. На Forever это
+		-- «Имя Фамилия», и IsIgnored("Имя Фамилия") — true (проверено в игре 2026-11-27); другие
+		-- формы тесты задают сами. IsIgnored сравнивает имя с записью байт в байт,
 		-- IsIgnoredByGuid — по c.ignoredGuids. Менять список — Client:Ignore.
 		GetNumIgnores = function() return #c.ignores end,
 		GetIgnoreName = function(i) return c.ignores[i] end,
